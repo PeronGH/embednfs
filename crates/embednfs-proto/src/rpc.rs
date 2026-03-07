@@ -213,3 +213,26 @@ pub fn encode_rpc_reply_proc_unavail(dst: &mut BytesMut, xid: u32) {
     OpaqueAuth::null().encode(dst);
     AcceptStat::ProcUnavail.encode(dst);
 }
+
+/// Encode an RPC reply with PROG_UNAVAIL.
+pub fn encode_rpc_reply_prog_unavail(dst: &mut BytesMut, xid: u32) {
+    xid.encode(dst);
+    MsgType::Reply.encode(dst);
+    ReplyStat::Accepted.encode(dst);
+    OpaqueAuth::null().encode(dst);
+    AcceptStat::ProgUnavail.encode(dst);
+}
+
+/// Encode a rejected RPC reply for RPC version mismatch (RFC 5531 §9).
+///
+/// Wire format: xid | REPLY | DENIED | RPC_MISMATCH | low | high
+/// Rejected replies have no verifier.
+pub fn encode_rpc_reply_rpc_mismatch(dst: &mut BytesMut, xid: u32, low: u32, high: u32) {
+    xid.encode(dst);
+    MsgType::Reply.encode(dst);
+    ReplyStat::Denied.encode(dst);
+    // reject_stat = RPC_MISMATCH (0)
+    0u32.encode(dst);
+    low.encode(dst);
+    high.encode(dst);
+}

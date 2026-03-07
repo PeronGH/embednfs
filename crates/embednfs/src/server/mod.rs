@@ -83,33 +83,50 @@ impl<F: FileSystem> NfsServer<F> {
     async fn handle_connection(self: &Arc<Self>, stream: TcpStream) -> std::io::Result<()> {
         let (mut reader, writer) = stream.into_split();
         let mut writer = BufWriter::with_capacity(65536, writer);
-        let mut read_buf = vec![0u8; 65536];
+
+        const MAX_FRAGMENT: usize = 2 * 1024 * 1024;
+        const MAX_RECORD: usize = 4 * 1024 * 1024;
 
         loop {
-            let mut header = [0u8; 4];
-            match reader.read_exact(&mut header).await {
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
-                Err(e) => return Err(e),
+            // Reassemble potentially multi-fragment RPC record (RFC 5531 §11).
+            let mut record = BytesMut::new();
+            loop {
+                let mut header = [0u8; 4];
+                match reader.read_exact(&mut header).await {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+                    Err(e) => return Err(e),
+                }
+
+                let header_val = u32::from_be_bytes(header);
+                let last_fragment = header_val & 0x8000_0000 != 0;
+                let frag_len = (header_val & 0x7FFF_FFFF) as usize;
+
+                if frag_len > MAX_FRAGMENT {
+                    warn!("Fragment too large: {frag_len}");
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("fragment too large: {frag_len}"),
+                    ));
+                }
+                if record.len() + frag_len > MAX_RECORD {
+                    warn!("Reassembled record too large");
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "reassembled record too large",
+                    ));
+                }
+
+                let start = record.len();
+                record.resize(start + frag_len, 0);
+                reader.read_exact(&mut record[start..]).await?;
+
+                if last_fragment {
+                    break;
+                }
             }
 
-            let header_val = u32::from_be_bytes(header);
-            let frag_len = (header_val & 0x7FFF_FFFF) as usize;
-
-            if frag_len > 2 * 1024 * 1024 {
-                warn!("Fragment too large: {frag_len}");
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("fragment too large: {frag_len}"),
-                ));
-            }
-
-            if read_buf.len() < frag_len {
-                read_buf.resize(frag_len, 0);
-            }
-            reader.read_exact(&mut read_buf[..frag_len]).await?;
-
-            let Some(response) = self.process_rpc_message(&read_buf[..frag_len]).await else {
+            let Some(response) = self.process_rpc_message(&record).await else {
                 return Ok(());
             };
             let resp_len = (response.len() as u32) | 0x8000_0000;
@@ -134,12 +151,12 @@ impl<F: FileSystem> NfsServer<F> {
         let mut response = BytesMut::with_capacity(8192);
 
         if call.rpcvers != RPC_VERSION {
-            encode_rpc_reply_prog_mismatch(&mut response, call.xid, RPC_VERSION, RPC_VERSION);
+            encode_rpc_reply_rpc_mismatch(&mut response, call.xid, RPC_VERSION, RPC_VERSION);
             return Some(response.freeze());
         }
 
         if call.prog != NFS_PROGRAM {
-            encode_rpc_reply_prog_mismatch(&mut response, call.xid, NFS_PROGRAM, NFS_PROGRAM);
+            encode_rpc_reply_prog_unavail(&mut response, call.xid);
             return Some(response.freeze());
         }
 
