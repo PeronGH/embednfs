@@ -94,6 +94,205 @@ impl MemFs {
             .unwrap_or_default();
         (dur.as_secs() as i64, dur.subsec_nanos())
     }
+
+    fn split_components(path: &str) -> NfsResult<Vec<&str>> {
+        if !path.starts_with('/') {
+            return Err(NfsError::Inval);
+        }
+        if path == "/" {
+            return Ok(Vec::new());
+        }
+        let trimmed = path.trim_end_matches('/');
+        let mut components = Vec::new();
+        for component in trimmed.trim_start_matches('/').split('/') {
+            if component.is_empty() || component == "." || component == ".." {
+                return Err(NfsError::Inval);
+            }
+            components.push(component);
+        }
+        Ok(components)
+    }
+
+    fn split_parent(path: &str) -> NfsResult<(String, String)> {
+        let trimmed = if path == "/" {
+            return Err(NfsError::Inval);
+        } else {
+            path.trim_end_matches('/')
+        };
+        if !trimmed.starts_with('/') {
+            return Err(NfsError::Inval);
+        }
+        let (parent, name) = trimmed.rsplit_once('/').ok_or(NfsError::Inval)?;
+        if name.is_empty() || name == "." || name == ".." {
+            return Err(NfsError::Inval);
+        }
+        let parent = if parent.is_empty() { "/" } else { parent };
+        Ok((parent.to_string(), name.to_string()))
+    }
+
+    async fn resolve_path(&self, path: &str) -> NfsResult<FileId> {
+        let components = Self::split_components(path)?;
+        let inner = self.inner.read().await;
+        let mut current = 1;
+        for component in components {
+            let inode = inner.inodes.get(&current).ok_or(NfsError::Stale)?;
+            match &inode.data {
+                InodeData::Directory(entries) => {
+                    current = *entries.get(component).ok_or(NfsError::Noent)?;
+                }
+                _ => return Err(NfsError::Notdir),
+            }
+        }
+        Ok(current)
+    }
+
+    fn metadata_from_attr(attr: &FileAttr) -> Metadata {
+        Metadata {
+            file_type: attr.file_type,
+            size: attr.size,
+            mtime_sec: Some(attr.mtime_sec),
+            mtime_nsec: Some(attr.mtime_nsec),
+            ctime_sec: Some(attr.ctime_sec),
+            ctime_nsec: Some(attr.ctime_nsec),
+            crtime_sec: Some(attr.crtime_sec),
+            crtime_nsec: Some(attr.crtime_nsec),
+            revision: Some(attr.change_id.to_string()),
+            readonly: attr.mode & 0o222 == 0,
+            executable: attr.mode & 0o111 != 0,
+        }
+    }
+}
+
+#[async_trait]
+impl FileSystem for MemFs {
+    fn capabilities(&self) -> FsCapabilities {
+        FsCapabilities::default()
+    }
+
+    async fn metadata(&self, path: &str) -> FsResult<Metadata> {
+        let id = self.resolve_path(path).await?;
+        let attr = <Self as NfsFileSystem>::getattr(self, id).await?;
+        Ok(Self::metadata_from_attr(&attr))
+    }
+
+    async fn list(&self, path: &str) -> FsResult<Vec<PathDirEntry>> {
+        let dir_id = self.resolve_path(path).await?;
+        let entries = <Self as NfsFileSystem>::readdir(self, dir_id).await?;
+        Ok(entries
+            .into_iter()
+            .map(|entry| PathDirEntry {
+                name: entry.name,
+                metadata: Self::metadata_from_attr(&entry.attr),
+            })
+            .collect())
+    }
+
+    async fn read(&self, path: &str, offset: u64, count: u32) -> FsResult<Vec<u8>> {
+        let id = self.resolve_path(path).await?;
+        let (data, _eof) = <Self as NfsFileSystem>::read(self, id, offset, count).await?;
+        Ok(data)
+    }
+
+    async fn create_file(&self, path: &str) -> FsResult<()> {
+        let (parent, name) = Self::split_parent(path)?;
+        let parent_id = self.resolve_path(&parent).await?;
+        <Self as NfsFileSystem>::create(self, parent_id, &name, &SetFileAttr::default())
+            .await
+            .map(|_| ())
+    }
+
+    async fn create_dir(&self, path: &str) -> FsResult<()> {
+        let (parent, name) = Self::split_parent(path)?;
+        let parent_id = self.resolve_path(&parent).await?;
+        <Self as NfsFileSystem>::mkdir(self, parent_id, &name, &SetFileAttr::default())
+            .await
+            .map(|_| ())
+    }
+
+    async fn create_symlink(&self, path: &str, target: &str) -> FsResult<()> {
+        let (parent, name) = Self::split_parent(path)?;
+        let parent_id = self.resolve_path(&parent).await?;
+        <Self as NfsFileSystem>::symlink(
+            self,
+            parent_id,
+            &name,
+            target,
+            &SetFileAttr::default(),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn read_symlink(&self, path: &str) -> FsResult<String> {
+        let id = self.resolve_path(path).await?;
+        <Self as NfsFileSystem>::readlink(self, id).await
+    }
+
+    async fn remove(&self, path: &str, _expected_revision: Option<&str>) -> FsResult<()> {
+        let (parent, name) = Self::split_parent(path)?;
+        let parent_id = self.resolve_path(&parent).await?;
+        <Self as NfsFileSystem>::remove(self, parent_id, &name).await
+    }
+
+    async fn rename(
+        &self,
+        from: &str,
+        to: &str,
+        _expected_revision: Option<&str>,
+    ) -> FsResult<()> {
+        let (from_parent, from_name) = Self::split_parent(from)?;
+        let (to_parent, to_name) = Self::split_parent(to)?;
+        let from_parent_id = self.resolve_path(&from_parent).await?;
+        let to_parent_id = self.resolve_path(&to_parent).await?;
+        <Self as NfsFileSystem>::rename(
+            self,
+            from_parent_id,
+            &from_name,
+            to_parent_id,
+            &to_name,
+        )
+        .await
+    }
+
+    async fn replace_file(
+        &self,
+        path: &str,
+        data: &[u8],
+        _expected_revision: Option<&str>,
+    ) -> FsResult<()> {
+        let id = match self.resolve_path(path).await {
+            Ok(id) => id,
+            Err(NfsError::Noent) => {
+                self.create_file(path).await?;
+                self.resolve_path(path).await?
+            }
+            Err(err) => return Err(err),
+        };
+
+        <Self as NfsFileSystem>::setattr(
+            self,
+            id,
+            SetFileAttr {
+                size: Some(0),
+                ..SetFileAttr::default()
+            },
+        )
+        .await?;
+        if !data.is_empty() {
+            <Self as NfsFileSystem>::write(self, id, 0, data).await?;
+        }
+        Ok(())
+    }
+
+    async fn write_file(&self, path: &str, offset: u64, data: &[u8]) -> FsResult<u32> {
+        let id = self.resolve_path(path).await?;
+        <Self as NfsFileSystem>::write(self, id, offset, data).await
+    }
+
+    async fn sync(&self, path: &str) -> FsResult<()> {
+        let id = self.resolve_path(path).await?;
+        <Self as NfsFileSystem>::commit(self, id).await
+    }
 }
 
 #[async_trait]
@@ -597,7 +796,7 @@ mod tests {
             .unwrap();
         let written = fs.write(id, 0, b"hello world").await.unwrap();
         assert_eq!(written, 11);
-        let (data, eof) = fs.read(id, 0, 1024).await.unwrap();
+        let (data, eof) = NfsFileSystem::read(&fs, id, 0, 1024).await.unwrap();
         assert_eq!(data, b"hello world");
         assert!(eof);
     }
@@ -622,7 +821,9 @@ mod tests {
             .create(1, "to_delete.txt", &SetFileAttr::default())
             .await
             .unwrap();
-        fs.remove(1, "to_delete.txt").await.unwrap();
+        NfsFileSystem::remove(&fs, 1, "to_delete.txt")
+            .await
+            .unwrap();
         assert!(fs.lookup(1, "to_delete.txt").await.is_err());
     }
 
@@ -632,8 +833,46 @@ mod tests {
         fs.create(1, "old.txt", &SetFileAttr::default())
             .await
             .unwrap();
-        fs.rename(1, "old.txt", 1, "new.txt").await.unwrap();
+        NfsFileSystem::rename(&fs, 1, "old.txt", 1, "new.txt")
+            .await
+            .unwrap();
         assert!(fs.lookup(1, "old.txt").await.is_err());
         assert!(fs.lookup(1, "new.txt").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_path_based_filesystem_roundtrip() {
+        let fs = MemFs::new();
+        fs.create_dir("/docs").await.unwrap();
+        fs.create_file("/docs/readme.txt").await.unwrap();
+        fs.write_file("/docs/readme.txt", 0, b"hello path api")
+            .await
+            .unwrap();
+
+        let metadata = fs.metadata("/docs/readme.txt").await.unwrap();
+        assert_eq!(metadata.size, 14);
+        assert_eq!(metadata.file_type, FileType::Regular);
+
+        let entries = fs.list("/docs").await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "readme.txt");
+
+        let data = FileSystem::read(&fs, "/docs/readme.txt", 0, 64)
+            .await
+            .unwrap();
+        assert_eq!(data, b"hello path api");
+    }
+
+    #[tokio::test]
+    async fn test_replace_file_overwrites_previous_contents() {
+        let fs = MemFs::new();
+        fs.create_file("/replace.txt").await.unwrap();
+        fs.write_file("/replace.txt", 0, b"stale data").await.unwrap();
+        fs.replace_file("/replace.txt", b"fresh", None).await.unwrap();
+
+        let data = FileSystem::read(&fs, "/replace.txt", 0, 64)
+            .await
+            .unwrap();
+        assert_eq!(data, b"fresh");
     }
 }
