@@ -284,8 +284,24 @@ impl XdrDecode for Stateid4 {
 
 /// Bitmap4 - variable length bitmap for file attributes.
 #[derive(Debug, Clone, Default)]
-#[derive(PartialEq, Eq)]
 pub struct Bitmap4(pub Vec<u32>);
+
+impl PartialEq for Bitmap4 {
+    fn eq(&self, other: &Self) -> bool {
+        // Compare semantically: trailing zero words are equivalent to absent.
+        let max_len = self.0.len().max(other.0.len());
+        for i in 0..max_len {
+            let a = self.0.get(i).copied().unwrap_or(0);
+            let b = other.0.get(i).copied().unwrap_or(0);
+            if a != b {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+impl Eq for Bitmap4 {}
 
 impl Bitmap4 {
     pub fn new() -> Self {

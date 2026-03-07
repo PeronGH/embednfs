@@ -312,6 +312,272 @@ async fn test_full_session_with_readdir() {
     assert_eq!(status, 0, "COMPOUND (SEQUENCE+PUTROOTFH+READDIR) should be OK");
 }
 
+/// Simulate a Finder-like GETATTR requesting ALL supported attributes.
+/// This catches bitmap/data size mismatches that cause "RPC struct is bad".
+#[tokio::test]
+async fn test_getattr_all_supported_attrs() {
+    let port = start_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+
+    // Quick session setup
+    let exchange_id_op = encode_exchange_id();
+    let compound = encode_compound("", &[&exchange_id_op]);
+    let mut resp = send_rpc(&mut stream, 1, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    u32::decode(&mut resp).unwrap();
+    String::decode(&mut resp).unwrap();
+    u32::decode(&mut resp).unwrap();
+    u32::decode(&mut resp).unwrap();
+    u32::decode(&mut resp).unwrap();
+    let clientid = u64::decode(&mut resp).unwrap();
+    let sequenceid = u32::decode(&mut resp).unwrap();
+
+    let cs_op = encode_create_session(clientid, sequenceid);
+    let compound = encode_compound("", &[&cs_op]);
+    let mut resp = send_rpc(&mut stream, 2, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    u32::decode(&mut resp).unwrap();
+    String::decode(&mut resp).unwrap();
+    u32::decode(&mut resp).unwrap();
+    u32::decode(&mut resp).unwrap();
+    u32::decode(&mut resp).unwrap();
+    let session_data = decode_fixed_opaque(&mut resp, 16).unwrap();
+    let mut sessionid = [0u8; 16];
+    sessionid.copy_from_slice(&session_data);
+
+    // Request ALL attributes that macOS Finder might request
+    let all_attrs = [
+        FATTR4_SUPPORTED_ATTRS, FATTR4_TYPE, FATTR4_FH_EXPIRE_TYPE,
+        FATTR4_CHANGE, FATTR4_SIZE, FATTR4_LINK_SUPPORT, FATTR4_SYMLINK_SUPPORT,
+        FATTR4_NAMED_ATTR, FATTR4_FSID, FATTR4_UNIQUE_HANDLES, FATTR4_LEASE_TIME,
+        FATTR4_RDATTR_ERROR, FATTR4_ACLSUPPORT,
+        FATTR4_ARCHIVE, FATTR4_CANSETTIME, FATTR4_CASE_INSENSITIVE, FATTR4_CASE_PRESERVING,
+        FATTR4_CHOWN_RESTRICTED, FATTR4_FILEHANDLE, FATTR4_FILEID,
+        FATTR4_FILES_AVAIL, FATTR4_FILES_FREE, FATTR4_FILES_TOTAL,
+        FATTR4_HIDDEN, FATTR4_HOMOGENEOUS,
+        FATTR4_MAXFILESIZE, FATTR4_MAXLINK, FATTR4_MAXNAME, FATTR4_MAXREAD, FATTR4_MAXWRITE,
+        FATTR4_MODE, FATTR4_NO_TRUNC, FATTR4_NUMLINKS,
+        FATTR4_OWNER, FATTR4_OWNER_GROUP,
+        FATTR4_RAWDEV, FATTR4_SPACE_AVAIL, FATTR4_SPACE_FREE, FATTR4_SPACE_TOTAL,
+        FATTR4_SPACE_USED,
+        FATTR4_SYSTEM, FATTR4_TIME_ACCESS,
+        FATTR4_TIME_BACKUP, FATTR4_TIME_CREATE, FATTR4_TIME_DELTA,
+        FATTR4_TIME_METADATA, FATTR4_TIME_MODIFY,
+        FATTR4_MOUNTED_ON_FILEID, FATTR4_SUPPATTR_EXCLCREAT,
+    ];
+    let getattr_op = encode_getattr(&all_attrs);
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let compound = encode_compound("", &[&seq_op, &rootfh_op, &getattr_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let status = u32::decode(&mut resp).unwrap();
+    assert_eq!(status, 0, "COMPOUND status should be OK");
+    let _tag = String::decode(&mut resp).unwrap();
+    let num_results = u32::decode(&mut resp).unwrap();
+    assert_eq!(num_results, 3);
+
+    // Parse SEQUENCE result
+    let opnum = u32::decode(&mut resp).unwrap();
+    assert_eq!(opnum, OP_SEQUENCE);
+    let op_status = u32::decode(&mut resp).unwrap();
+    assert_eq!(op_status, 0);
+    let _ = decode_fixed_opaque(&mut resp, 16).unwrap(); // sessionid
+    let _ = u32::decode(&mut resp).unwrap(); // sequenceid
+    let _ = u32::decode(&mut resp).unwrap(); // slotid
+    let _ = u32::decode(&mut resp).unwrap(); // highest_slotid
+    let _ = u32::decode(&mut resp).unwrap(); // target_highest_slotid
+    let _ = u32::decode(&mut resp).unwrap(); // status_flags
+
+    // Parse PUTROOTFH result
+    let opnum = u32::decode(&mut resp).unwrap();
+    assert_eq!(opnum, OP_PUTROOTFH);
+    let op_status = u32::decode(&mut resp).unwrap();
+    assert_eq!(op_status, 0);
+
+    // Parse GETATTR result - this is the critical part
+    let opnum = u32::decode(&mut resp).unwrap();
+    assert_eq!(opnum, OP_GETATTR);
+    let op_status = u32::decode(&mut resp).unwrap();
+    assert_eq!(op_status, 0, "GETATTR should succeed");
+
+    // Parse the Fattr4
+    let fattr = Fattr4::decode(&mut resp).unwrap();
+
+    // Verify the bitmap has reasonable bits set
+    assert!(fattr.attrmask.is_set(FATTR4_TYPE), "TYPE should be in response");
+    assert!(fattr.attrmask.is_set(FATTR4_CHANGE), "CHANGE should be in response");
+    assert!(fattr.attrmask.is_set(FATTR4_SIZE), "SIZE should be in response");
+    assert!(fattr.attrmask.is_set(FATTR4_FILEID), "FILEID should be in response");
+    assert!(fattr.attrmask.is_set(FATTR4_MODE), "MODE should be in response");
+    assert!(fattr.attrmask.is_set(FATTR4_ARCHIVE), "ARCHIVE should be in response");
+    assert!(fattr.attrmask.is_set(FATTR4_HIDDEN), "HIDDEN should be in response");
+    assert!(fattr.attrmask.is_set(FATTR4_SYSTEM), "SYSTEM should be in response");
+    assert!(fattr.attrmask.is_set(FATTR4_TIME_BACKUP), "TIME_BACKUP should be in response");
+    assert!(fattr.attrmask.is_set(FATTR4_TIME_CREATE), "TIME_CREATE should be in response");
+
+    // Now decode attr_vals byte by byte to verify encoding correctness.
+    // The client does exactly this; if our encoding is wrong, it fails.
+    let mut vals = Bytes::from(fattr.attr_vals.clone());
+
+    // Decode in bitmap order (same order as encode_fattr4):
+    if fattr.attrmask.is_set(FATTR4_SUPPORTED_ATTRS) {
+        let _ = Bitmap4::decode(&mut vals).expect("SUPPORTED_ATTRS decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_TYPE) {
+        let _ = u32::decode(&mut vals).expect("TYPE decode"); // nfs_ftype4
+    }
+    if fattr.attrmask.is_set(FATTR4_FH_EXPIRE_TYPE) {
+        let _ = u32::decode(&mut vals).expect("FH_EXPIRE_TYPE decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_CHANGE) {
+        let _ = u64::decode(&mut vals).expect("CHANGE decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_SIZE) {
+        let _ = u64::decode(&mut vals).expect("SIZE decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_LINK_SUPPORT) {
+        let _ = bool::decode(&mut vals).expect("LINK_SUPPORT decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_SYMLINK_SUPPORT) {
+        let _ = bool::decode(&mut vals).expect("SYMLINK_SUPPORT decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_NAMED_ATTR) {
+        let _ = bool::decode(&mut vals).expect("NAMED_ATTR decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_FSID) {
+        let _ = Fsid4::decode(&mut vals).expect("FSID decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_UNIQUE_HANDLES) {
+        let _ = bool::decode(&mut vals).expect("UNIQUE_HANDLES decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_LEASE_TIME) {
+        let _ = u32::decode(&mut vals).expect("LEASE_TIME decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_RDATTR_ERROR) {
+        let _ = u32::decode(&mut vals).expect("RDATTR_ERROR decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_ACLSUPPORT) {
+        let _ = u32::decode(&mut vals).expect("ACLSUPPORT decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_ARCHIVE) {
+        let _ = bool::decode(&mut vals).expect("ARCHIVE decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_CANSETTIME) {
+        let _ = bool::decode(&mut vals).expect("CANSETTIME decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_CASE_INSENSITIVE) {
+        let _ = bool::decode(&mut vals).expect("CASE_INSENSITIVE decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_CASE_PRESERVING) {
+        let _ = bool::decode(&mut vals).expect("CASE_PRESERVING decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_CHOWN_RESTRICTED) {
+        let _ = bool::decode(&mut vals).expect("CHOWN_RESTRICTED decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_FILEHANDLE) {
+        let _ = NfsFh4::decode(&mut vals).expect("FILEHANDLE decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_FILEID) {
+        let _ = u64::decode(&mut vals).expect("FILEID decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_FILES_AVAIL) {
+        let _ = u64::decode(&mut vals).expect("FILES_AVAIL decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_FILES_FREE) {
+        let _ = u64::decode(&mut vals).expect("FILES_FREE decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_FILES_TOTAL) {
+        let _ = u64::decode(&mut vals).expect("FILES_TOTAL decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_HIDDEN) {
+        let _ = bool::decode(&mut vals).expect("HIDDEN decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_HOMOGENEOUS) {
+        let _ = bool::decode(&mut vals).expect("HOMOGENEOUS decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_MAXFILESIZE) {
+        let _ = u64::decode(&mut vals).expect("MAXFILESIZE decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_MAXLINK) {
+        let _ = u32::decode(&mut vals).expect("MAXLINK decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_MAXNAME) {
+        let _ = u32::decode(&mut vals).expect("MAXNAME decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_MAXREAD) {
+        let _ = u64::decode(&mut vals).expect("MAXREAD decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_MAXWRITE) {
+        let _ = u64::decode(&mut vals).expect("MAXWRITE decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_MODE) {
+        let _ = u32::decode(&mut vals).expect("MODE decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_NO_TRUNC) {
+        let _ = bool::decode(&mut vals).expect("NO_TRUNC decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_NUMLINKS) {
+        let _ = u32::decode(&mut vals).expect("NUMLINKS decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_OWNER) {
+        let _ = String::decode(&mut vals).expect("OWNER decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_OWNER_GROUP) {
+        let _ = String::decode(&mut vals).expect("OWNER_GROUP decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_RAWDEV) {
+        let _ = u32::decode(&mut vals).expect("RAWDEV specdata1 decode");
+        let _ = u32::decode(&mut vals).expect("RAWDEV specdata2 decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_SPACE_AVAIL) {
+        let _ = u64::decode(&mut vals).expect("SPACE_AVAIL decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_SPACE_FREE) {
+        let _ = u64::decode(&mut vals).expect("SPACE_FREE decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_SPACE_TOTAL) {
+        let _ = u64::decode(&mut vals).expect("SPACE_TOTAL decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_SPACE_USED) {
+        let _ = u64::decode(&mut vals).expect("SPACE_USED decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_SYSTEM) {
+        let _ = bool::decode(&mut vals).expect("SYSTEM decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_TIME_ACCESS) {
+        let _ = NfsTime4::decode(&mut vals).expect("TIME_ACCESS decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_TIME_BACKUP) {
+        let _ = NfsTime4::decode(&mut vals).expect("TIME_BACKUP decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_TIME_CREATE) {
+        let _ = NfsTime4::decode(&mut vals).expect("TIME_CREATE decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_TIME_DELTA) {
+        let _ = NfsTime4::decode(&mut vals).expect("TIME_DELTA decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_TIME_METADATA) {
+        let _ = NfsTime4::decode(&mut vals).expect("TIME_METADATA decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_TIME_MODIFY) {
+        let _ = NfsTime4::decode(&mut vals).expect("TIME_MODIFY decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_MOUNTED_ON_FILEID) {
+        let _ = u64::decode(&mut vals).expect("MOUNTED_ON_FILEID decode");
+    }
+    if fattr.attrmask.is_set(FATTR4_SUPPATTR_EXCLCREAT) {
+        let _ = Bitmap4::decode(&mut vals).expect("SUPPATTR_EXCLCREAT decode");
+    }
+
+    // All attr_vals bytes should be consumed
+    assert_eq!(vals.len(), 0, "All attr_vals bytes should be consumed; {} bytes left over", vals.len());
+
+    // Also verify no leftover bytes in the RPC response
+    assert_eq!(resp.len(), 0, "No leftover bytes in RPC response; {} bytes remain", resp.len());
+}
+
 #[tokio::test]
 async fn test_reclaim_complete() {
     let port = start_server().await;

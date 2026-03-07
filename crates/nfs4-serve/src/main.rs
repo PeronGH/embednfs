@@ -4,8 +4,10 @@ use tracing_subscriber;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
+    // Set RUST_LOG=debug to see per-operation traces (useful for debugging Finder issues)
+    let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
     tracing_subscriber::fmt()
-        .with_env_filter("info")
+        .with_env_filter(filter)
         .init();
 
     let fs = MemFs::new();

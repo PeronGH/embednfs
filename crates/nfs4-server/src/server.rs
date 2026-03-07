@@ -60,34 +60,48 @@ impl<F: NfsFileSystem> NfsServer<F> {
     async fn handle_connection(self: &Arc<Self>, stream: TcpStream) -> std::io::Result<()> {
         let (mut reader, writer) = stream.into_split();
         let mut writer = BufWriter::with_capacity(65536, writer);
-        // Reusable read buffer to avoid per-request allocation
-        let mut read_buf = vec![0u8; 65536];
+        // Reusable message buffer for RPC fragment reassembly
+        let mut msg_buf: Vec<u8> = Vec::with_capacity(65536);
 
         loop {
-            // Read RPC-over-TCP record marking: 4-byte header
-            // Bit 31 = last fragment, bits 0-30 = length
-            let mut header = [0u8; 4];
-            match reader.read_exact(&mut header).await {
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
-                Err(e) => return Err(e),
-            }
-            let header_val = u32::from_be_bytes(header);
-            let _last_fragment = (header_val & 0x80000000) != 0;
-            let frag_len = (header_val & 0x7FFFFFFF) as usize;
+            msg_buf.clear();
 
-            if frag_len > 2 * 1024 * 1024 {
-                warn!("Fragment too large: {frag_len}");
-                return Ok(());
+            // Read RPC-over-TCP record marking fragments.
+            // Bit 31 = last fragment, bits 0-30 = fragment length.
+            // We must reassemble all fragments before processing.
+            loop {
+                let mut header = [0u8; 4];
+                match reader.read_exact(&mut header).await {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+                    Err(e) => return Err(e),
+                }
+                let header_val = u32::from_be_bytes(header);
+                let last_fragment = (header_val & 0x80000000) != 0;
+                let frag_len = (header_val & 0x7FFFFFFF) as usize;
+
+                if msg_buf.len() + frag_len > 4 * 1024 * 1024 {
+                    warn!("RPC message too large: {} + {frag_len}", msg_buf.len());
+                    return Ok(());
+                }
+
+                let start = msg_buf.len();
+                msg_buf.resize(start + frag_len, 0);
+                reader.read_exact(&mut msg_buf[start..start + frag_len]).await?;
+
+                if last_fragment {
+                    break;
+                }
+                debug!("Multi-fragment RPC: got {frag_len} bytes, waiting for more");
             }
 
-            // Grow read buffer if needed (amortized, never shrinks)
-            if read_buf.len() < frag_len {
-                read_buf.resize(frag_len, 0);
-            }
-            reader.read_exact(&mut read_buf[..frag_len]).await?;
+            let response = self.process_rpc_message(&msg_buf).await;
 
-            let response = self.process_rpc_message(&read_buf[..frag_len]).await;
+            if response.is_empty() {
+                // Don't send empty responses — they corrupt the TCP stream
+                warn!("Skipping empty RPC response");
+                continue;
+            }
 
             // Write response with record marking header + response in one flush
             let resp_len = (response.len() as u32) | 0x80000000;
@@ -137,14 +151,19 @@ impl<F: NfsFileSystem> NfsServer<F> {
             }
             1 => {
                 // COMPOUND procedure
+                let remaining = src.len();
                 match Compound4Args::decode(&mut src) {
                     Ok(args) => {
+                        let leftover = src.len();
+                        if leftover > 0 {
+                            debug!("COMPOUND decode: {leftover} bytes unconsumed of {remaining}");
+                        }
                         let result = self.handle_compound(args).await;
                         encode_rpc_reply_accepted(&mut response, call.xid);
                         result.encode(&mut response);
                     }
                     Err(e) => {
-                        warn!("Failed to decode COMPOUND: {e}");
+                        warn!("Failed to decode COMPOUND ({remaining} bytes): {e}");
                         encode_rpc_reply_accepted(&mut response, call.xid);
                         let result = Compound4Res {
                             status: NfsStat4::BadXdr,
@@ -180,11 +199,15 @@ impl<F: NfsFileSystem> NfsServer<F> {
         let mut overall_status = NfsStat4::Ok;
 
         for op in args.argarray {
+            let op_name = op_debug_name(&op);
+            debug!("  -> {op_name}");
             let res = self.handle_op(op, &mut current_fh, &mut saved_fh).await;
 
             let status = res_status(&res);
             if status != NfsStat4::Ok {
-                debug!("  op failed: status={:?}", status);
+                debug!("  <- {op_name}: {:?}", status);
+            } else {
+                debug!("  <- {op_name}: OK");
             }
             resarray.push(res);
 
@@ -919,6 +942,69 @@ impl<F: NfsFileSystem> NfsServer<F> {
             // VERIFY: OK if match, NOT_SAME if different
             if attrs_match { make_res(NfsStat4::Ok) } else { make_res(NfsStat4::NotSame) }
         }
+    }
+}
+
+/// Debug name for a request operation.
+fn op_debug_name(op: &NfsArgop4) -> &'static str {
+    match op {
+        NfsArgop4::Access(_) => "ACCESS",
+        NfsArgop4::Close(_) => "CLOSE",
+        NfsArgop4::Commit(_) => "COMMIT",
+        NfsArgop4::Create(_) => "CREATE",
+        NfsArgop4::Getattr(_) => "GETATTR",
+        NfsArgop4::Getfh => "GETFH",
+        NfsArgop4::Link(_) => "LINK",
+        NfsArgop4::Lookup(_) => "LOOKUP",
+        NfsArgop4::Lookupp => "LOOKUPP",
+        NfsArgop4::Open(_) => "OPEN",
+        NfsArgop4::OpenConfirm(_) => "OPEN_CONFIRM",
+        NfsArgop4::Putfh(_) => "PUTFH",
+        NfsArgop4::Putpubfh => "PUTPUBFH",
+        NfsArgop4::Putrootfh => "PUTROOTFH",
+        NfsArgop4::Read(_) => "READ",
+        NfsArgop4::Readdir(_) => "READDIR",
+        NfsArgop4::Readlink => "READLINK",
+        NfsArgop4::Remove(_) => "REMOVE",
+        NfsArgop4::Rename(_) => "RENAME",
+        NfsArgop4::Restorefh => "RESTOREFH",
+        NfsArgop4::Savefh => "SAVEFH",
+        NfsArgop4::Secinfo(_) => "SECINFO",
+        NfsArgop4::Setattr(_) => "SETATTR",
+        NfsArgop4::Write(_) => "WRITE",
+        NfsArgop4::ExchangeId(_) => "EXCHANGE_ID",
+        NfsArgop4::CreateSession(_) => "CREATE_SESSION",
+        NfsArgop4::DestroySession(_) => "DESTROY_SESSION",
+        NfsArgop4::Sequence(_) => "SEQUENCE",
+        NfsArgop4::ReclaimComplete(_) => "RECLAIM_COMPLETE",
+        NfsArgop4::DestroyClientid(_) => "DESTROY_CLIENTID",
+        NfsArgop4::BindConnToSession(_) => "BIND_CONN_TO_SESSION",
+        NfsArgop4::SecInfoNoName(_) => "SECINFO_NO_NAME",
+        NfsArgop4::FreeStateid(_) => "FREE_STATEID",
+        NfsArgop4::TestStateid(_) => "TEST_STATEID",
+        NfsArgop4::DelegReturn(_) => "DELEGRETURN",
+        NfsArgop4::SetClientId(_) => "SETCLIENTID",
+        NfsArgop4::SetClientIdConfirm(_) => "SETCLIENTID_CONFIRM",
+        NfsArgop4::Renew(_) => "RENEW",
+        NfsArgop4::Lock(_) => "LOCK",
+        NfsArgop4::Lockt(_) => "LOCKT",
+        NfsArgop4::Locku(_) => "LOCKU",
+        NfsArgop4::OpenAttr(_) => "OPENATTR",
+        NfsArgop4::DelegPurge => "DELEGPURGE",
+        NfsArgop4::ReleaseLockowner => "RELEASE_LOCKOWNER",
+        NfsArgop4::Verify(_) => "VERIFY",
+        NfsArgop4::Nverify(_) => "NVERIFY",
+        NfsArgop4::OpenDowngrade(_) => "OPEN_DOWNGRADE",
+        NfsArgop4::LayoutGet => "LAYOUTGET",
+        NfsArgop4::LayoutReturn => "LAYOUTRETURN",
+        NfsArgop4::LayoutCommit => "LAYOUTCOMMIT",
+        NfsArgop4::GetDirDelegation => "GET_DIR_DELEGATION",
+        NfsArgop4::WantDelegation => "WANT_DELEGATION",
+        NfsArgop4::BackchannelCtl => "BACKCHANNEL_CTL",
+        NfsArgop4::GetDeviceInfo => "GETDEVICEINFO",
+        NfsArgop4::GetDeviceList => "GETDEVICELIST",
+        NfsArgop4::SetSsv => "SET_SSV",
+        NfsArgop4::Illegal => "ILLEGAL",
     }
 }
 
