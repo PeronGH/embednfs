@@ -46,6 +46,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
         loop {
             let (stream, peer) = listener.accept().await?;
+            stream.set_nodelay(true)?;
             debug!("New connection from {peer}");
             let server = server.clone();
             tokio::spawn(async move {
@@ -363,6 +364,15 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 stateid.seqid = stateid.seqid.wrapping_add(1);
                 NfsResop4::OpenDowngrade(NfsStat4::Ok, Some(stateid))
             }
+            NfsArgop4::LayoutGet => NfsResop4::LayoutGet(NfsStat4::Notsupp),
+            NfsArgop4::LayoutReturn => NfsResop4::LayoutReturn(NfsStat4::Notsupp),
+            NfsArgop4::LayoutCommit => NfsResop4::LayoutCommit(NfsStat4::Notsupp),
+            NfsArgop4::GetDirDelegation => NfsResop4::GetDirDelegation(NfsStat4::Notsupp),
+            NfsArgop4::WantDelegation => NfsResop4::WantDelegation(NfsStat4::Notsupp),
+            NfsArgop4::BackchannelCtl => NfsResop4::BackchannelCtl(NfsStat4::Notsupp),
+            NfsArgop4::GetDeviceInfo => NfsResop4::GetDeviceInfo(NfsStat4::Notsupp),
+            NfsArgop4::GetDeviceList => NfsResop4::GetDeviceList(NfsStat4::Notsupp),
+            NfsArgop4::SetSsv => NfsResop4::SetSsv(NfsStat4::Notsupp),
             NfsArgop4::Illegal => {
                 NfsResop4::Illegal(NfsStat4::OpIllegal)
             }
@@ -674,13 +684,24 @@ impl<F: NfsFileSystem> NfsServer<F> {
                     &all_entries[..]
                 };
 
-                // Limit to maxcount
-                let max_entries = (args.maxcount as usize / 256).max(1);
-                let returning = &available[..available.len().min(max_entries)];
-                let eof = returning.len() >= available.len();
+                // Track response size to respect dircount and maxcount
+                // dircount = max bytes for directory info (name + cookie, ~24 bytes + name per entry)
+                // maxcount = max total response bytes (including attributes and XDR overhead)
+                let dircount_limit = args.dircount.max(512) as usize;
+                let maxcount_limit = args.maxcount.max(1024) as usize;
+                // Reserve ~32 bytes for readdir response header (cookieverf + eof)
+                let maxcount_limit = maxcount_limit.saturating_sub(32);
 
-                let mut result_entries = Vec::with_capacity(returning.len());
-                for (i, entry) in returning.iter().enumerate() {
+                let mut result_entries = Vec::with_capacity(available.len().min(64));
+                let mut dir_bytes: usize = 0;
+                let mut total_bytes: usize = 0;
+
+                for (i, entry) in available.iter().enumerate() {
+                    // Estimate dir info size: cookie(8) + name_len(4) + name + padding
+                    let name_bytes = entry.name.len();
+                    let name_padded = (name_bytes + 3) & !3;
+                    let dir_entry_size = 8 + 4 + name_padded;
+
                     let entry_fh = self.state.file_id_to_fh(entry.fileid).await;
                     let entry_fattr = attrs::encode_fattr4(
                         &entry.attr,
@@ -688,12 +709,26 @@ impl<F: NfsFileSystem> NfsServer<F> {
                         &entry_fh,
                         &self.fs.fs_info(),
                     );
+
+                    // Total entry size: dir info + attrs bitmap(~12) + attr_vals + next_entry bool(4)
+                    let attr_size = 12 + entry_fattr.attr_vals.len();
+                    let entry_total = dir_entry_size + attr_size + 4;
+
+                    if !result_entries.is_empty() && (dir_bytes + dir_entry_size > dircount_limit || total_bytes + entry_total > maxcount_limit) {
+                        break;
+                    }
+
+                    dir_bytes += dir_entry_size;
+                    total_bytes += entry_total;
+
                     result_entries.push(Entry4 {
                         cookie: (cookie_start + i + 1) as u64,
                         name: entry.name.clone(),
                         attrs: entry_fattr,
                     });
                 }
+
+                let eof = result_entries.len() >= available.len();
 
                 NfsResop4::Readdir(NfsStat4::Ok, Some(ReaddirRes4 {
                     cookieverf: args.cookieverf,
@@ -905,6 +940,15 @@ fn res_status(res: &NfsResop4) -> NfsStat4 {
         NfsResop4::Verify(s) => *s,
         NfsResop4::Nverify(s) => *s,
         NfsResop4::OpenDowngrade(s, _) => *s,
+        NfsResop4::LayoutGet(s) => *s,
+        NfsResop4::LayoutReturn(s) => *s,
+        NfsResop4::LayoutCommit(s) => *s,
+        NfsResop4::GetDirDelegation(s) => *s,
+        NfsResop4::WantDelegation(s) => *s,
+        NfsResop4::BackchannelCtl(s) => *s,
+        NfsResop4::GetDeviceInfo(s) => *s,
+        NfsResop4::GetDeviceList(s) => *s,
+        NfsResop4::SetSsv(s) => *s,
         NfsResop4::Illegal(s) => *s,
     }
 }
