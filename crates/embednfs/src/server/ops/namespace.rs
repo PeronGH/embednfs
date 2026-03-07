@@ -5,7 +5,7 @@ use embednfs_proto::*;
 use crate::attrs;
 use crate::fs::{FileSystem, FsError};
 
-use super::super::handles::{join_path, parent_path, path_to_fh};
+use super::super::handles::{join_path, parent_path};
 use super::super::util::{readdir_dir_info_len, readdir_entry_list_item_len, readdir_resok_len};
 use super::super::NfsServer;
 
@@ -42,7 +42,7 @@ impl<F: FileSystem> NfsServer<F> {
                     Ok(attr) => attr,
                     Err(e) => return NfsResop4::Create(e.to_nfsstat4(), None, Bitmap4::new()),
                 };
-                *current_fh = Some(path_to_fh(&path));
+                *current_fh = Some(self.handles.lock().unwrap().get_or_create(&path));
                 let cinfo = ChangeInfo4 {
                     atomic: true,
                     before: dir_attr_before.change_id,
@@ -88,7 +88,7 @@ impl<F: FileSystem> NfsServer<F> {
 
         match self.fs.metadata(&child_path).await {
             Ok(_) => {
-                *current_fh = Some(path_to_fh(&child_path));
+                *current_fh = Some(self.handles.lock().unwrap().get_or_create(&child_path));
                 NfsResop4::Lookup(NfsStat4::Ok)
             }
             Err(e) => NfsResop4::Lookup(e.to_nfsstat4()),
@@ -101,7 +101,7 @@ impl<F: FileSystem> NfsServer<F> {
             Err(status) => return NfsResop4::Lookupp(status),
         };
 
-        *current_fh = Some(path_to_fh(&parent_path(&path)));
+        *current_fh = Some(self.handles.lock().unwrap().get_or_create(&parent_path(&path)));
         NfsResop4::Lookupp(NfsStat4::Ok)
     }
 
@@ -172,11 +172,17 @@ impl<F: FileSystem> NfsServer<F> {
                         Ok(path) => path,
                         Err(status) => return NfsResop4::Readdir(status, None),
                     };
-                    let entry_fh = path_to_fh(&entry_path);
+                    let (entry_fh, entry_fileid) = {
+                        let mut handles = self.handles.lock().unwrap();
+                        let fh = handles.get_or_create(&entry_path);
+                        let fileid = handles.fileid(&fh).ok();
+                        (fh, fileid)
+                    };
                     let entry_attr = attrs::synthesize_file_attr(
                         &entry_path,
                         &entry.metadata,
                         &self.fs.capabilities(),
+                        entry_fileid,
                     );
                     let entry_fattr = attrs::encode_fattr4(
                         &entry_attr,
@@ -275,6 +281,7 @@ impl<F: FileSystem> NfsServer<F> {
         match self.fs.remove(&target_path, None).await {
             Ok(()) => {
                 self.drop_stage(&target_path).await;
+                self.handles.lock().unwrap().remove(&target_path);
                 let dir_attr_after = match self.attr_for_path(&dir_path).await {
                     Ok(attr) => attr,
                     Err(e) => return NfsResop4::Remove(e.to_nfsstat4(), None),
@@ -326,6 +333,7 @@ impl<F: FileSystem> NfsServer<F> {
         match self.fs.rename(&from_path, &to_path, None).await {
             Ok(()) => {
                 self.rename_stage(&from_path, &to_path).await;
+                self.handles.lock().unwrap().rename(&from_path, &to_path);
                 let src_attr_after = match self.attr_for_path(&src_dir_path).await {
                     Ok(attr) => attr,
                     Err(e) => return NfsResop4::Rename(e.to_nfsstat4(), None, None),

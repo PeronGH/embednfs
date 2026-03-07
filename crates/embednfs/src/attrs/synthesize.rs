@@ -1,10 +1,14 @@
 use crate::fs::{FileAttr, FileType, FsCapabilities, Metadata};
 
 /// Synthesize NFS-facing attributes from the high-level metadata model.
+///
+/// If `handle_fileid` is provided, it is used as the stable fileid.
+/// Otherwise, a hash of the path is used as a fallback.
 pub(crate) fn synthesize_file_attr(
     path: &str,
     metadata: &Metadata,
     caps: &FsCapabilities,
+    handle_fileid: Option<u64>,
 ) -> FileAttr {
     let defaults = &caps.posix;
     let base_mode = match metadata.file_type {
@@ -41,7 +45,7 @@ pub(crate) fn synthesize_file_attr(
         metadata.crtime_nsec.unwrap_or(ctime_nsec),
     );
 
-    let fileid = stable_path_id(path);
+    let fileid = handle_fileid.unwrap_or_else(|| stable_path_id(path));
     let change_id = metadata
         .revision
         .as_deref()

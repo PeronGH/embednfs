@@ -13,7 +13,7 @@ use bytes::{Bytes, BytesMut};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
@@ -31,6 +31,7 @@ use self::util::hex_bytes;
 pub struct NfsServer<F: FileSystem> {
     fs: Arc<F>,
     state: Arc<StateManager>,
+    handles: Arc<StdMutex<handles::HandleRegistry>>,
     staging: Arc<Mutex<HashMap<String, StagedFile>>>,
     next_stage_id: AtomicU64,
     stage_root: PathBuf,
@@ -48,6 +49,7 @@ impl<F: FileSystem> NfsServer<F> {
         NfsServer {
             fs: Arc::new(fs),
             state: Arc::new(StateManager::new()),
+            handles: Arc::new(StdMutex::new(handles::HandleRegistry::new())),
             staging: Arc::new(Mutex::new(HashMap::new())),
             next_stage_id: AtomicU64::new(1),
             stage_root: std::env::temp_dir().join("embednfs-staging"),

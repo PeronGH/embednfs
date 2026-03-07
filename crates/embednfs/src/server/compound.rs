@@ -5,7 +5,6 @@ use embednfs_proto::*;
 use crate::fs::FileSystem;
 use crate::session::SequenceResult;
 
-use super::handles::path_to_fh;
 use super::util::{
     allows_compound_without_sequence, argop_name, error_res_for_op, res_status, resop_name,
 };
@@ -204,11 +203,11 @@ impl<F: FileSystem> NfsServer<F> {
                 NfsResop4::Putfh(NfsStat4::Ok)
             }
             NfsArgop4::Putpubfh => {
-                *current_fh = Some(path_to_fh("/"));
+                *current_fh = Some(self.handles.lock().unwrap().get_or_create("/"));
                 NfsResop4::Putpubfh(NfsStat4::Ok)
             }
             NfsArgop4::Putrootfh => {
-                *current_fh = Some(path_to_fh("/"));
+                *current_fh = Some(self.handles.lock().unwrap().get_or_create("/"));
                 NfsResop4::Putrootfh(NfsStat4::Ok)
             }
             NfsArgop4::Read(args) => self.op_read(&args, current_fh).await,

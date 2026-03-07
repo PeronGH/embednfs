@@ -2,7 +2,7 @@ use embednfs_proto::*;
 
 use crate::fs::{FileSystem, FileType, FsError, WriteCapability};
 
-use super::super::handles::{join_path, path_to_fh, synthetic_fileid};
+use super::super::handles::join_path;
 use super::super::NfsServer;
 
 impl<F: FileSystem> NfsServer<F> {
@@ -85,17 +85,19 @@ impl<F: FileSystem> NfsServer<F> {
             Ok(attr) => attr,
             Err(e) => return NfsResop4::Open(e.to_nfsstat4(), None),
         };
+        let fh = self.handles.lock().unwrap().get_or_create(&path);
+        let fileid = self.fileid_for_fh(&fh);
         let stateid = self
             .state
             .create_open_state(
-                synthetic_fileid(&path),
+                fileid,
                 args.owner.clientid,
                 args.share_access,
                 args.share_deny,
             )
             .await;
 
-        *current_fh = Some(path_to_fh(&path));
+        *current_fh = Some(fh);
 
         let cinfo = ChangeInfo4 {
             atomic: true,
