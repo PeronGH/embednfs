@@ -148,9 +148,54 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn handle_compound(&self, args: Compound4Args) -> Compound4Res {
-        debug!("COMPOUND: tag={:?}, minorversion={}, ops={}", args.tag, args.minorversion, args.argarray.len());
+        let op_names: Vec<&str> = args.argarray.iter().map(|op| match op {
+            NfsArgop4::Access(_) => "ACCESS",
+            NfsArgop4::Close(_) => "CLOSE",
+            NfsArgop4::Commit(_) => "COMMIT",
+            NfsArgop4::Create(_) => "CREATE",
+            NfsArgop4::Getattr(_) => "GETATTR",
+            NfsArgop4::Getfh => "GETFH",
+            NfsArgop4::Link(_) => "LINK",
+            NfsArgop4::Lookup(_) => "LOOKUP",
+            NfsArgop4::Lookupp => "LOOKUPP",
+            NfsArgop4::Open(_) => "OPEN",
+            NfsArgop4::OpenConfirm(_) => "OPEN_CONFIRM",
+            NfsArgop4::Putfh(_) => "PUTFH",
+            NfsArgop4::Putpubfh => "PUTPUBFH",
+            NfsArgop4::Putrootfh => "PUTROOTFH",
+            NfsArgop4::Read(_) => "READ",
+            NfsArgop4::Readdir(_) => "READDIR",
+            NfsArgop4::Readlink => "READLINK",
+            NfsArgop4::Remove(_) => "REMOVE",
+            NfsArgop4::Rename(_) => "RENAME",
+            NfsArgop4::Restorefh => "RESTOREFH",
+            NfsArgop4::Savefh => "SAVEFH",
+            NfsArgop4::Secinfo(_) => "SECINFO",
+            NfsArgop4::Setattr(_) => "SETATTR",
+            NfsArgop4::Write(_) => "WRITE",
+            NfsArgop4::ExchangeId(_) => "EXCHANGE_ID",
+            NfsArgop4::CreateSession(_) => "CREATE_SESSION",
+            NfsArgop4::DestroySession(_) => "DESTROY_SESSION",
+            NfsArgop4::Sequence(_) => "SEQUENCE",
+            NfsArgop4::ReclaimComplete(_) => "RECLAIM_COMPLETE",
+            NfsArgop4::DestroyClientid(_) => "DESTROY_CLIENTID",
+            NfsArgop4::BindConnToSession(_) => "BIND_CONN_TO_SESSION",
+            NfsArgop4::SecInfoNoName(_) => "SECINFO_NO_NAME",
+            NfsArgop4::FreeStateid(_) => "FREE_STATEID",
+            NfsArgop4::TestStateid(_) => "TEST_STATEID",
+            NfsArgop4::DelegReturn(_) => "DELEGRETURN",
+            NfsArgop4::SetClientId(_) => "SETCLIENTID",
+            NfsArgop4::SetClientIdConfirm(_) => "SETCLIENTID_CONFIRM",
+            NfsArgop4::Renew(_) => "RENEW",
+            NfsArgop4::ReleaseLockowner => "RELEASE_LOCKOWNER",
+            NfsArgop4::Verify(_) => "VERIFY",
+            NfsArgop4::Nverify(_) => "NVERIFY",
+            NfsArgop4::OpenDowngrade(_) => "OPEN_DOWNGRADE",
+            NfsArgop4::Illegal => "ILLEGAL",
+        }).collect();
+        debug!("COMPOUND: tag={:?}, minorversion={}, ops={:?}", args.tag, args.minorversion, op_names);
 
-        if args.minorversion != 1 {
+        if args.minorversion > 1 {
             return Compound4Res {
                 status: NfsStat4::MinorVersMismatch,
                 tag: args.tag,
@@ -167,6 +212,9 @@ impl<F: NfsFileSystem> NfsServer<F> {
             let res = self.handle_op(op, &mut current_fh, &mut saved_fh).await;
 
             let status = res_status(&res);
+            if status != NfsStat4::Ok {
+                debug!("  op failed: status={:?}", status);
+            }
             resarray.push(res);
 
             if status != NfsStat4::Ok {
@@ -199,8 +247,11 @@ impl<F: NfsFileSystem> NfsServer<F> {
             NfsArgop4::Lookup(args) => self.op_lookup(&args, current_fh).await,
             NfsArgop4::Lookupp => self.op_lookupp(current_fh).await,
             NfsArgop4::Open(args) => self.op_open(&args, current_fh).await,
-            NfsArgop4::OpenConfirm => {
-                NfsResop4::Illegal(NfsStat4::Notsupp)
+            NfsArgop4::OpenConfirm(args) => {
+                // For v4.0: confirm open, return the stateid with bumped seqid
+                let mut stateid = args.open_stateid;
+                stateid.seqid = stateid.seqid.wrapping_add(1);
+                NfsResop4::OpenConfirm(NfsStat4::Ok, Some(stateid))
             }
             NfsArgop4::Putfh(args) => {
                 *current_fh = Some(args.object);
@@ -301,6 +352,37 @@ impl<F: NfsFileSystem> NfsServer<F> {
             NfsArgop4::DelegReturn(_) => {
                 NfsResop4::DelegReturn(NfsStat4::Ok)
             }
+            NfsArgop4::SetClientId(args) => {
+                let res = self.state.set_client_id(&args).await;
+                NfsResop4::SetClientId(NfsStat4::Ok, Some(res))
+            }
+            NfsArgop4::SetClientIdConfirm(args) => {
+                match self.state.set_client_id_confirm(&args).await {
+                    Ok(()) => NfsResop4::SetClientIdConfirm(NfsStat4::Ok),
+                    Err(status) => NfsResop4::SetClientIdConfirm(status),
+                }
+            }
+            NfsArgop4::Renew(_clientid) => {
+                // Just accept it - refresh lease
+                NfsResop4::Renew(NfsStat4::Ok)
+            }
+            NfsArgop4::ReleaseLockowner => {
+                NfsResop4::ReleaseLockowner(NfsStat4::Ok)
+            }
+            NfsArgop4::Verify(_attrs) => {
+                // For simplicity, always say "same" (NFS4_OK means attrs match)
+                NfsResop4::Verify(NfsStat4::Ok)
+            }
+            NfsArgop4::Nverify(_attrs) => {
+                // For simplicity, always say "not same" (NFS4_OK means attrs differ)
+                NfsResop4::Nverify(NfsStat4::Ok)
+            }
+            NfsArgop4::OpenDowngrade(args) => {
+                // Accept the downgrade, return the stateid
+                let mut stateid = args.open_stateid;
+                stateid.seqid = stateid.seqid.wrapping_add(1);
+                NfsResop4::OpenDowngrade(NfsStat4::Ok, Some(stateid))
+            }
             NfsArgop4::Illegal => {
                 NfsResop4::Illegal(NfsStat4::OpIllegal)
             }
@@ -322,11 +404,13 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
         match self.fs.getattr(file_id).await {
             Ok(attr) => {
-                let mut supported = ACCESS4_READ | ACCESS4_LOOKUP | ACCESS4_MODIFY | ACCESS4_EXTEND | ACCESS4_DELETE | ACCESS4_EXECUTE;
+                let mut server_supported = ACCESS4_READ | ACCESS4_LOOKUP | ACCESS4_MODIFY | ACCESS4_EXTEND | ACCESS4_DELETE | ACCESS4_EXECUTE;
                 if attr.file_type == FileType::Directory {
-                    supported &= !(ACCESS4_EXECUTE);
+                    server_supported &= !(ACCESS4_EXECUTE);
                 }
-                let access = args.access & supported;
+                // Return only the bits the client asked about
+                let supported = args.access & server_supported;
+                let access = supported; // Grant all supported access
                 NfsResop4::Access(NfsStat4::Ok, supported, access)
             }
             Err(e) => NfsResop4::Access(e.to_nfsstat4(), 0, 0),
@@ -543,7 +627,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
             cinfo,
             rflags,
             attrset: Bitmap4::new(),
-            delegation: OpenDelegation4::NoneExt(WhyNoDelegation4::NotWanted),
+            delegation: OpenDelegation4::None,
         }))
     }
 
@@ -782,6 +866,14 @@ fn res_status(res: &NfsResop4) -> NfsStat4 {
         NfsResop4::FreeStateid(s) => *s,
         NfsResop4::TestStateid(s, _) => *s,
         NfsResop4::DelegReturn(s) => *s,
+        NfsResop4::SetClientId(s, _) => *s,
+        NfsResop4::SetClientIdConfirm(s) => *s,
+        NfsResop4::Renew(s) => *s,
+        NfsResop4::OpenConfirm(s, _) => *s,
+        NfsResop4::ReleaseLockowner(s) => *s,
+        NfsResop4::Verify(s) => *s,
+        NfsResop4::Nverify(s) => *s,
+        NfsResop4::OpenDowngrade(s, _) => *s,
         NfsResop4::Illegal(s) => *s,
     }
 }

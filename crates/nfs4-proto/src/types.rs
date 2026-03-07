@@ -714,7 +714,7 @@ pub enum NfsArgop4 {
     Lookup(LookupArgs4),
     Lookupp,
     Open(OpenArgs4),
-    OpenConfirm, // v4.0 only, reject
+    OpenConfirm(OpenConfirmArgs4),
     Putfh(PutfhArgs4),
     Putpubfh,
     Putrootfh,
@@ -739,6 +739,13 @@ pub enum NfsArgop4 {
     FreeStateid(FreeStateidArgs4),
     TestStateid(TestStateidArgs4),
     DelegReturn(DelegReturnArgs4),
+    SetClientId(SetClientIdArgs4),
+    SetClientIdConfirm(SetClientIdConfirmArgs4),
+    Renew(Clientid4),
+    ReleaseLockowner,
+    Verify(Fattr4),
+    Nverify(Fattr4),
+    OpenDowngrade(OpenDowngradeArgs4),
     Illegal,
 }
 
@@ -877,6 +884,39 @@ pub struct RenameArgs4 {
 #[derive(Debug)]
 pub struct SecinfoArgs4 {
     pub name: String,
+}
+
+#[derive(Debug)]
+pub struct OpenConfirmArgs4 {
+    pub open_stateid: Stateid4,
+    pub seqid: Seqid4,
+}
+
+#[derive(Debug)]
+pub struct SetClientIdArgs4 {
+    pub client: ClientOwner4,
+    pub callback: NfsClientCallback4,
+    pub callback_ident: u32,
+}
+
+#[derive(Debug)]
+pub struct NfsClientCallback4 {
+    pub cb_program: u32,
+    pub cb_location: String,
+}
+
+#[derive(Debug)]
+pub struct SetClientIdConfirmArgs4 {
+    pub clientid: Clientid4,
+    pub verifier: Verifier4,
+}
+
+#[derive(Debug)]
+pub struct OpenDowngradeArgs4 {
+    pub open_stateid: Stateid4,
+    pub seqid: Seqid4,
+    pub share_access: u32,
+    pub share_deny: u32,
 }
 
 #[derive(Debug)]
@@ -1087,7 +1127,21 @@ pub enum NfsResop4 {
     FreeStateid(NfsStat4),
     TestStateid(NfsStat4, Vec<NfsStat4>),
     DelegReturn(NfsStat4),
+    SetClientId(NfsStat4, Option<SetClientIdRes4>),
+    SetClientIdConfirm(NfsStat4),
+    Renew(NfsStat4),
+    OpenConfirm(NfsStat4, Option<Stateid4>),
+    ReleaseLockowner(NfsStat4),
+    Verify(NfsStat4),
+    Nverify(NfsStat4),
+    OpenDowngrade(NfsStat4, Option<Stateid4>),
     Illegal(NfsStat4),
+}
+
+#[derive(Debug)]
+pub struct SetClientIdRes4 {
+    pub clientid: Clientid4,
+    pub verifier: Verifier4,
 }
 
 #[derive(Debug)]
@@ -1303,8 +1357,14 @@ impl XdrEncode for NfsResop4 {
                             OpenDelegation4::NoneExt(why) => {
                                 (OpenDelegationType4::NoneExt as u32).encode(dst);
                                 (*why as u32).encode(dst);
-                                // will_signal = false
-                                false.encode(dst);
+                                // Only CONTENTION and RESOURCE have a bool
+                                match why {
+                                    WhyNoDelegation4::Contention |
+                                    WhyNoDelegation4::ResourceNotAvail => {
+                                        false.encode(dst);
+                                    }
+                                    _ => {}
+                                }
                             }
                             _ => {
                                 (OpenDelegationType4::None as u32).encode(dst);
@@ -1515,6 +1575,54 @@ impl XdrEncode for NfsResop4 {
                 OP_DELEGRETURN.encode(dst);
                 status.encode(dst);
             }
+            NfsResop4::SetClientId(status, res) => {
+                OP_SETCLIENTID.encode(dst);
+                status.encode(dst);
+                if *status == NfsStat4::Ok {
+                    if let Some(r) = res {
+                        r.clientid.encode(dst);
+                        dst.extend_from_slice(&r.verifier);
+                    }
+                }
+            }
+            NfsResop4::SetClientIdConfirm(status) => {
+                OP_SETCLIENTID_CONFIRM.encode(dst);
+                status.encode(dst);
+            }
+            NfsResop4::Renew(status) => {
+                OP_RENEW.encode(dst);
+                status.encode(dst);
+            }
+            NfsResop4::OpenConfirm(status, stateid) => {
+                OP_OPEN_CONFIRM.encode(dst);
+                status.encode(dst);
+                if *status == NfsStat4::Ok {
+                    if let Some(s) = stateid {
+                        s.encode(dst);
+                    }
+                }
+            }
+            NfsResop4::ReleaseLockowner(status) => {
+                OP_RELEASE_LOCKOWNER.encode(dst);
+                status.encode(dst);
+            }
+            NfsResop4::Verify(status) => {
+                OP_VERIFY.encode(dst);
+                status.encode(dst);
+            }
+            NfsResop4::Nverify(status) => {
+                OP_NVERIFY.encode(dst);
+                status.encode(dst);
+            }
+            NfsResop4::OpenDowngrade(status, stateid) => {
+                OP_OPEN_DOWNGRADE.encode(dst);
+                status.encode(dst);
+                if *status == NfsStat4::Ok {
+                    if let Some(s) = stateid {
+                        s.encode(dst);
+                    }
+                }
+            }
             NfsResop4::Illegal(status) => {
                 OP_ILLEGAL.encode(dst);
                 status.encode(dst);
@@ -1671,10 +1779,16 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             }))
         }
         OP_OPEN_CONFIRM => {
-            // v4.0 only - skip the args
-            let _stateid = Stateid4::decode(src)?;
-            let _seqid = u32::decode(src)?;
-            Ok(NfsArgop4::OpenConfirm)
+            let open_stateid = Stateid4::decode(src)?;
+            let seqid = u32::decode(src)?;
+            Ok(NfsArgop4::OpenConfirm(OpenConfirmArgs4 { open_stateid, seqid }))
+        }
+        OP_OPEN_DOWNGRADE => {
+            let open_stateid = Stateid4::decode(src)?;
+            let seqid = u32::decode(src)?;
+            let share_access = u32::decode(src)?;
+            let share_deny = u32::decode(src)?;
+            Ok(NfsArgop4::OpenDowngrade(OpenDowngradeArgs4 { open_stateid, seqid, share_access, share_deny }))
         }
         OP_PUTFH => {
             let object = NfsFh4::decode(src)?;
@@ -1813,6 +1927,48 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
         OP_DELEGRETURN => {
             let stateid = Stateid4::decode(src)?;
             Ok(NfsArgop4::DelegReturn(DelegReturnArgs4 { stateid }))
+        }
+        OP_SETCLIENTID => {
+            let vdata = decode_fixed_opaque(src, 8)?;
+            let mut verifier = [0u8; 8];
+            verifier.copy_from_slice(&vdata);
+            let ownerid = decode_opaque(src)?;
+            let client = ClientOwner4 { verifier, ownerid };
+            // callback: cb_program + cb_location (netaddr4 = netid + addr)
+            let cb_program = u32::decode(src)?;
+            let cb_netid = String::decode(src)?;
+            let cb_addr = String::decode(src)?;
+            let callback = NfsClientCallback4 {
+                cb_program,
+                cb_location: format!("{cb_netid}://{cb_addr}"),
+            };
+            let callback_ident = u32::decode(src)?;
+            Ok(NfsArgop4::SetClientId(SetClientIdArgs4 { client, callback, callback_ident }))
+        }
+        OP_SETCLIENTID_CONFIRM => {
+            let clientid = u64::decode(src)?;
+            let vdata = decode_fixed_opaque(src, 8)?;
+            let mut verifier = [0u8; 8];
+            verifier.copy_from_slice(&vdata);
+            Ok(NfsArgop4::SetClientIdConfirm(SetClientIdConfirmArgs4 { clientid, verifier }))
+        }
+        OP_RENEW => {
+            let clientid = u64::decode(src)?;
+            Ok(NfsArgop4::Renew(clientid))
+        }
+        OP_RELEASE_LOCKOWNER => {
+            // lock_owner: clientid + owner
+            let _clientid = u64::decode(src)?;
+            let _owner = decode_opaque(src)?;
+            Ok(NfsArgop4::ReleaseLockowner)
+        }
+        OP_VERIFY => {
+            let attrs = Fattr4::decode(src)?;
+            Ok(NfsArgop4::Verify(attrs))
+        }
+        OP_NVERIFY => {
+            let attrs = Fattr4::decode(src)?;
+            Ok(NfsArgop4::Nverify(attrs))
         }
         _ => {
             // Unknown op - return Illegal
