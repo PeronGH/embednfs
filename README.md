@@ -1,4 +1,4 @@
-# nfsserve4-rs
+# embednfs
 
 A production-quality NFSv4.1 server library in Rust. Implement a filesystem trait; the library handles the wire protocol, state management, and serves it over TCP.
 
@@ -8,14 +8,14 @@ The primary use case is embedding as a localhost NFS server — a FUSE replaceme
 
 This is a Cargo workspace with three crates:
 
-- **`nfs4-proto`** — XDR encoding/decoding and all NFSv4 protocol types (RFC 8881, RFC 5531)
-- **`nfs4-server`** — Server library with filesystem trait, session management, and COMPOUND handler
-- **`nfs4-serve`** — Example binary using the in-memory filesystem
+- **`embednfs-proto`** — XDR encoding/decoding and all NFSv4 protocol types (RFC 8881, RFC 5531)
+- **`embednfs`** — Embeddable server library with filesystem trait, session management, and COMPOUND handler
+- **`embednfs-cli`** — CLI/demo binary for running the server locally
 
 ## Quick Start
 
 ```rust
-use nfs4_server::{NfsServer, MemFs};
+use embednfs::{MemFs, NfsServer};
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
@@ -43,7 +43,7 @@ Implement the `NfsFileSystem` trait:
 
 ```rust
 use async_trait::async_trait;
-use nfs4_server::fs::*;
+use embednfs::fs::*;
 
 struct MyFs;
 
