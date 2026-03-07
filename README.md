@@ -29,10 +29,12 @@ Then mount:
 
 ```bash
 # Linux
-mount -t nfs4 -o vers=4.1,proto=tcp,port=2049 127.0.0.1:/ /mnt/nfs
+mkdir -p /mnt/embednfs
+mount -t nfs4 -o vers=4.1,proto=tcp,port=2049 127.0.0.1:/ /mnt/embednfs
 
 # macOS
-mount_nfs -o vers=4.1,tcp,port=2049 127.0.0.1:/ /mnt/nfs
+mkdir -p /tmp/embednfs
+mount_nfs -o vers=4.1,tcp,port=2049 127.0.0.1:/ /tmp/embednfs
 ```
 
 Note: on macOS, `vers=4` means NFSv4.0. Use `vers=4.1` explicitly.
