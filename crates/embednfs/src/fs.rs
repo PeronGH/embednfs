@@ -355,6 +355,11 @@ pub trait FileSystem: Send + Sync + 'static {
         Err(FsError::Notsupp)
     }
 
+    /// Adjust a file's length.
+    async fn set_len(&self, _path: &str, _size: u64) -> FsResult<()> {
+        Err(FsError::Notsupp)
+    }
+
     /// Flush file contents to stable storage when supported.
     async fn sync(&self, _path: &str) -> FsResult<()> {
         Ok(())

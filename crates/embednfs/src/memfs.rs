@@ -289,6 +289,20 @@ impl FileSystem for MemFs {
         <Self as NfsFileSystem>::write(self, id, offset, data).await
     }
 
+    async fn set_len(&self, path: &str, size: u64) -> FsResult<()> {
+        let id = self.resolve_path(path).await?;
+        <Self as NfsFileSystem>::setattr(
+            self,
+            id,
+            SetFileAttr {
+                size: Some(size),
+                ..SetFileAttr::default()
+            },
+        )
+        .await
+        .map(|_| ())
+    }
+
     async fn sync(&self, path: &str) -> FsResult<()> {
         let id = self.resolve_path(path).await?;
         <Self as NfsFileSystem>::commit(self, id).await

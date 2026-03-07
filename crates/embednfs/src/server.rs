@@ -16,12 +16,12 @@ use crate::fs::*;
 use crate::session::StateManager;
 
 /// The NFS server.
-pub struct NfsServer<F: NfsFileSystem> {
+pub struct NfsServer<F: FileSystem> {
     fs: Arc<F>,
     state: Arc<StateManager>,
 }
 
-impl<F: NfsFileSystem> NfsServer<F> {
+impl<F: FileSystem> NfsServer<F> {
     /// Create a new NFS server with the given filesystem.
     pub fn new(fs: F) -> Self {
         NfsServer {
@@ -320,12 +320,12 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 NfsResop4::Putfh(NfsStat4::Ok)
             }
             NfsArgop4::Putpubfh => {
-                let root_fh = self.state.file_id_to_fh(1).await;
+                let root_fh = path_to_fh("/");
                 *current_fh = Some(root_fh);
                 NfsResop4::Putpubfh(NfsStat4::Ok)
             }
             NfsArgop4::Putrootfh => {
-                let root_fh = self.state.file_id_to_fh(1).await;
+                let root_fh = path_to_fh("/");
                 *current_fh = Some(root_fh);
                 NfsResop4::Putrootfh(NfsStat4::Ok)
             }
@@ -442,18 +442,27 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
     // ===== Individual operation handlers =====
 
-    async fn resolve_fh(&self, fh: &Option<NfsFh4>) -> Result<FileId, NfsStat4> {
+    fn resolve_fh(&self, fh: &Option<NfsFh4>) -> Result<String, NfsStat4> {
         let fh = fh.as_ref().ok_or(NfsStat4::Nofilehandle)?;
-        self.state.fh_to_file_id(fh).await.ok_or(NfsStat4::Stale)
+        fh_to_path(fh).ok_or(NfsStat4::Stale)
+    }
+
+    async fn attr_for_path(&self, path: &str) -> Result<FileAttr, FsError> {
+        let metadata = self.fs.metadata(path).await?;
+        Ok(attrs::synthesize_file_attr(
+            path,
+            &metadata,
+            &self.fs.capabilities(),
+        ))
     }
 
     async fn op_access(&self, args: &AccessArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
-        let file_id = match self.resolve_fh(current_fh).await {
-            Ok(id) => id,
+        let path = match self.resolve_fh(current_fh) {
+            Ok(path) => path,
             Err(status) => return NfsResop4::Access(status, 0, 0),
         };
 
-        match self.fs.getattr(file_id).await {
+        match self.attr_for_path(&path).await {
             Ok(attr) => {
                 let mut server_supported = ACCESS4_READ
                     | ACCESS4_LOOKUP
@@ -481,48 +490,43 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn op_commit(&self, _args: &CommitArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
-        let file_id = match self.resolve_fh(current_fh).await {
-            Ok(id) => id,
+        let path = match self.resolve_fh(current_fh) {
+            Ok(path) => path,
             Err(status) => return NfsResop4::Commit(status, [0u8; 8]),
         };
 
-        match self.fs.commit(file_id).await {
+        match self.fs.sync(&path).await {
             Ok(()) => NfsResop4::Commit(NfsStat4::Ok, self.state.write_verifier),
             Err(e) => NfsResop4::Commit(e.to_nfsstat4(), [0u8; 8]),
         }
     }
 
     async fn op_create(&self, args: &CreateArgs4, current_fh: &mut Option<NfsFh4>) -> NfsResop4 {
-        let dir_id = match self.resolve_fh(current_fh).await {
-            Ok(id) => id,
+        let dir_path = match self.resolve_fh(current_fh) {
+            Ok(path) => path,
             Err(status) => return NfsResop4::Create(status, None, Bitmap4::new()),
         };
 
-        let dir_attr_before = match self.fs.getattr(dir_id).await {
+        let dir_attr_before = match self.attr_for_path(&dir_path).await {
             Ok(a) => a,
             Err(e) => return NfsResop4::Create(e.to_nfsstat4(), None, Bitmap4::new()),
         };
 
-        let set_attrs = attrs::decode_setattr(&args.createattrs);
+        let path = match join_path(&dir_path, &args.objname) {
+            Ok(path) => path,
+            Err(status) => return NfsResop4::Create(status, None, Bitmap4::new()),
+        };
 
         let result = match &args.objtype {
-            Createtype4::Dir => self.fs.mkdir(dir_id, &args.objname, &set_attrs).await,
-            Createtype4::Link(target) => {
-                self.fs
-                    .symlink(dir_id, &args.objname, target, &set_attrs)
-                    .await
-            }
+            Createtype4::Dir => self.fs.create_dir(&path).await,
+            Createtype4::Link(target) => self.fs.create_symlink(&path, target).await,
             _ => Err(NfsError::Notsupp),
         };
 
         match result {
-            Ok(new_id) => {
-                let dir_attr_after = self
-                    .fs
-                    .getattr(dir_id)
-                    .await
-                    .unwrap_or(dir_attr_before.clone());
-                let new_fh = self.state.file_id_to_fh(new_id).await;
+            Ok(()) => {
+                let dir_attr_after = self.attr_for_path(&dir_path).await.unwrap_or(dir_attr_before.clone());
+                let new_fh = path_to_fh(&path);
                 *current_fh = Some(new_fh);
                 let cinfo = ChangeInfo4 {
                     atomic: true,
@@ -536,24 +540,25 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn op_getattr(&self, args: &GetattrArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
-        let file_id = match self.resolve_fh(current_fh).await {
-            Ok(id) => id,
+        let path = match self.resolve_fh(current_fh) {
+            Ok(path) => path,
             Err(status) => return NfsResop4::Getattr(status, None),
         };
 
         let fh = current_fh.as_ref().unwrap();
 
-        match self.fs.getattr(file_id).await {
+        match self.attr_for_path(&path).await {
             Ok(attr) => {
-                let fattr = attrs::encode_fattr4(&attr, &args.attr_request, fh, &self.fs.fs_info());
+                let caps = self.fs.capabilities();
+                let fattr = attrs::encode_fattr4(&attr, &args.attr_request, fh, &caps.fs_info);
                 debug!(
-                    "GETATTR response: file_id={file_id}, request={:?}, returned={:?}, attr_bytes={}",
+                    "GETATTR response: path={path}, request={:?}, returned={:?}, attr_bytes={}",
                     args.attr_request.0,
                     fattr.attrmask.0,
                     fattr.attr_vals.len()
                 );
                 trace!(
-                    "GETATTR attr payload: file_id={file_id}, attr_hex={}",
+                    "GETATTR attr payload: path={path}, attr_hex={}",
                     hex_bytes(&fattr.attr_vals)
                 );
                 NfsResop4::Getattr(NfsStat4::Ok, Some(fattr))
@@ -575,47 +580,32 @@ impl<F: NfsFileSystem> NfsServer<F> {
         current_fh: &Option<NfsFh4>,
         saved_fh: &Option<NfsFh4>,
     ) -> NfsResop4 {
-        let source_id = match self.resolve_fh(saved_fh).await {
-            Ok(id) => id,
+        let _source_path = match self.resolve_fh(saved_fh) {
+            Ok(path) => path,
             Err(status) => return NfsResop4::Link(status, None),
         };
-        let dir_id = match self.resolve_fh(current_fh).await {
-            Ok(id) => id,
+        let _dir_path = match self.resolve_fh(current_fh) {
+            Ok(path) => path,
             Err(status) => return NfsResop4::Link(status, None),
         };
-
-        let dir_attr_before = match self.fs.getattr(dir_id).await {
-            Ok(a) => a,
-            Err(e) => return NfsResop4::Link(e.to_nfsstat4(), None),
-        };
-
-        match self.fs.link(source_id, dir_id, &args.newname).await {
-            Ok(()) => {
-                let dir_attr_after = self
-                    .fs
-                    .getattr(dir_id)
-                    .await
-                    .unwrap_or(dir_attr_before.clone());
-                let cinfo = ChangeInfo4 {
-                    atomic: true,
-                    before: dir_attr_before.change_id,
-                    after: dir_attr_after.change_id,
-                };
-                NfsResop4::Link(NfsStat4::Ok, Some(cinfo))
-            }
-            Err(e) => NfsResop4::Link(e.to_nfsstat4(), None),
-        }
+        let _ = args;
+        NfsResop4::Link(NfsStat4::Notsupp, None)
     }
 
     async fn op_lookup(&self, args: &LookupArgs4, current_fh: &mut Option<NfsFh4>) -> NfsResop4 {
-        let dir_id = match self.resolve_fh(current_fh).await {
-            Ok(id) => id,
+        let dir_path = match self.resolve_fh(current_fh) {
+            Ok(path) => path,
             Err(status) => return NfsResop4::Lookup(status),
         };
 
-        match self.fs.lookup(dir_id, &args.objname).await {
-            Ok(child_id) => {
-                let child_fh = self.state.file_id_to_fh(child_id).await;
+        let child_path = match join_path(&dir_path, &args.objname) {
+            Ok(path) => path,
+            Err(status) => return NfsResop4::Lookup(status),
+        };
+
+        match self.fs.metadata(&child_path).await {
+            Ok(_) => {
+                let child_fh = path_to_fh(&child_path);
                 *current_fh = Some(child_fh);
                 NfsResop4::Lookup(NfsStat4::Ok)
             }
@@ -624,47 +614,35 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn op_lookupp(&self, current_fh: &mut Option<NfsFh4>) -> NfsResop4 {
-        let id = match self.resolve_fh(current_fh).await {
-            Ok(id) => id,
+        let path = match self.resolve_fh(current_fh) {
+            Ok(path) => path,
             Err(status) => return NfsResop4::Lookupp(status),
         };
 
-        match self.fs.lookup_parent(id).await {
-            Ok(parent_id) => {
-                let parent_fh = self.state.file_id_to_fh(parent_id).await;
-                *current_fh = Some(parent_fh);
-                NfsResop4::Lookupp(NfsStat4::Ok)
-            }
-            Err(e) => NfsResop4::Lookupp(e.to_nfsstat4()),
-        }
+        let parent = parent_path(&path);
+        *current_fh = Some(path_to_fh(&parent));
+        NfsResop4::Lookupp(NfsStat4::Ok)
     }
 
     async fn op_open(&self, args: &OpenArgs4, current_fh: &mut Option<NfsFh4>) -> NfsResop4 {
-        let dir_id = match self.resolve_fh(current_fh).await {
-            Ok(id) => id,
+        let dir_path = match self.resolve_fh(current_fh) {
+            Ok(path) => path,
             Err(status) => return NfsResop4::Open(status, None),
         };
 
-        let (file_id, created) = match &args.claim {
+        let (path, created) = match &args.claim {
             OpenClaim4::Null(name) => {
-                // Try to look up existing file
-                match self.fs.lookup(dir_id, name).await {
-                    Ok(id) => (id, false),
+                let path = match join_path(&dir_path, name) {
+                    Ok(path) => path,
+                    Err(status) => return NfsResop4::Open(status, None),
+                };
+                match self.fs.metadata(&path).await {
+                    Ok(_) => (path, false),
                     Err(NfsError::Noent) => {
-                        // Create if requested
                         match &args.openhow {
-                            Openflag4::Create(how) => {
-                                let set_attrs = match how {
-                                    Createhow4::Unchecked(fa) | Createhow4::Guarded(fa) => {
-                                        attrs::decode_setattr(fa)
-                                    }
-                                    Createhow4::Exclusive4_1 { attrs: fa, .. } => {
-                                        attrs::decode_setattr(fa)
-                                    }
-                                    Createhow4::Exclusive(_) => SetFileAttr::default(),
-                                };
-                                match self.fs.create(dir_id, name, &set_attrs).await {
-                                    Ok(id) => (id, true),
+                            Openflag4::Create(_how) => {
+                                match self.fs.create_file(&path).await {
+                                    Ok(()) => (path, true),
                                     Err(e) => return NfsResop4::Open(e.to_nfsstat4(), None),
                                 }
                             }
@@ -677,29 +655,26 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 }
             }
             OpenClaim4::Fh => {
-                // Current FH is the file
-                (dir_id, false)
+                (dir_path.clone(), false)
             }
             OpenClaim4::Previous(_) => {
-                // Reclaim open: just accept the current FH as the file
-                (dir_id, false)
+                (dir_path.clone(), false)
             }
             OpenClaim4::DelegCurFh(_) | OpenClaim4::DelegPrevFh => {
-                // Delegation claims on current FH
-                (dir_id, false)
+                (dir_path.clone(), false)
             }
             _ => {
                 return NfsResop4::Open(NfsStat4::Notsupp, None);
             }
         };
 
-        let dir_attr = self.fs.getattr(dir_id).await.unwrap_or_default();
-        let new_fh = self.state.file_id_to_fh(file_id).await;
+        let dir_attr = self.attr_for_path(&dir_path).await.unwrap_or_default();
+        let new_fh = path_to_fh(&path);
 
         let stateid = self
             .state
             .create_open_state(
-                file_id,
+                synthetic_fileid(&path),
                 args.owner.clientid,
                 args.share_access,
                 args.share_deny,
@@ -729,31 +704,45 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn op_read(&self, args: &ReadArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
-        let file_id = match self.resolve_fh(current_fh).await {
-            Ok(id) => id,
+        let path = match self.resolve_fh(current_fh) {
+            Ok(path) => path,
             Err(status) => return NfsResop4::Read(status, None),
         };
 
-        match self.fs.read(file_id, args.offset, args.count).await {
-            Ok((data, eof)) => NfsResop4::Read(NfsStat4::Ok, Some(ReadRes4 { eof, data })),
+        let metadata = match self.fs.metadata(&path).await {
+            Ok(metadata) => metadata,
+            Err(e) => return NfsResop4::Read(e.to_nfsstat4(), None),
+        };
+
+        match metadata.file_type {
+            FileType::Directory => return NfsResop4::Read(NfsStat4::Isdir, None),
+            FileType::Symlink => return NfsResop4::Read(NfsStat4::Symlink, None),
+            _ => {}
+        }
+
+        match self.fs.read(&path, args.offset, args.count).await {
+            Ok(data) => {
+                let eof = args.offset.saturating_add(data.len() as u64) >= metadata.size;
+                NfsResop4::Read(NfsStat4::Ok, Some(ReadRes4 { eof, data }))
+            }
             Err(e) => NfsResop4::Read(e.to_nfsstat4(), None),
         }
     }
 
     async fn op_readdir(&self, args: &ReaddirArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
-        let dir_id = match self.resolve_fh(current_fh).await {
-            Ok(id) => id,
+        let dir_path = match self.resolve_fh(current_fh) {
+            Ok(path) => path,
             Err(status) => return NfsResop4::Readdir(status, None),
         };
 
-        let dir_attr = match self.fs.getattr(dir_id).await {
+        let dir_attr = match self.attr_for_path(&dir_path).await {
             Ok(attr) => attr,
             Err(e) => return NfsResop4::Readdir(e.to_nfsstat4(), None),
         };
         let cookieverf = dir_attr.change_id.to_be_bytes();
 
         debug!(
-            "READDIR request: dir_id={dir_id}, cookie={}, cookieverf={:02x?}, dircount={}, maxcount={}, attr_request={:?}",
+            "READDIR request: path={dir_path}, cookie={}, cookieverf={:02x?}, dircount={}, maxcount={}, attr_request={:?}",
             args.cookie,
             args.cookieverf,
             args.dircount,
@@ -763,7 +752,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
         if args.cookie != 0 && args.cookieverf != cookieverf {
             debug!(
-                "READDIR verifier mismatch: dir_id={dir_id}, cookie={}, request={:02x?}, current={:02x?}",
+                "READDIR verifier mismatch: path={dir_path}, cookie={}, request={:02x?}, current={:02x?}",
                 args.cookie,
                 args.cookieverf,
                 cookieverf
@@ -771,7 +760,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
             return NfsResop4::Readdir(NfsStat4::NotSame, None);
         }
 
-        match self.fs.readdir(dir_id).await {
+        match self.fs.list(&dir_path).await {
             Ok(entries) => {
                 // READDIR cookies 0, 1, and 2 are reserved by RFC 8881.
                 // Apple clients also reserve 1 and 2 for fabricated "." and "..".
@@ -791,7 +780,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 let base_resok_len = readdir_resok_len(&[], false);
                 if base_resok_len > maxcount_limit {
                     debug!(
-                        "READDIR maxcount too small for reply header: dir_id={dir_id}, maxcount={}, header_bytes={base_resok_len}",
+                        "READDIR maxcount too small for reply header: path={dir_path}, maxcount={}, header_bytes={base_resok_len}",
                         args.maxcount
                     );
                     return NfsResop4::Readdir(NfsStat4::Toosmall, None);
@@ -802,12 +791,21 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 let mut total_resok_bytes = base_resok_len;
 
                 for (i, entry) in available.iter().enumerate() {
-                    let entry_fh = self.state.file_id_to_fh(entry.fileid).await;
+                    let entry_path = match join_path(&dir_path, &entry.name) {
+                        Ok(path) => path,
+                        Err(_) => continue,
+                    };
+                    let entry_fh = path_to_fh(&entry_path);
+                    let entry_attr = attrs::synthesize_file_attr(
+                        &entry_path,
+                        &entry.metadata,
+                        &self.fs.capabilities(),
+                    );
                     let entry_fattr = attrs::encode_fattr4(
-                        &entry.attr,
+                        &entry_attr,
                         &args.attr_request,
                         &entry_fh,
-                        &self.fs.fs_info(),
+                        &self.fs.capabilities().fs_info,
                     );
                     let result_entry = Entry4 {
                         cookie: (cookie_start + i + 3) as u64,
@@ -825,7 +823,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
                     if result_entries.is_empty() && exceeds_maxcount {
                         debug!(
-                            "READDIR maxcount too small for a single entry: dir_id={dir_id}, name={}, maxcount={}, entry_bytes={entry_total}, base_bytes={base_resok_len}",
+                            "READDIR maxcount too small for a single entry: path={dir_path}, name={}, maxcount={}, entry_bytes={entry_total}, base_bytes={base_resok_len}",
                             result_entry.name,
                             args.maxcount
                         );
@@ -840,7 +838,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 let eof = result_entries.len() == available.len();
 
                 debug!(
-                    "READDIR response: dir_id={dir_id}, cookie={}, entries={}, eof={}, dir_bytes={}, resok_bytes={}, cookieverf={:02x?}",
+                    "READDIR response: path={dir_path}, cookie={}, entries={}, eof={}, dir_bytes={}, resok_bytes={}, cookieverf={:02x?}",
                     args.cookie,
                     result_entries.len(),
                     eof,
@@ -850,14 +848,14 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 );
                 for entry in &result_entries {
                     debug!(
-                        "READDIR entry: dir_id={dir_id}, cookie={}, name={:?}, returned={:?}, attr_bytes={}",
+                        "READDIR entry: path={dir_path}, cookie={}, name={:?}, returned={:?}, attr_bytes={}",
                         entry.cookie,
                         entry.name,
                         entry.attrs.attrmask.0,
                         entry.attrs.attr_vals.len()
                     );
                     trace!(
-                        "READDIR entry payload: dir_id={dir_id}, cookie={}, name={:?}, attr_hex={}",
+                        "READDIR entry payload: path={dir_path}, cookie={}, name={:?}, attr_hex={}",
                         entry.cookie,
                         entry.name,
                         hex_bytes(&entry.attrs.attr_vals)
@@ -878,35 +876,36 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn op_readlink(&self, current_fh: &Option<NfsFh4>) -> NfsResop4 {
-        let file_id = match self.resolve_fh(current_fh).await {
-            Ok(id) => id,
+        let path = match self.resolve_fh(current_fh) {
+            Ok(path) => path,
             Err(status) => return NfsResop4::Readlink(status, None),
         };
 
-        match self.fs.readlink(file_id).await {
+        match self.fs.read_symlink(&path).await {
             Ok(target) => NfsResop4::Readlink(NfsStat4::Ok, Some(target)),
             Err(e) => NfsResop4::Readlink(e.to_nfsstat4(), None),
         }
     }
 
     async fn op_remove(&self, args: &RemoveArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
-        let dir_id = match self.resolve_fh(current_fh).await {
-            Ok(id) => id,
+        let dir_path = match self.resolve_fh(current_fh) {
+            Ok(path) => path,
             Err(status) => return NfsResop4::Remove(status, None),
         };
 
-        let dir_attr_before = match self.fs.getattr(dir_id).await {
+        let dir_attr_before = match self.attr_for_path(&dir_path).await {
             Ok(a) => a,
             Err(e) => return NfsResop4::Remove(e.to_nfsstat4(), None),
         };
 
-        match self.fs.remove(dir_id, &args.target).await {
+        let target_path = match join_path(&dir_path, &args.target) {
+            Ok(path) => path,
+            Err(status) => return NfsResop4::Remove(status, None),
+        };
+
+        match self.fs.remove(&target_path, None).await {
             Ok(()) => {
-                let dir_attr_after = self
-                    .fs
-                    .getattr(dir_id)
-                    .await
-                    .unwrap_or(dir_attr_before.clone());
+                let dir_attr_after = self.attr_for_path(&dir_path).await.unwrap_or(dir_attr_before.clone());
                 let cinfo = ChangeInfo4 {
                     atomic: true,
                     before: dir_attr_before.change_id,
@@ -925,40 +924,37 @@ impl<F: NfsFileSystem> NfsServer<F> {
         saved_fh: &Option<NfsFh4>,
     ) -> NfsResop4 {
         // Saved FH = source dir, Current FH = target dir
-        let src_dir_id = match self.resolve_fh(saved_fh).await {
-            Ok(id) => id,
+        let src_dir_path = match self.resolve_fh(saved_fh) {
+            Ok(path) => path,
             Err(status) => return NfsResop4::Rename(status, None, None),
         };
-        let tgt_dir_id = match self.resolve_fh(current_fh).await {
-            Ok(id) => id,
+        let tgt_dir_path = match self.resolve_fh(current_fh) {
+            Ok(path) => path,
             Err(status) => return NfsResop4::Rename(status, None, None),
         };
 
-        let src_attr_before = match self.fs.getattr(src_dir_id).await {
+        let src_attr_before = match self.attr_for_path(&src_dir_path).await {
             Ok(a) => a,
             Err(e) => return NfsResop4::Rename(e.to_nfsstat4(), None, None),
         };
-        let tgt_attr_before = match self.fs.getattr(tgt_dir_id).await {
+        let tgt_attr_before = match self.attr_for_path(&tgt_dir_path).await {
             Ok(a) => a,
             Err(e) => return NfsResop4::Rename(e.to_nfsstat4(), None, None),
         };
 
-        match self
-            .fs
-            .rename(src_dir_id, &args.oldname, tgt_dir_id, &args.newname)
-            .await
-        {
+        let from_path = match join_path(&src_dir_path, &args.oldname) {
+            Ok(path) => path,
+            Err(status) => return NfsResop4::Rename(status, None, None),
+        };
+        let to_path = match join_path(&tgt_dir_path, &args.newname) {
+            Ok(path) => path,
+            Err(status) => return NfsResop4::Rename(status, None, None),
+        };
+
+        match self.fs.rename(&from_path, &to_path, None).await {
             Ok(()) => {
-                let src_attr_after = self
-                    .fs
-                    .getattr(src_dir_id)
-                    .await
-                    .unwrap_or(src_attr_before.clone());
-                let tgt_attr_after = self
-                    .fs
-                    .getattr(tgt_dir_id)
-                    .await
-                    .unwrap_or(tgt_attr_before.clone());
+                let src_attr_after = self.attr_for_path(&src_dir_path).await.unwrap_or(src_attr_before.clone());
+                let tgt_attr_after = self.attr_for_path(&tgt_dir_path).await.unwrap_or(tgt_attr_before.clone());
                 let src_cinfo = ChangeInfo4 {
                     atomic: true,
                     before: src_attr_before.change_id,
@@ -976,26 +972,44 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn op_setattr(&self, args: &SetattrArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
-        let file_id = match self.resolve_fh(current_fh).await {
-            Ok(id) => id,
+        let path = match self.resolve_fh(current_fh) {
+            Ok(path) => path,
             Err(status) => return NfsResop4::Setattr(status, Bitmap4::new()),
         };
 
         let set_attrs = attrs::decode_setattr(&args.obj_attributes);
+        let mut applied = Bitmap4::new();
 
-        match self.fs.setattr(file_id, set_attrs).await {
-            Ok(_) => NfsResop4::Setattr(NfsStat4::Ok, args.obj_attributes.attrmask.clone()),
-            Err(e) => NfsResop4::Setattr(e.to_nfsstat4(), Bitmap4::new()),
+        if let Some(size) = set_attrs.size {
+            match self.fs.set_len(&path, size).await {
+                Ok(()) => applied.set(FATTR4_SIZE),
+                Err(FsError::Notsupp) | Err(FsError::AttrNotsupp) => {
+                    return NfsResop4::Setattr(NfsStat4::AttrNotsupp, Bitmap4::new());
+                }
+                Err(e) => return NfsResop4::Setattr(e.to_nfsstat4(), Bitmap4::new()),
+            }
         }
+
+        if set_attrs.mode.is_some()
+            || set_attrs.uid.is_some()
+            || set_attrs.gid.is_some()
+            || set_attrs.atime.is_some()
+            || set_attrs.mtime.is_some()
+            || set_attrs.crtime.is_some()
+        {
+            return NfsResop4::Setattr(NfsStat4::AttrNotsupp, applied);
+        }
+
+        NfsResop4::Setattr(NfsStat4::Ok, applied)
     }
 
     async fn op_write(&self, args: &WriteArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
-        let file_id = match self.resolve_fh(current_fh).await {
-            Ok(id) => id,
+        let path = match self.resolve_fh(current_fh) {
+            Ok(path) => path,
             Err(status) => return NfsResop4::Write(status, None),
         };
 
-        match self.fs.write(file_id, args.offset, &args.data).await {
+        match self.fs.write_file(&path, args.offset, &args.data).await {
             Ok(count) => NfsResop4::Write(
                 NfsStat4::Ok,
                 Some(WriteRes4 {
@@ -1009,8 +1023,8 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn op_lock(&self, args: &LockArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
-        let _file_id = match self.resolve_fh(current_fh).await {
-            Ok(id) => id,
+        let _path = match self.resolve_fh(current_fh) {
+            Ok(path) => path,
             Err(status) => return NfsResop4::Lock(status, None, None),
         };
 
@@ -1034,7 +1048,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
     async fn op_lockt(&self, _args: &LocktArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
         // Test if a lock would conflict - we don't track conflicts, always say OK
-        match self.resolve_fh(current_fh).await {
+        match self.resolve_fh(current_fh) {
             Ok(_) => NfsResop4::Lockt(NfsStat4::Ok, None),
             Err(status) => NfsResop4::Lockt(status, None),
         }
@@ -1066,21 +1080,21 @@ impl<F: NfsFileSystem> NfsServer<F> {
             }
         };
 
-        let file_id = match self.resolve_fh(current_fh).await {
-            Ok(id) => id,
+        let path = match self.resolve_fh(current_fh) {
+            Ok(path) => path,
             Err(status) => return make_res(status),
         };
 
         let fh = current_fh.as_ref().unwrap();
 
-        let attr = match self.fs.getattr(file_id).await {
+        let attr = match self.attr_for_path(&path).await {
             Ok(a) => a,
             Err(e) => return make_res(e.to_nfsstat4()),
         };
 
         // Encode the server's current attrs using the same bitmap the client sent
-        let server_fattr =
-            attrs::encode_fattr4(&attr, &client_fattr.attrmask, fh, &self.fs.fs_info());
+        let caps = self.fs.capabilities();
+        let server_fattr = attrs::encode_fattr4(&attr, &client_fattr.attrmask, fh, &caps.fs_info);
 
         // Compare: same bitmap, same values?
         let attrs_match = server_fattr.attrmask == client_fattr.attrmask
@@ -1139,6 +1153,52 @@ fn readdir_entry_list_item_len(entry: &Entry4) -> usize {
 
 fn readdir_resok_len(entries: &[Entry4], _eof: bool) -> usize {
     8 + entries.iter().map(readdir_entry_list_item_len).sum::<usize>() + 4 + 4
+}
+
+fn path_to_fh(path: &str) -> NfsFh4 {
+    NfsFh4(path.as_bytes().to_vec())
+}
+
+fn fh_to_path(fh: &NfsFh4) -> Option<String> {
+    let path = String::from_utf8(fh.0.clone()).ok()?;
+    if !path.starts_with('/') {
+        return None;
+    }
+    Some(path)
+}
+
+fn parent_path(path: &str) -> String {
+    if path == "/" {
+        return "/".into();
+    }
+    let trimmed = path.trim_end_matches('/');
+    match trimmed.rsplit_once('/') {
+        Some(("", _)) | None => "/".into(),
+        Some((parent, _)) => parent.to_string(),
+    }
+}
+
+fn join_path(dir: &str, name: &str) -> Result<String, NfsStat4> {
+    if name.is_empty() || name.contains('/') || name == "." || name == ".." {
+        return Err(NfsStat4::Inval);
+    }
+    if dir == "/" {
+        Ok(format!("/{name}"))
+    } else {
+        Ok(format!("{dir}/{name}"))
+    }
+}
+
+fn synthetic_fileid(path: &str) -> u64 {
+    if path == "/" {
+        return 1;
+    }
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in path.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    if hash == 0 { 1 } else { hash }
 }
 
 fn allows_compound_without_sequence(op: &NfsArgop4) -> bool {
