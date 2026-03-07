@@ -4,7 +4,9 @@
 /// a reference implementation of the [`FileSystem`] trait.
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::fs;
 use tokio::sync::RwLock;
 
 use crate::fs::*;
@@ -171,13 +173,13 @@ impl FileSystem for MemFs {
 
     async fn metadata(&self, path: &str) -> FsResult<Metadata> {
         let id = self.resolve_path(path).await?;
-        let attr = <Self as NfsFileSystem>::getattr(self, id).await?;
+        let attr = self.getattr_id(id).await?;
         Ok(Self::metadata_from_attr(&attr))
     }
 
     async fn list(&self, path: &str) -> FsResult<Vec<PathDirEntry>> {
         let dir_id = self.resolve_path(path).await?;
-        let entries = <Self as NfsFileSystem>::readdir(self, dir_id).await?;
+        let entries = self.readdir_id(dir_id).await?;
         Ok(entries
             .into_iter()
             .map(|entry| PathDirEntry {
@@ -189,14 +191,14 @@ impl FileSystem for MemFs {
 
     async fn read(&self, path: &str, offset: u64, count: u32) -> FsResult<Vec<u8>> {
         let id = self.resolve_path(path).await?;
-        let (data, _eof) = <Self as NfsFileSystem>::read(self, id, offset, count).await?;
+        let (data, _eof) = self.read_id(id, offset, count).await?;
         Ok(data)
     }
 
     async fn create_file(&self, path: &str) -> FsResult<()> {
         let (parent, name) = Self::split_parent(path)?;
         let parent_id = self.resolve_path(&parent).await?;
-        <Self as NfsFileSystem>::create(self, parent_id, &name, &SetFileAttr::default())
+        self.create_in_dir(parent_id, &name, &SetFileAttr::default())
             .await
             .map(|_| ())
     }
@@ -204,7 +206,7 @@ impl FileSystem for MemFs {
     async fn create_dir(&self, path: &str) -> FsResult<()> {
         let (parent, name) = Self::split_parent(path)?;
         let parent_id = self.resolve_path(&parent).await?;
-        <Self as NfsFileSystem>::mkdir(self, parent_id, &name, &SetFileAttr::default())
+        self.mkdir_in_dir(parent_id, &name, &SetFileAttr::default())
             .await
             .map(|_| ())
     }
@@ -212,26 +214,20 @@ impl FileSystem for MemFs {
     async fn create_symlink(&self, path: &str, target: &str) -> FsResult<()> {
         let (parent, name) = Self::split_parent(path)?;
         let parent_id = self.resolve_path(&parent).await?;
-        <Self as NfsFileSystem>::symlink(
-            self,
-            parent_id,
-            &name,
-            target,
-            &SetFileAttr::default(),
-        )
-        .await
-        .map(|_| ())
+        self.symlink_in_dir(parent_id, &name, target, &SetFileAttr::default())
+            .await
+            .map(|_| ())
     }
 
     async fn read_symlink(&self, path: &str) -> FsResult<String> {
         let id = self.resolve_path(path).await?;
-        <Self as NfsFileSystem>::readlink(self, id).await
+        self.readlink_id(id).await
     }
 
     async fn remove(&self, path: &str, _expected_revision: Option<&str>) -> FsResult<()> {
         let (parent, name) = Self::split_parent(path)?;
         let parent_id = self.resolve_path(&parent).await?;
-        <Self as NfsFileSystem>::remove(self, parent_id, &name).await
+        self.remove_from_dir(parent_id, &name).await
     }
 
     async fn rename(
@@ -244,22 +240,17 @@ impl FileSystem for MemFs {
         let (to_parent, to_name) = Self::split_parent(to)?;
         let from_parent_id = self.resolve_path(&from_parent).await?;
         let to_parent_id = self.resolve_path(&to_parent).await?;
-        <Self as NfsFileSystem>::rename(
-            self,
-            from_parent_id,
-            &from_name,
-            to_parent_id,
-            &to_name,
-        )
-        .await
+        self.rename_in_dirs(from_parent_id, &from_name, to_parent_id, &to_name)
+            .await
     }
 
     async fn replace_file(
         &self,
         path: &str,
-        data: &[u8],
+        local_path: &Path,
         _expected_revision: Option<&str>,
     ) -> FsResult<()> {
+        let data = fs::read(local_path).await.map_err(|_| FsError::Io)?;
         let id = match self.resolve_path(path).await {
             Ok(id) => id,
             Err(NfsError::Noent) => {
@@ -269,8 +260,7 @@ impl FileSystem for MemFs {
             Err(err) => return Err(err),
         };
 
-        <Self as NfsFileSystem>::setattr(
-            self,
+        self.setattr_id(
             id,
             SetFileAttr {
                 size: Some(0),
@@ -279,20 +269,19 @@ impl FileSystem for MemFs {
         )
         .await?;
         if !data.is_empty() {
-            <Self as NfsFileSystem>::write(self, id, 0, data).await?;
+            self.write_id(id, 0, &data).await?;
         }
         Ok(())
     }
 
     async fn write_file(&self, path: &str, offset: u64, data: &[u8]) -> FsResult<u32> {
         let id = self.resolve_path(path).await?;
-        <Self as NfsFileSystem>::write(self, id, offset, data).await
+        self.write_id(id, offset, data).await
     }
 
     async fn set_len(&self, path: &str, size: u64) -> FsResult<()> {
         let id = self.resolve_path(path).await?;
-        <Self as NfsFileSystem>::setattr(
-            self,
+        self.setattr_id(
             id,
             SetFileAttr {
                 size: Some(size),
@@ -305,13 +294,12 @@ impl FileSystem for MemFs {
 
     async fn sync(&self, path: &str) -> FsResult<()> {
         let id = self.resolve_path(path).await?;
-        <Self as NfsFileSystem>::commit(self, id).await
+        self.commit_id(id).await
     }
 }
 
-#[async_trait]
-impl NfsFileSystem for MemFs {
-    async fn getattr(&self, id: FileId) -> NfsResult<FileAttr> {
+impl MemFs {
+    async fn getattr_id(&self, id: FileId) -> NfsResult<FileAttr> {
         let inner = self.inner.read().await;
         inner
             .inodes
@@ -320,17 +308,17 @@ impl NfsFileSystem for MemFs {
             .ok_or(NfsError::Stale)
     }
 
-    async fn setattr(&self, id: FileId, attrs: SetFileAttr) -> NfsResult<FileAttr> {
+    async fn setattr_id(&self, id: FileId, attrs: SetFileAttr) -> NfsResult<FileAttr> {
         let mut inner = self.inner.write().await;
         let inode = inner.inodes.get_mut(&id).ok_or(NfsError::Stale)?;
         let (now_s, now_ns) = Self::now();
 
-        if let Some(size) = attrs.size {
-            if let InodeData::File(ref mut data) = inode.data {
-                data.resize(size as usize, 0);
-                inode.attr.size = size;
-                inode.attr.used = size;
-            }
+        if let Some(size) = attrs.size
+            && let InodeData::File(ref mut data) = inode.data
+        {
+            data.resize(size as usize, 0);
+            inode.attr.size = size;
+            inode.attr.used = size;
         }
         if let Some(mode) = attrs.mode {
             inode.attr.mode = mode;
@@ -385,34 +373,7 @@ impl NfsFileSystem for MemFs {
         Ok(inode.attr.clone())
     }
 
-    async fn lookup(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
-        let inner = self.inner.read().await;
-        let inode = inner.inodes.get(&dir_id).ok_or(NfsError::Stale)?;
-        match &inode.data {
-            InodeData::Directory(entries) => entries.get(name).copied().ok_or(NfsError::Noent),
-            _ => Err(NfsError::Notdir),
-        }
-    }
-
-    async fn lookup_parent(&self, id: FileId) -> NfsResult<FileId> {
-        if id == 1 {
-            return Ok(1); // Root is its own parent
-        }
-        let inner = self.inner.read().await;
-        // Search all directories for this id
-        for (dir_id, inode) in &inner.inodes {
-            if let InodeData::Directory(entries) = &inode.data {
-                for (_, child_id) in entries {
-                    if *child_id == id {
-                        return Ok(*dir_id);
-                    }
-                }
-            }
-        }
-        Err(NfsError::Noent)
-    }
-
-    async fn readdir(&self, dir_id: FileId) -> NfsResult<Vec<DirEntry>> {
+    async fn readdir_id(&self, dir_id: FileId) -> NfsResult<Vec<DirEntry>> {
         let inner = self.inner.read().await;
         let inode = inner.inodes.get(&dir_id).ok_or(NfsError::Stale)?;
         match &inode.data {
@@ -435,7 +396,7 @@ impl NfsFileSystem for MemFs {
         }
     }
 
-    async fn read(&self, id: FileId, offset: u64, count: u32) -> NfsResult<(Vec<u8>, bool)> {
+    async fn read_id(&self, id: FileId, offset: u64, count: u32) -> NfsResult<(Vec<u8>, bool)> {
         let inner = self.inner.read().await;
         let inode = inner.inodes.get(&id).ok_or(NfsError::Stale)?;
         match &inode.data {
@@ -453,7 +414,7 @@ impl NfsFileSystem for MemFs {
         }
     }
 
-    async fn write(&self, id: FileId, offset: u64, data: &[u8]) -> NfsResult<u32> {
+    async fn write_id(&self, id: FileId, offset: u64, data: &[u8]) -> NfsResult<u32> {
         let mut inner = self.inner.write().await;
         let inode = inner.inodes.get_mut(&id).ok_or(NfsError::Stale)?;
         match &mut inode.data {
@@ -478,7 +439,12 @@ impl NfsFileSystem for MemFs {
         }
     }
 
-    async fn create(&self, dir_id: FileId, name: &str, attrs: &SetFileAttr) -> NfsResult<FileId> {
+    async fn create_in_dir(
+        &self,
+        dir_id: FileId,
+        name: &str,
+        attrs: &SetFileAttr,
+    ) -> NfsResult<FileId> {
         let new_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (now_s, now_ns) = Self::now();
         let mode = attrs.mode.unwrap_or(0o644);
@@ -542,7 +508,12 @@ impl NfsFileSystem for MemFs {
         Ok(new_id)
     }
 
-    async fn mkdir(&self, dir_id: FileId, name: &str, attrs: &SetFileAttr) -> NfsResult<FileId> {
+    async fn mkdir_in_dir(
+        &self,
+        dir_id: FileId,
+        name: &str,
+        attrs: &SetFileAttr,
+    ) -> NfsResult<FileId> {
         let new_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (now_s, now_ns) = Self::now();
         let mode = attrs.mode.unwrap_or(0o755);
@@ -602,7 +573,7 @@ impl NfsFileSystem for MemFs {
         Ok(new_id)
     }
 
-    async fn symlink(
+    async fn symlink_in_dir(
         &self,
         dir_id: FileId,
         name: &str,
@@ -663,7 +634,7 @@ impl NfsFileSystem for MemFs {
         Ok(new_id)
     }
 
-    async fn readlink(&self, id: FileId) -> NfsResult<String> {
+    async fn readlink_id(&self, id: FileId) -> NfsResult<String> {
         let inner = self.inner.read().await;
         let inode = inner.inodes.get(&id).ok_or(NfsError::Stale)?;
         match &inode.data {
@@ -672,7 +643,7 @@ impl NfsFileSystem for MemFs {
         }
     }
 
-    async fn remove(&self, dir_id: FileId, name: &str) -> NfsResult<()> {
+    async fn remove_from_dir(&self, dir_id: FileId, name: &str) -> NfsResult<()> {
         let mut inner = self.inner.write().await;
 
         let child_id = {
@@ -684,12 +655,11 @@ impl NfsFileSystem for MemFs {
         };
 
         // Check if child is a non-empty directory
-        if let Some(child) = inner.inodes.get(&child_id) {
-            if let InodeData::Directory(entries) = &child.data {
-                if !entries.is_empty() {
-                    return Err(NfsError::Notempty);
-                }
-            }
+        if let Some(child) = inner.inodes.get(&child_id)
+            && let InodeData::Directory(entries) = &child.data
+            && !entries.is_empty()
+        {
+            return Err(NfsError::Notempty);
         }
 
         // Remove from parent
@@ -708,7 +678,7 @@ impl NfsFileSystem for MemFs {
         Ok(())
     }
 
-    async fn rename(
+    async fn rename_in_dirs(
         &self,
         from_dir: FileId,
         from_name: &str,
@@ -738,10 +708,10 @@ impl NfsFileSystem for MemFs {
         // If target exists, remove it
         {
             let tgt_dir = inner.inodes.get(&to_dir).ok_or(NfsError::Stale)?;
-            if let InodeData::Directory(entries) = &tgt_dir.data {
-                if let Some(&old_id) = entries.get(to_name) {
-                    inner.inodes.remove(&old_id);
-                }
+            if let InodeData::Directory(entries) = &tgt_dir.data
+                && let Some(&old_id) = entries.get(to_name)
+            {
+                inner.inodes.remove(&old_id);
             }
         }
 
@@ -757,36 +727,7 @@ impl NfsFileSystem for MemFs {
         Ok(())
     }
 
-    async fn link(&self, id: FileId, dir_id: FileId, name: &str) -> NfsResult<()> {
-        let mut inner = self.inner.write().await;
-
-        // Verify source exists
-        let inode = inner.inodes.get(&id).ok_or(NfsError::Stale)?;
-        if inode.attr.file_type == FileType::Directory {
-            return Err(NfsError::Isdir); // Can't hard link directories
-        }
-
-        // Add to target directory
-        let dir = inner.inodes.get_mut(&dir_id).ok_or(NfsError::Stale)?;
-        match &mut dir.data {
-            InodeData::Directory(entries) => {
-                if entries.contains_key(name) {
-                    return Err(NfsError::Exist);
-                }
-                entries.insert(name.to_string(), id);
-                dir.attr.change_id = self.next_change();
-            }
-            _ => return Err(NfsError::Notdir),
-        }
-
-        // Increment link count
-        let inode = inner.inodes.get_mut(&id).ok_or(NfsError::Stale)?;
-        inode.attr.nlink += 1;
-
-        Ok(())
-    }
-
-    async fn commit(&self, _id: FileId) -> NfsResult<()> {
+    async fn commit_id(&self, _id: FileId) -> NfsResult<()> {
         Ok(()) // In-memory; always committed
     }
 }
@@ -804,54 +745,42 @@ mod tests {
     #[tokio::test]
     async fn test_create_and_read() {
         let fs = MemFs::new();
-        let id = fs
-            .create(1, "test.txt", &SetFileAttr::default())
-            .await
-            .unwrap();
-        let written = fs.write(id, 0, b"hello world").await.unwrap();
+        fs.create_file("/test.txt").await.unwrap();
+        let written = fs.write_file("/test.txt", 0, b"hello world").await.unwrap();
         assert_eq!(written, 11);
-        let (data, eof) = NfsFileSystem::read(&fs, id, 0, 1024).await.unwrap();
+        let data = FileSystem::read(&fs, "/test.txt", 0, 1024).await.unwrap();
         assert_eq!(data, b"hello world");
-        assert!(eof);
     }
 
     #[tokio::test]
     async fn test_mkdir_and_readdir() {
         let fs = MemFs::new();
-        let dir_id = fs
-            .mkdir(1, "subdir", &SetFileAttr::default())
-            .await
-            .unwrap();
-        let entries = fs.readdir(1).await.unwrap();
+        fs.create_dir("/subdir").await.unwrap();
+        let entries = fs.list("/").await.unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "subdir");
-        assert_eq!(entries[0].fileid, dir_id);
+        assert_eq!(entries[0].metadata.file_type, FileType::Directory);
     }
 
     #[tokio::test]
     async fn test_remove() {
         let fs = MemFs::new();
-        let _id = fs
-            .create(1, "to_delete.txt", &SetFileAttr::default())
+        fs.create_file("/to_delete.txt").await.unwrap();
+        FileSystem::remove(&fs, "/to_delete.txt", None)
             .await
             .unwrap();
-        NfsFileSystem::remove(&fs, 1, "to_delete.txt")
-            .await
-            .unwrap();
-        assert!(fs.lookup(1, "to_delete.txt").await.is_err());
+        assert!(fs.metadata("/to_delete.txt").await.is_err());
     }
 
     #[tokio::test]
     async fn test_rename() {
         let fs = MemFs::new();
-        fs.create(1, "old.txt", &SetFileAttr::default())
+        fs.create_file("/old.txt").await.unwrap();
+        FileSystem::rename(&fs, "/old.txt", "/new.txt", None)
             .await
             .unwrap();
-        NfsFileSystem::rename(&fs, 1, "old.txt", 1, "new.txt")
-            .await
-            .unwrap();
-        assert!(fs.lookup(1, "old.txt").await.is_err());
-        assert!(fs.lookup(1, "new.txt").await.is_ok());
+        assert!(fs.metadata("/old.txt").await.is_err());
+        assert!(fs.metadata("/new.txt").await.is_ok());
     }
 
     #[tokio::test]
@@ -882,11 +811,18 @@ mod tests {
         let fs = MemFs::new();
         fs.create_file("/replace.txt").await.unwrap();
         fs.write_file("/replace.txt", 0, b"stale data").await.unwrap();
-        fs.replace_file("/replace.txt", b"fresh", None).await.unwrap();
+
+        let local_path = std::env::temp_dir().join("embednfs-replace-test.txt");
+        fs::write(&local_path, b"fresh").await.unwrap();
+        fs.replace_file("/replace.txt", &local_path, None)
+            .await
+            .unwrap();
 
         let data = FileSystem::read(&fs, "/replace.txt", 0, 64)
             .await
             .unwrap();
         assert_eq!(data, b"fresh");
+
+        let _ = std::fs::remove_file(local_path);
     }
 }

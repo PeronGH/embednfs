@@ -460,3 +460,9 @@ impl StateManager {
         })
     }
 }
+
+impl Default for StateManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}

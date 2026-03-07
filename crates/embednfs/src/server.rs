@@ -3,9 +3,15 @@ use bytes::{Bytes, BytesMut};
 ///
 /// This is the core of the NFS server. It receives COMPOUND requests,
 /// dispatches each operation, and builds the COMPOUND response.
+use std::collections::HashMap;
+use std::io::SeekFrom;
+use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::fs::{self, OpenOptions};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
 use tracing::{debug, info, trace, warn};
 
 use embednfs_proto::xdr::*;
@@ -19,6 +25,15 @@ use crate::session::StateManager;
 pub struct NfsServer<F: FileSystem> {
     fs: Arc<F>,
     state: Arc<StateManager>,
+    staging: Arc<Mutex<HashMap<String, StagedFile>>>,
+    next_stage_id: AtomicU64,
+    stage_root: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct StagedFile {
+    local_path: PathBuf,
+    dirty: bool,
 }
 
 impl<F: FileSystem> NfsServer<F> {
@@ -27,6 +42,9 @@ impl<F: FileSystem> NfsServer<F> {
         NfsServer {
             fs: Arc::new(fs),
             state: Arc::new(StateManager::new()),
+            staging: Arc::new(Mutex::new(HashMap::new())),
+            next_stage_id: AtomicU64::new(1),
+            stage_root: std::env::temp_dir().join("embednfs-staging"),
         }
     }
 
@@ -200,30 +218,30 @@ impl<F: FileSystem> NfsServer<F> {
             None => None,
         };
 
-        if let Some(first_op) = first_op {
-            if !starts_with_sequence {
-                if allows_compound_without_sequence(first_op) {
-                    if total_ops != 1 {
-                        let res = error_res_for_op(first_op, NfsStat4::NotOnlyOp);
-                        return Compound4Res {
-                            status: NfsStat4::NotOnlyOp,
-                            tag: args.tag,
-                            resarray: vec![res],
-                        };
-                    }
-                } else {
-                    let status = if matches!(first_op, NfsArgop4::Illegal) {
-                        NfsStat4::OpIllegal
-                    } else {
-                        NfsStat4::OpNotInSession
-                    };
-                    let res = error_res_for_op(first_op, status);
+        if let Some(first_op) = first_op
+            && !starts_with_sequence
+        {
+            if allows_compound_without_sequence(first_op) {
+                if total_ops != 1 {
+                    let res = error_res_for_op(first_op, NfsStat4::NotOnlyOp);
                     return Compound4Res {
-                        status,
+                        status: NfsStat4::NotOnlyOp,
                         tag: args.tag,
                         resarray: vec![res],
                     };
                 }
+            } else {
+                let status = if matches!(first_op, NfsArgop4::Illegal) {
+                    NfsStat4::OpIllegal
+                } else {
+                    NfsStat4::OpNotInSession
+                };
+                let res = error_res_for_op(first_op, status);
+                return Compound4Res {
+                    status,
+                    tag: args.tag,
+                    resarray: vec![res],
+                };
             }
         }
 
@@ -248,24 +266,23 @@ impl<F: FileSystem> NfsServer<F> {
                     break;
                 }
 
-                if let NfsArgop4::DestroySession(args) = &op {
-                    if leading_sequence_sessionid == Some(args.sessionid) && idx + 1 != total_ops {
-                        let res = NfsResop4::DestroySession(NfsStat4::NotOnlyOp);
-                        resarray.push(res);
-                        overall_status = NfsStat4::NotOnlyOp;
-                        break;
-                    }
+                if let NfsArgop4::DestroySession(args) = &op
+                    && leading_sequence_sessionid == Some(args.sessionid) && idx + 1 != total_ops
+                {
+                    let res = NfsResop4::DestroySession(NfsStat4::NotOnlyOp);
+                    resarray.push(res);
+                    overall_status = NfsStat4::NotOnlyOp;
+                    break;
                 }
 
                 if let (Some(clientid), NfsArgop4::DestroyClientid(args)) =
                     (leading_sequence_clientid, &op)
+                    && args.clientid == clientid
                 {
-                    if args.clientid == clientid {
-                        let res = NfsResop4::DestroyClientid(NfsStat4::ClientidBusy);
-                        resarray.push(res);
-                        overall_status = NfsStat4::ClientidBusy;
-                        break;
-                    }
+                    let res = NfsResop4::DestroyClientid(NfsStat4::ClientidBusy);
+                    resarray.push(res);
+                    overall_status = NfsStat4::ClientidBusy;
+                    break;
                 }
 
                 if let NfsArgop4::MustNotImplement(opcode) = &op {
@@ -456,6 +473,141 @@ impl<F: FileSystem> NfsServer<F> {
         ))
     }
 
+    async fn stage_entry(&self, path: &str) -> Option<StagedFile> {
+        self.staging.lock().await.get(path).cloned()
+    }
+
+    async fn ensure_stage(&self, path: &str, hydrate: bool) -> Result<PathBuf, FsError> {
+        if let Some(entry) = self.stage_entry(path).await {
+            return Ok(entry.local_path);
+        }
+
+        fs::create_dir_all(&self.stage_root)
+            .await
+            .map_err(|_| FsError::Io)?;
+        let stage_id = self.next_stage_id.fetch_add(1, Ordering::Relaxed);
+        let local_path = self.stage_root.join(format!("{stage_id}.stage"));
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&local_path)
+            .await
+            .map_err(|_| FsError::Io)?;
+
+        if hydrate {
+            let chunk = self.fs.capabilities().fs_info.max_read.max(8192);
+            let mut offset = 0u64;
+            loop {
+                let data = self.fs.read(path, offset, chunk).await?;
+                if data.is_empty() {
+                    break;
+                }
+                file.write_all(&data).await.map_err(|_| FsError::Io)?;
+                offset = offset.saturating_add(data.len() as u64);
+                if data.len() < chunk as usize {
+                    break;
+                }
+            }
+            file.flush().await.map_err(|_| FsError::Io)?;
+        }
+
+        self.staging.lock().await.insert(
+            path.to_string(),
+            StagedFile {
+                local_path: local_path.clone(),
+                dirty: false,
+            },
+        );
+        Ok(local_path)
+    }
+
+    async fn read_from_stage(&self, path: &str, offset: u64, count: u32) -> Result<Vec<u8>, FsError> {
+        let entry = self.stage_entry(path).await.ok_or(FsError::Stale)?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .open(&entry.local_path)
+            .await
+            .map_err(|_| FsError::Io)?;
+        file.seek(SeekFrom::Start(offset))
+            .await
+            .map_err(|_| FsError::Io)?;
+        let mut buf = vec![0u8; count as usize];
+        let read = file.read(&mut buf).await.map_err(|_| FsError::Io)?;
+        buf.truncate(read);
+        Ok(buf)
+    }
+
+    async fn stage_len(&self, path: &str) -> Option<u64> {
+        let entry = self.stage_entry(path).await?;
+        let metadata = fs::metadata(&entry.local_path).await.ok()?;
+        Some(metadata.len())
+    }
+
+    async fn mark_stage_dirty(&self, path: &str, dirty: bool) -> Result<(), FsError> {
+        let mut staging = self.staging.lock().await;
+        let entry = staging.get_mut(path).ok_or(FsError::Stale)?;
+        entry.dirty = dirty;
+        Ok(())
+    }
+
+    async fn stage_write(&self, path: &str, offset: u64, data: &[u8]) -> Result<u32, FsError> {
+        let local_path = self.ensure_stage(path, true).await?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&local_path)
+            .await
+            .map_err(|_| FsError::Io)?;
+        file.seek(SeekFrom::Start(offset))
+            .await
+            .map_err(|_| FsError::Io)?;
+        file.write_all(data).await.map_err(|_| FsError::Io)?;
+        file.flush().await.map_err(|_| FsError::Io)?;
+        self.mark_stage_dirty(path, true).await?;
+        Ok(data.len() as u32)
+    }
+
+    async fn stage_set_len(&self, path: &str, size: u64) -> Result<(), FsError> {
+        let local_path = self.ensure_stage(path, size != 0).await?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&local_path)
+            .await
+            .map_err(|_| FsError::Io)?;
+        file.set_len(size).await.map_err(|_| FsError::Io)?;
+        self.mark_stage_dirty(path, true).await
+    }
+
+    async fn commit_stage(&self, path: &str) -> Result<bool, FsError> {
+        let entry = match self.stage_entry(path).await {
+            Some(entry) => entry,
+            None => return Ok(false),
+        };
+        if !entry.dirty {
+            return Ok(false);
+        }
+        self.fs.replace_file(path, &entry.local_path, None).await?;
+        self.mark_stage_dirty(path, false).await?;
+        Ok(true)
+    }
+
+    async fn drop_stage(&self, path: &str) {
+        let entry = self.staging.lock().await.remove(path);
+        if let Some(entry) = entry {
+            let _ = fs::remove_file(entry.local_path).await;
+        }
+    }
+
+    async fn rename_stage(&self, from: &str, to: &str) {
+        let mut staging = self.staging.lock().await;
+        if let Some(entry) = staging.remove(from) {
+            staging.insert(to.to_string(), entry);
+        }
+    }
+
     async fn op_access(&self, args: &AccessArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
         let path = match self.resolve_fh(current_fh) {
             Ok(path) => path,
@@ -482,7 +634,13 @@ impl<F: FileSystem> NfsServer<F> {
         }
     }
 
-    async fn op_close(&self, args: &CloseArgs4, _current_fh: &Option<NfsFh4>) -> NfsResop4 {
+    async fn op_close(&self, args: &CloseArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
+        if self.fs.capabilities().write_capability == WriteCapability::ReplaceOnly
+            && let Ok(path) = self.resolve_fh(current_fh)
+            && let Err(e) = self.commit_stage(&path).await
+        {
+            return NfsResop4::Close(e.to_nfsstat4(), Stateid4::default());
+        }
         match self.state.close_state(&args.open_stateid).await {
             Ok(stateid) => NfsResop4::Close(NfsStat4::Ok, stateid),
             Err(status) => NfsResop4::Close(status, Stateid4::default()),
@@ -495,7 +653,13 @@ impl<F: FileSystem> NfsServer<F> {
             Err(status) => return NfsResop4::Commit(status, [0u8; 8]),
         };
 
-        match self.fs.sync(&path).await {
+        let result = if self.fs.capabilities().write_capability == WriteCapability::ReplaceOnly {
+            self.commit_stage(&path).await.map(|_| ())
+        } else {
+            self.fs.sync(&path).await
+        };
+
+        match result {
             Ok(()) => NfsResop4::Commit(NfsStat4::Ok, self.state.write_verifier),
             Err(e) => NfsResop4::Commit(e.to_nfsstat4(), [0u8; 8]),
         }
@@ -720,9 +884,17 @@ impl<F: FileSystem> NfsServer<F> {
             _ => {}
         }
 
-        match self.fs.read(&path, args.offset, args.count).await {
+        let stage_len = self.stage_len(&path).await;
+        let read_result = if stage_len.is_some() {
+            self.read_from_stage(&path, args.offset, args.count).await
+        } else {
+            self.fs.read(&path, args.offset, args.count).await
+        };
+
+        match read_result {
             Ok(data) => {
-                let eof = args.offset.saturating_add(data.len() as u64) >= metadata.size;
+                let total_size = stage_len.unwrap_or(metadata.size);
+                let eof = args.offset.saturating_add(data.len() as u64) >= total_size;
                 NfsResop4::Read(NfsStat4::Ok, Some(ReadRes4 { eof, data }))
             }
             Err(e) => NfsResop4::Read(e.to_nfsstat4(), None),
@@ -905,6 +1077,7 @@ impl<F: FileSystem> NfsServer<F> {
 
         match self.fs.remove(&target_path, None).await {
             Ok(()) => {
+                self.drop_stage(&target_path).await;
                 let dir_attr_after = self.attr_for_path(&dir_path).await.unwrap_or(dir_attr_before.clone());
                 let cinfo = ChangeInfo4 {
                     atomic: true,
@@ -953,6 +1126,7 @@ impl<F: FileSystem> NfsServer<F> {
 
         match self.fs.rename(&from_path, &to_path, None).await {
             Ok(()) => {
+                self.rename_stage(&from_path, &to_path).await;
                 let src_attr_after = self.attr_for_path(&src_dir_path).await.unwrap_or(src_attr_before.clone());
                 let tgt_attr_after = self.attr_for_path(&tgt_dir_path).await.unwrap_or(tgt_attr_before.clone());
                 let src_cinfo = ChangeInfo4 {
@@ -981,7 +1155,12 @@ impl<F: FileSystem> NfsServer<F> {
         let mut applied = Bitmap4::new();
 
         if let Some(size) = set_attrs.size {
-            match self.fs.set_len(&path, size).await {
+            let result = if self.fs.capabilities().write_capability == WriteCapability::ReplaceOnly {
+                self.stage_set_len(&path, size).await
+            } else {
+                self.fs.set_len(&path, size).await
+            };
+            match result {
                 Ok(()) => applied.set(FATTR4_SIZE),
                 Err(FsError::Notsupp) | Err(FsError::AttrNotsupp) => {
                     return NfsResop4::Setattr(NfsStat4::AttrNotsupp, Bitmap4::new());
@@ -1009,15 +1188,44 @@ impl<F: FileSystem> NfsServer<F> {
             Err(status) => return NfsResop4::Write(status, None),
         };
 
-        match self.fs.write_file(&path, args.offset, &args.data).await {
-            Ok(count) => NfsResop4::Write(
-                NfsStat4::Ok,
-                Some(WriteRes4 {
-                    count,
-                    committed: FILE_SYNC4,
-                    writeverf: self.state.write_verifier,
-                }),
-            ),
+        let capability = self.fs.capabilities().write_capability;
+        let write_result = if capability.supports_random_write() {
+            self.fs.write_file(&path, args.offset, &args.data).await
+        } else if capability.supports_replace() {
+            self.stage_write(&path, args.offset, &args.data).await
+        } else {
+            Err(FsError::Notsupp)
+        };
+
+        match write_result {
+            Ok(count) => {
+                let committed = if capability.supports_replace() && !capability.supports_random_write() {
+                    if args.stable == UNSTABLE4 {
+                        UNSTABLE4
+                    } else {
+                        match self.commit_stage(&path).await {
+                            Ok(_) => FILE_SYNC4,
+                            Err(e) => return NfsResop4::Write(e.to_nfsstat4(), None),
+                        }
+                    }
+                } else {
+                    if args.stable != UNSTABLE4
+                        && let Err(e) = self.fs.sync(&path).await
+                    {
+                        return NfsResop4::Write(e.to_nfsstat4(), None);
+                    }
+                    FILE_SYNC4
+                };
+
+                NfsResop4::Write(
+                    NfsStat4::Ok,
+                    Some(WriteRes4 {
+                        count,
+                        committed,
+                        writeverf: self.state.write_verifier,
+                    }),
+                )
+            }
             Err(e) => NfsResop4::Write(e.to_nfsstat4(), None),
         }
     }

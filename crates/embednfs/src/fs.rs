@@ -345,7 +345,7 @@ pub trait FileSystem: Send + Sync + 'static {
     async fn replace_file(
         &self,
         _path: &str,
-        _data: &[u8],
+        _local_path: &std::path::Path,
         _expected_revision: Option<&str>,
     ) -> FsResult<()> {
         Err(FsError::Notsupp)
@@ -364,81 +364,6 @@ pub trait FileSystem: Send + Sync + 'static {
     /// Flush file contents to stable storage when supported.
     async fn sync(&self, _path: &str) -> FsResult<()> {
         Ok(())
-    }
-}
-
-/// The filesystem trait. Implement this to serve files over NFS.
-///
-/// All methods receive the file identifier as a `FileId` (u64). The server
-/// library manages the mapping between NFS file handles and FileIds.
-///
-/// The root directory always has FileId 1.
-#[allow(dead_code)]
-#[async_trait]
-pub(crate) trait NfsFileSystem: Send + Sync + 'static {
-    /// Get file attributes by file ID.
-    async fn getattr(&self, id: FileId) -> NfsResult<FileAttr>;
-
-    /// Set file attributes.
-    async fn setattr(&self, id: FileId, attrs: SetFileAttr) -> NfsResult<FileAttr>;
-
-    /// Look up a child entry by name in a directory.
-    async fn lookup(&self, dir_id: FileId, name: &str) -> NfsResult<FileId>;
-
-    /// Look up the parent of a directory.
-    async fn lookup_parent(&self, id: FileId) -> NfsResult<FileId>;
-
-    /// Read actual directory entries.
-    ///
-    /// Do not synthesize `"."` or `".."`; the server handles cookie and reply
-    /// formatting for the entries returned here.
-    async fn readdir(&self, dir_id: FileId) -> NfsResult<Vec<DirEntry>>;
-
-    /// Read file data.
-    async fn read(&self, id: FileId, offset: u64, count: u32) -> NfsResult<(Vec<u8>, bool)>;
-
-    /// Write file data. Returns bytes written.
-    async fn write(&self, id: FileId, offset: u64, data: &[u8]) -> NfsResult<u32>;
-
-    /// Create a regular file. Returns the new file ID.
-    async fn create(&self, dir_id: FileId, name: &str, attrs: &SetFileAttr) -> NfsResult<FileId>;
-
-    /// Create a directory. Returns the new directory ID.
-    async fn mkdir(&self, dir_id: FileId, name: &str, attrs: &SetFileAttr) -> NfsResult<FileId>;
-
-    /// Create a symbolic link. Returns the new symlink ID.
-    async fn symlink(
-        &self,
-        dir_id: FileId,
-        name: &str,
-        target: &str,
-        attrs: &SetFileAttr,
-    ) -> NfsResult<FileId>;
-
-    /// Read a symbolic link target.
-    async fn readlink(&self, id: FileId) -> NfsResult<String>;
-
-    /// Remove a file or empty directory.
-    async fn remove(&self, dir_id: FileId, name: &str) -> NfsResult<()>;
-
-    /// Rename/move an entry.
-    async fn rename(
-        &self,
-        from_dir: FileId,
-        from_name: &str,
-        to_dir: FileId,
-        to_name: &str,
-    ) -> NfsResult<()>;
-
-    /// Create a hard link.
-    async fn link(&self, id: FileId, dir_id: FileId, name: &str) -> NfsResult<()>;
-
-    /// Commit buffered data to stable storage.
-    async fn commit(&self, id: FileId) -> NfsResult<()>;
-
-    /// Filesystem info.
-    fn fs_info(&self) -> FsInfo {
-        FsInfo::default()
     }
 }
 

@@ -204,7 +204,9 @@ fn parse_op_header(resp: &mut Bytes) -> (u32, u32) {
     (opnum, status)
 }
 
-fn parse_readdir_body(resp: &mut Bytes) -> (usize, [u8; 8], Vec<(u64, String, Fattr4)>, bool) {
+type ParsedReaddirBody = (usize, [u8; 8], Vec<(u64, String, Fattr4)>, bool);
+
+fn parse_readdir_body(resp: &mut Bytes) -> ParsedReaddirBody {
     let body_len_before = resp.len();
     let cookieverf_data = decode_fixed_opaque(resp, 8).unwrap();
     let mut cookieverf = [0u8; 8];
