@@ -64,6 +64,9 @@ impl MemFs {
             change_id: 1,
             rdev_major: 0,
             rdev_minor: 0,
+            archive: false,
+            hidden: false,
+            system: false,
         };
 
         // No . or .. stored; they're synthesized by the server
@@ -292,6 +295,9 @@ impl NfsFileSystem for MemFs {
             change_id: self.next_change(),
             rdev_major: 0,
             rdev_minor: 0,
+            archive: false,
+            hidden: false,
+            system: false,
         };
 
         let mut inner = self.inner.write().await;
@@ -345,6 +351,9 @@ impl NfsFileSystem for MemFs {
             change_id: self.next_change(),
             rdev_major: 0,
             rdev_minor: 0,
+            archive: false,
+            hidden: false,
+            system: false,
         };
 
         let mut inner = self.inner.write().await;
@@ -398,6 +407,9 @@ impl NfsFileSystem for MemFs {
             change_id: self.next_change(),
             rdev_major: 0,
             rdev_minor: 0,
+            archive: false,
+            hidden: false,
+            system: false,
         };
 
         let mut inner = self.inner.write().await;

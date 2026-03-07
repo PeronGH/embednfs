@@ -48,6 +48,10 @@ pub struct FileAttr {
     /// Device numbers for block/char devices
     pub rdev_major: u32,
     pub rdev_minor: u32,
+    /// macOS flags: archive, hidden, system
+    pub archive: bool,
+    pub hidden: bool,
+    pub system: bool,
 }
 
 impl Default for FileAttr {
@@ -74,6 +78,9 @@ impl Default for FileAttr {
             change_id: 0,
             rdev_major: 0,
             rdev_minor: 0,
+            archive: false,
+            hidden: false,
+            system: false,
         }
     }
 }
