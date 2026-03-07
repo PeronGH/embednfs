@@ -350,14 +350,8 @@ impl<F: NfsFileSystem> NfsServer<F> {
             NfsArgop4::ReleaseLockowner => {
                 NfsResop4::ReleaseLockowner(NfsStat4::Ok)
             }
-            NfsArgop4::Verify(_attrs) => {
-                // For simplicity, always say "same" (NFS4_OK means attrs match)
-                NfsResop4::Verify(NfsStat4::Ok)
-            }
-            NfsArgop4::Nverify(_attrs) => {
-                // For simplicity, always say "not same" (NFS4_OK means attrs differ)
-                NfsResop4::Nverify(NfsStat4::Ok)
-            }
+            NfsArgop4::Verify(vattr) => self.op_verify(&vattr, current_fh, false).await,
+            NfsArgop4::Nverify(vattr) => self.op_verify(&vattr, current_fh, true).await,
             NfsArgop4::OpenDowngrade(args) => {
                 // Accept the downgrade, return the stateid
                 let mut stateid = args.open_stateid;
@@ -886,6 +880,44 @@ impl<F: NfsFileSystem> NfsServer<F> {
         match self.state.unlock_state(&args.lock_stateid).await {
             Ok(sid) => NfsResop4::Locku(NfsStat4::Ok, Some(sid)),
             Err(status) => NfsResop4::Locku(status, None),
+        }
+    }
+
+    /// Handle VERIFY (negate=false) and NVERIFY (negate=true).
+    ///
+    /// VERIFY returns OK if the supplied attrs match the file's current attrs,
+    /// or NFS4ERR_NOT_SAME if they differ.
+    /// NVERIFY returns OK if attrs differ, NFS4ERR_SAME if they match.
+    async fn op_verify(&self, client_fattr: &Fattr4, current_fh: &Option<NfsFh4>, negate: bool) -> NfsResop4 {
+        let make_res = |s: NfsStat4| {
+            if negate { NfsResop4::Nverify(s) } else { NfsResop4::Verify(s) }
+        };
+
+        let file_id = match self.resolve_fh(current_fh).await {
+            Ok(id) => id,
+            Err(status) => return make_res(status),
+        };
+
+        let fh = current_fh.as_ref().unwrap();
+
+        let attr = match self.fs.getattr(file_id).await {
+            Ok(a) => a,
+            Err(e) => return make_res(e.to_nfsstat4()),
+        };
+
+        // Encode the server's current attrs using the same bitmap the client sent
+        let server_fattr = attrs::encode_fattr4(&attr, &client_fattr.attrmask, fh, &self.fs.fs_info());
+
+        // Compare: same bitmap, same values?
+        let attrs_match = server_fattr.attrmask == client_fattr.attrmask
+            && server_fattr.attr_vals == client_fattr.attr_vals;
+
+        if negate {
+            // NVERIFY: OK if different, SAME if match
+            if attrs_match { make_res(NfsStat4::Same) } else { make_res(NfsStat4::Ok) }
+        } else {
+            // VERIFY: OK if match, NOT_SAME if different
+            if attrs_match { make_res(NfsStat4::Ok) } else { make_res(NfsStat4::NotSame) }
         }
     }
 }
