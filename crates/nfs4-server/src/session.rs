@@ -55,9 +55,11 @@ struct SlotState {
 
 #[derive(Debug)]
 struct OpenFileState {
+    #[allow(dead_code)]
     file_id: FileId,
     #[allow(dead_code)]
     clientid: Clientid4,
+    #[allow(dead_code)]
     stateid_seq: u32,
     #[allow(dead_code)]
     share_access: u32,

@@ -556,7 +556,7 @@ mod tests {
     #[tokio::test]
     async fn test_remove() {
         let fs = MemFs::new();
-        let id = fs.create(1, "to_delete.txt", &SetFileAttr::default()).await.unwrap();
+        let _id = fs.create(1, "to_delete.txt", &SetFileAttr::default()).await.unwrap();
         fs.remove(1, "to_delete.txt").await.unwrap();
         assert!(fs.lookup(1, "to_delete.txt").await.is_err());
     }
