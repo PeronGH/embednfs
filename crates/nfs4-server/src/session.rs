@@ -3,6 +3,7 @@
 /// Manages client IDs, sessions, slot tables, open state, and file handle mappings.
 
 use nfs4_proto::*;
+use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -20,6 +21,10 @@ struct LockFileState {
 /// Manages all server-side state.
 pub struct StateManager {
     inner: Arc<RwLock<StateInner>>,
+    /// Lock-free file handle mappings (hot path).
+    fh_to_id: DashMap<Vec<u8>, FileId>,
+    id_to_fh: DashMap<FileId, Vec<u8>>,
+    next_fh: AtomicU64,
     next_clientid: AtomicU64,
     next_stateid: AtomicU32,
     /// Server boot verifier (changes each restart).
@@ -30,11 +35,6 @@ pub struct StateManager {
 struct StateInner {
     clients: HashMap<Clientid4, ClientState>,
     sessions: HashMap<Sessionid4, SessionState>,
-    /// Maps file handle bytes to FileId.
-    fh_to_id: HashMap<Vec<u8>, FileId>,
-    /// Maps FileId to file handle bytes.
-    id_to_fh: HashMap<FileId, Vec<u8>>,
-    next_fh: u64,
     /// Open file state: stateid -> OpenFileState
     open_files: HashMap<[u8; 12], OpenFileState>,
     /// Lock state: stateid.other -> LockFileState
@@ -94,12 +94,12 @@ impl StateManager {
             inner: Arc::new(RwLock::new(StateInner {
                 clients: HashMap::new(),
                 sessions: HashMap::new(),
-                fh_to_id: HashMap::new(),
-                id_to_fh: HashMap::new(),
-                next_fh: 1,
                 open_files: HashMap::new(),
                 lock_files: HashMap::new(),
             })),
+            fh_to_id: DashMap::new(),
+            id_to_fh: DashMap::new(),
+            next_fh: AtomicU64::new(1),
             next_clientid: AtomicU64::new(1),
             next_stateid: AtomicU32::new(1),
             write_verifier,
@@ -108,24 +108,22 @@ impl StateManager {
     }
 
     /// Get or create a file handle for a FileId.
+    /// Uses lock-free DashMap — no await contention on hot path.
     pub async fn file_id_to_fh(&self, id: FileId) -> NfsFh4 {
-        let mut inner = self.inner.write().await;
-        if let Some(fh) = inner.id_to_fh.get(&id) {
-            return NfsFh4(fh.clone());
+        if let Some(fh) = self.id_to_fh.get(&id) {
+            return NfsFh4(fh.value().clone());
         }
-        let fh_num = inner.next_fh;
-        inner.next_fh += 1;
-        let mut fh = Vec::with_capacity(8);
-        fh.extend_from_slice(&fh_num.to_be_bytes());
-        inner.fh_to_id.insert(fh.clone(), id);
-        inner.id_to_fh.insert(id, fh.clone());
+        let fh_num = self.next_fh.fetch_add(1, Ordering::Relaxed);
+        let fh = fh_num.to_be_bytes().to_vec();
+        self.fh_to_id.insert(fh.clone(), id);
+        self.id_to_fh.insert(id, fh.clone());
         NfsFh4(fh)
     }
 
     /// Resolve a file handle to a FileId.
+    /// Uses lock-free DashMap — no await contention on hot path.
     pub async fn fh_to_file_id(&self, fh: &NfsFh4) -> Option<FileId> {
-        let inner = self.inner.read().await;
-        inner.fh_to_id.get(&fh.0).copied()
+        self.fh_to_id.get(&fh.0).map(|r| *r.value())
     }
 
     /// Handle EXCHANGE_ID.

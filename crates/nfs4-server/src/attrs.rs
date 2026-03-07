@@ -372,13 +372,22 @@ pub fn decode_setattr(fattr: &Fattr4) -> SetFileAttr {
     }
 
     if fattr.attrmask.is_set(FATTR4_OWNER) {
-        // Skip owner string - we use uid
-        let _ = String::decode(&mut src);
+        if let Ok(owner_str) = String::decode(&mut src) {
+            // Parse numeric uid or "uid@domain" format
+            let uid_str = owner_str.split('@').next().unwrap_or(&owner_str);
+            if let Ok(uid) = uid_str.parse::<u32>() {
+                result.uid = Some(uid);
+            }
+        }
     }
 
     if fattr.attrmask.is_set(FATTR4_OWNER_GROUP) {
-        // Skip owner_group string - we use gid
-        let _ = String::decode(&mut src);
+        if let Ok(group_str) = String::decode(&mut src) {
+            let gid_str = group_str.split('@').next().unwrap_or(&group_str);
+            if let Ok(gid) = gid_str.parse::<u32>() {
+                result.gid = Some(gid);
+            }
+        }
     }
 
     if fattr.attrmask.is_set(FATTR4_TIME_ACCESS_SET) {
