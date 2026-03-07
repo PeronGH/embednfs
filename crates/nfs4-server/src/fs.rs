@@ -102,6 +102,8 @@ pub struct SetFileAttr {
     pub gid: Option<u32>,
     pub atime: Option<SetTime>,
     pub mtime: Option<SetTime>,
+    /// Birth/creation time (macOS sends this).
+    pub crtime: Option<SetTime>,
 }
 
 /// NFS error type.
