@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 use bytes::{Bytes, BytesMut};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{info, warn, debug};
 
@@ -56,12 +56,17 @@ impl<F: NfsFileSystem> NfsServer<F> {
         }
     }
 
-    async fn handle_connection(self: &Arc<Self>, mut stream: TcpStream) -> std::io::Result<()> {
+    async fn handle_connection(self: &Arc<Self>, stream: TcpStream) -> std::io::Result<()> {
+        let (mut reader, writer) = stream.into_split();
+        let mut writer = BufWriter::with_capacity(65536, writer);
+        // Reusable read buffer to avoid per-request allocation
+        let mut read_buf = vec![0u8; 65536];
+
         loop {
             // Read RPC-over-TCP record marking: 4-byte header
             // Bit 31 = last fragment, bits 0-30 = length
             let mut header = [0u8; 4];
-            match stream.read_exact(&mut header).await {
+            match reader.read_exact(&mut header).await {
                 Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
                 Err(e) => return Err(e),
@@ -75,20 +80,23 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 return Ok(());
             }
 
-            let mut data = vec![0u8; frag_len];
-            stream.read_exact(&mut data).await?;
+            // Grow read buffer if needed (amortized, never shrinks)
+            if read_buf.len() < frag_len {
+                read_buf.resize(frag_len, 0);
+            }
+            reader.read_exact(&mut read_buf[..frag_len]).await?;
 
-            let response = self.process_rpc_message(&data).await;
+            let response = self.process_rpc_message(&read_buf[..frag_len]).await;
 
-            // Write response with record marking
-            let resp_len = response.len() as u32 | 0x80000000;
-            stream.write_all(&resp_len.to_be_bytes()).await?;
-            stream.write_all(&response).await?;
-            stream.flush().await?;
+            // Write response with record marking header + response in one flush
+            let resp_len = (response.len() as u32) | 0x80000000;
+            writer.write_all(&resp_len.to_be_bytes()).await?;
+            writer.write_all(&response).await?;
+            writer.flush().await?;
         }
     }
 
-    async fn process_rpc_message(&self, data: &[u8]) -> Vec<u8> {
+    async fn process_rpc_message(&self, data: &[u8]) -> Bytes {
         let mut src = Bytes::copy_from_slice(data);
 
         // Parse RPC call header
@@ -96,28 +104,29 @@ impl<F: NfsFileSystem> NfsServer<F> {
             Ok(c) => c,
             Err(e) => {
                 warn!("Failed to decode RPC header: {e}");
-                return Vec::new();
+                return Bytes::new();
             }
         };
 
-        let mut response = BytesMut::with_capacity(4096);
+        // Pre-size response: RPC header ~28 bytes + typical response
+        let mut response = BytesMut::with_capacity(8192);
 
         // Check RPC version
         if call.rpcvers != RPC_VERSION {
             encode_rpc_reply_prog_mismatch(&mut response, call.xid, RPC_VERSION, RPC_VERSION);
-            return response.to_vec();
+            return response.freeze();
         }
 
         // Check NFS program
         if call.prog != NFS_PROGRAM {
             encode_rpc_reply_prog_mismatch(&mut response, call.xid, NFS_PROGRAM, NFS_PROGRAM);
-            return response.to_vec();
+            return response.freeze();
         }
 
         // Check NFS version
         if call.vers != NFS_V4 {
             encode_rpc_reply_prog_mismatch(&mut response, call.xid, NFS_V4, NFS_V4);
-            return response.to_vec();
+            return response.freeze();
         }
 
         match call.proc_num {
@@ -150,7 +159,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
             }
         }
 
-        response.to_vec()
+        response.freeze()
     }
 
     async fn handle_compound(&self, args: Compound4Args) -> Compound4Res {
@@ -565,6 +574,14 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 // Current FH is the file
                 (dir_id, false)
             }
+            OpenClaim4::Previous(_) => {
+                // Reclaim open: just accept the current FH as the file
+                (dir_id, false)
+            }
+            OpenClaim4::DelegCurFh(_) | OpenClaim4::DelegPrevFh => {
+                // Delegation claims on current FH
+                (dir_id, false)
+            }
             _ => {
                 return NfsResop4::Open(NfsStat4::Notsupp, None);
             }
@@ -618,8 +635,6 @@ impl<F: NfsFileSystem> NfsServer<F> {
             Ok(id) => id,
             Err(status) => return NfsResop4::Readdir(status, None),
         };
-
-        let _dir_fh = current_fh.as_ref().unwrap().clone();
 
         match self.fs.readdir(dir_id).await {
             Ok(entries) => {
