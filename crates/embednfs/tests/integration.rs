@@ -9,10 +9,14 @@ use tokio::net::TcpStream;
 
 use embednfs_proto::xdr::*;
 use embednfs_proto::*;
-use embednfs::{MemFs, NfsServer};
+use embednfs::fs::SetFileAttr;
+use embednfs::{MemFs, NfsFileSystem, NfsServer};
 
 async fn start_server() -> u16 {
-    let fs = MemFs::new();
+    start_server_with_fs(MemFs::new()).await
+}
+
+async fn start_server_with_fs(fs: MemFs) -> u16 {
     let server = NfsServer::new(fs);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -137,17 +141,35 @@ fn encode_getattr(bits: &[u32]) -> Vec<u8> {
 }
 
 fn encode_readdir() -> Vec<u8> {
+    encode_readdir_custom(0, [0u8; 8], 8192, 32768, &[FATTR4_FILEID, FATTR4_TYPE])
+}
+
+fn encode_readdir_custom(
+    cookie: u64,
+    cookieverf: [u8; 8],
+    dircount: u32,
+    maxcount: u32,
+    bits: &[u32],
+) -> Vec<u8> {
     let mut buf = BytesMut::new();
     OP_READDIR.encode(&mut buf);
-    0u64.encode(&mut buf); // cookie
-    buf.put_slice(&[0u8; 8]); // cookieverf
-    8192u32.encode(&mut buf); // dircount
-    32768u32.encode(&mut buf); // maxcount
+    cookie.encode(&mut buf);
+    buf.put_slice(&cookieverf);
+    dircount.encode(&mut buf);
+    maxcount.encode(&mut buf);
 
     let mut bitmap = Bitmap4::new();
-    bitmap.set(FATTR4_FILEID);
-    bitmap.set(FATTR4_TYPE);
+    for bit in bits {
+        bitmap.set(*bit);
+    }
     bitmap.encode(&mut buf);
+    buf.to_vec()
+}
+
+fn encode_remove(name: &str) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_REMOVE.encode(&mut buf);
+    name.to_string().encode(&mut buf);
     buf.to_vec()
 }
 
@@ -181,6 +203,24 @@ fn parse_op_header(resp: &mut Bytes) -> (u32, u32) {
     let opnum = u32::decode(resp).unwrap();
     let status = u32::decode(resp).unwrap();
     (opnum, status)
+}
+
+fn parse_readdir_body(resp: &mut Bytes) -> (usize, [u8; 8], Vec<(u64, String, Fattr4)>, bool) {
+    let body_len_before = resp.len();
+    let cookieverf_data = decode_fixed_opaque(resp, 8).unwrap();
+    let mut cookieverf = [0u8; 8];
+    cookieverf.copy_from_slice(&cookieverf_data);
+
+    let mut entries = Vec::new();
+    while bool::decode(resp).unwrap() {
+        let cookie = u64::decode(resp).unwrap();
+        let name = String::decode(resp).unwrap();
+        let attrs = Fattr4::decode(resp).unwrap();
+        entries.push((cookie, name, attrs));
+    }
+    let eof = bool::decode(resp).unwrap();
+
+    (body_len_before - resp.len(), cookieverf, entries, eof)
 }
 
 fn skip_exchange_id_res(resp: &mut Bytes) -> (u64, u32) {
@@ -234,6 +274,68 @@ async fn setup_session(stream: &mut TcpStream) -> [u8; 16] {
     let mut sessionid = [0u8; 16];
     sessionid.copy_from_slice(&session_data);
     sessionid
+}
+
+async fn populated_fs(names: &[&str]) -> MemFs {
+    let fs = MemFs::new();
+    for name in names {
+        fs.create(1, name, &SetFileAttr::default()).await.unwrap();
+    }
+    fs
+}
+
+fn apple_readdirplus_bits() -> Vec<u32> {
+    vec![
+        FATTR4_SUPPORTED_ATTRS,
+        FATTR4_TYPE,
+        FATTR4_FH_EXPIRE_TYPE,
+        FATTR4_CHANGE,
+        FATTR4_SIZE,
+        FATTR4_LINK_SUPPORT,
+        FATTR4_SYMLINK_SUPPORT,
+        FATTR4_NAMED_ATTR,
+        FATTR4_FSID,
+        FATTR4_UNIQUE_HANDLES,
+        FATTR4_LEASE_TIME,
+        FATTR4_RDATTR_ERROR,
+        FATTR4_FILEHANDLE,
+        FATTR4_ACLSUPPORT,
+        FATTR4_ARCHIVE,
+        FATTR4_CANSETTIME,
+        FATTR4_CASE_INSENSITIVE,
+        FATTR4_CASE_PRESERVING,
+        FATTR4_CHOWN_RESTRICTED,
+        FATTR4_FILEID,
+        FATTR4_FILES_AVAIL,
+        FATTR4_FILES_FREE,
+        FATTR4_FILES_TOTAL,
+        FATTR4_HIDDEN,
+        FATTR4_HOMOGENEOUS,
+        FATTR4_MAXFILESIZE,
+        FATTR4_MAXLINK,
+        FATTR4_MAXNAME,
+        FATTR4_MAXREAD,
+        FATTR4_MAXWRITE,
+        FATTR4_MODE,
+        FATTR4_NO_TRUNC,
+        FATTR4_NUMLINKS,
+        FATTR4_OWNER,
+        FATTR4_OWNER_GROUP,
+        FATTR4_RAWDEV,
+        FATTR4_SPACE_AVAIL,
+        FATTR4_SPACE_FREE,
+        FATTR4_SPACE_TOTAL,
+        FATTR4_SPACE_USED,
+        FATTR4_SYSTEM,
+        FATTR4_TIME_ACCESS,
+        FATTR4_TIME_BACKUP,
+        FATTR4_TIME_CREATE,
+        FATTR4_TIME_DELTA,
+        FATTR4_TIME_METADATA,
+        FATTR4_TIME_MODIFY,
+        FATTR4_MOUNTED_ON_FILEID,
+        FATTR4_SUPPATTR_EXCLCREAT,
+    ]
 }
 
 #[tokio::test]
@@ -428,4 +530,169 @@ async fn test_reclaim_complete() {
     let (status, _, num_results) = parse_compound_header(&mut resp);
     assert_eq!(status, NfsStat4::Ok as u32);
     assert_eq!(num_results, 2);
+}
+
+#[tokio::test]
+async fn test_readdir_reply_stays_within_maxcount_and_skips_dot_entries() {
+    let fs = populated_fs(&["alpha.txt", "beta.txt", "gamma.txt", "delta.txt"]).await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let bits = apple_readdirplus_bits();
+    let readdir_op = encode_readdir_custom(0, [0u8; 8], 512, 1536, &bits);
+    let mut resp = send_rpc(&mut stream, 3, 1, &encode_compound("readdir-bounds", &[&seq_op, &rootfh_op, &readdir_op])).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 3);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_SEQUENCE);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    skip_sequence_res(&mut resp);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_PUTROOTFH);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_READDIR);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let (body_len, _cookieverf, entries, _eof) = parse_readdir_body(&mut resp);
+    assert!(body_len <= 1536, "readdir body exceeded maxcount: {body_len}");
+    assert!(!entries.is_empty());
+    assert!(entries.iter().all(|(_, name, _)| name != "." && name != ".."));
+}
+
+#[tokio::test]
+async fn test_readdir_returns_toosmall_when_entry_cannot_fit() {
+    let fs = populated_fs(&["oversized.txt"]).await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let bits = apple_readdirplus_bits();
+    let readdir_op = encode_readdir_custom(0, [0u8; 8], 64, 64, &bits);
+    let mut resp = send_rpc(&mut stream, 3, 1, &encode_compound("readdir-toosmall", &[&seq_op, &rootfh_op, &readdir_op])).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Toosmall as u32);
+    assert_eq!(num_results, 3);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_SEQUENCE);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    skip_sequence_res(&mut resp);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_PUTROOTFH);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_READDIR);
+    assert_eq!(op_status, NfsStat4::Toosmall as u32);
+}
+
+#[tokio::test]
+async fn test_readdir_cookieverf_stable_for_unchanged_dir() {
+    let fs = populated_fs(&["alpha.txt", "beta.txt"]).await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let sessionid = setup_session(&mut stream).await;
+
+    let bits = apple_readdirplus_bits();
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let readdir_op = encode_readdir_custom(0, [0u8; 8], 2048, 4096, &bits);
+    let mut resp = send_rpc(&mut stream, 3, 1, &encode_compound("readdir-first", &[&seq_op, &rootfh_op, &readdir_op])).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (_, cookieverf, entries, _) = parse_readdir_body(&mut resp);
+    assert!(entries.len() >= 2);
+
+    let seq_op = encode_sequence(&sessionid, 2, 0);
+    let readdir_op = encode_readdir_custom(entries[0].0, cookieverf, 2048, 4096, &bits);
+    let mut resp = send_rpc(&mut stream, 4, 1, &encode_compound("readdir-cont", &[&seq_op, &rootfh_op, &readdir_op])).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (_, continued_verf, continued_entries, _) = parse_readdir_body(&mut resp);
+    assert_eq!(continued_verf, cookieverf);
+    assert!(!continued_entries.is_empty());
+}
+
+#[tokio::test]
+async fn test_readdir_cookieverf_rejects_stale_continuation_after_mutation() {
+    let fs = populated_fs(&["alpha.txt", "beta.txt", "gamma.txt"]).await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let sessionid = setup_session(&mut stream).await;
+
+    let bits = apple_readdirplus_bits();
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let readdir_op = encode_readdir_custom(0, [0u8; 8], 2048, 4096, &bits);
+    let mut resp = send_rpc(&mut stream, 3, 1, &encode_compound("readdir-before-mutate", &[&seq_op, &rootfh_op, &readdir_op])).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (_, cookieverf, entries, _) = parse_readdir_body(&mut resp);
+    assert!(entries.len() >= 2);
+
+    let seq_op = encode_sequence(&sessionid, 2, 0);
+    let remove_op = encode_remove("gamma.txt");
+    let mut resp = send_rpc(&mut stream, 4, 1, &encode_compound("mutate-dir", &[&seq_op, &rootfh_op, &remove_op])).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 3);
+
+    let seq_op = encode_sequence(&sessionid, 3, 0);
+    let readdir_op = encode_readdir_custom(entries[0].0, cookieverf, 2048, 4096, &bits);
+    let mut resp = send_rpc(&mut stream, 5, 1, &encode_compound("readdir-stale-verf", &[&seq_op, &rootfh_op, &readdir_op])).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::NotSame as u32);
+    assert_eq!(num_results, 3);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_SEQUENCE);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    skip_sequence_res(&mut resp);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_PUTROOTFH);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_READDIR);
+    assert_eq!(op_status, NfsStat4::NotSame as u32);
 }
