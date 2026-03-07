@@ -34,7 +34,13 @@ impl<F: NfsFileSystem> NfsServer<F> {
     /// Start listening on the given address.
     pub async fn listen(self, addr: &str) -> std::io::Result<()> {
         let listener = TcpListener::bind(addr).await?;
-        info!("NFSv4.1 server listening on {addr}");
+        self.serve(listener).await
+    }
+
+    /// Serve on an already-bound TCP listener. Returns the local address.
+    pub async fn serve(self, listener: TcpListener) -> std::io::Result<()> {
+        let local_addr = listener.local_addr()?;
+        info!("NFSv4.1 server listening on {local_addr}");
 
         let server = Arc::new(self);
 
@@ -148,52 +154,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn handle_compound(&self, args: Compound4Args) -> Compound4Res {
-        let op_names: Vec<&str> = args.argarray.iter().map(|op| match op {
-            NfsArgop4::Access(_) => "ACCESS",
-            NfsArgop4::Close(_) => "CLOSE",
-            NfsArgop4::Commit(_) => "COMMIT",
-            NfsArgop4::Create(_) => "CREATE",
-            NfsArgop4::Getattr(_) => "GETATTR",
-            NfsArgop4::Getfh => "GETFH",
-            NfsArgop4::Link(_) => "LINK",
-            NfsArgop4::Lookup(_) => "LOOKUP",
-            NfsArgop4::Lookupp => "LOOKUPP",
-            NfsArgop4::Open(_) => "OPEN",
-            NfsArgop4::OpenConfirm(_) => "OPEN_CONFIRM",
-            NfsArgop4::Putfh(_) => "PUTFH",
-            NfsArgop4::Putpubfh => "PUTPUBFH",
-            NfsArgop4::Putrootfh => "PUTROOTFH",
-            NfsArgop4::Read(_) => "READ",
-            NfsArgop4::Readdir(_) => "READDIR",
-            NfsArgop4::Readlink => "READLINK",
-            NfsArgop4::Remove(_) => "REMOVE",
-            NfsArgop4::Rename(_) => "RENAME",
-            NfsArgop4::Restorefh => "RESTOREFH",
-            NfsArgop4::Savefh => "SAVEFH",
-            NfsArgop4::Secinfo(_) => "SECINFO",
-            NfsArgop4::Setattr(_) => "SETATTR",
-            NfsArgop4::Write(_) => "WRITE",
-            NfsArgop4::ExchangeId(_) => "EXCHANGE_ID",
-            NfsArgop4::CreateSession(_) => "CREATE_SESSION",
-            NfsArgop4::DestroySession(_) => "DESTROY_SESSION",
-            NfsArgop4::Sequence(_) => "SEQUENCE",
-            NfsArgop4::ReclaimComplete(_) => "RECLAIM_COMPLETE",
-            NfsArgop4::DestroyClientid(_) => "DESTROY_CLIENTID",
-            NfsArgop4::BindConnToSession(_) => "BIND_CONN_TO_SESSION",
-            NfsArgop4::SecInfoNoName(_) => "SECINFO_NO_NAME",
-            NfsArgop4::FreeStateid(_) => "FREE_STATEID",
-            NfsArgop4::TestStateid(_) => "TEST_STATEID",
-            NfsArgop4::DelegReturn(_) => "DELEGRETURN",
-            NfsArgop4::SetClientId(_) => "SETCLIENTID",
-            NfsArgop4::SetClientIdConfirm(_) => "SETCLIENTID_CONFIRM",
-            NfsArgop4::Renew(_) => "RENEW",
-            NfsArgop4::ReleaseLockowner => "RELEASE_LOCKOWNER",
-            NfsArgop4::Verify(_) => "VERIFY",
-            NfsArgop4::Nverify(_) => "NVERIFY",
-            NfsArgop4::OpenDowngrade(_) => "OPEN_DOWNGRADE",
-            NfsArgop4::Illegal => "ILLEGAL",
-        }).collect();
-        debug!("COMPOUND: tag={:?}, minorversion={}, ops={:?}", args.tag, args.minorversion, op_names);
+        debug!("COMPOUND: tag={:?}, minorversion={}, ops={}", args.tag, args.minorversion, args.argarray.len());
 
         if args.minorversion > 1 {
             return Compound4Res {

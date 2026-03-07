@@ -1,4 +1,5 @@
-/// Integration tests that start the NFS server and test it using raw RPC.
+//! Integration tests that start the NFS server and test it using raw RPC.
+#![allow(dead_code)]
 
 use bytes::{BufMut, BytesMut, Bytes};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -7,20 +8,19 @@ use std::time::Duration;
 
 use nfs4_proto::*;
 use nfs4_proto::xdr::*;
-use nfs4_proto::rpc::*;
 use nfs4_server::{NfsServer, MemFs};
 
 async fn start_server() -> u16 {
-    let port = 12049 + (std::process::id() % 1000) as u16;
     let fs = MemFs::new();
     let server = NfsServer::new(fs);
-    let addr = format!("127.0.0.1:{port}");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
 
     tokio::spawn(async move {
-        server.listen(&addr).await.unwrap();
+        server.serve(listener).await.unwrap();
     });
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
     port
 }
 
