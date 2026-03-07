@@ -1,11 +1,10 @@
+use crate::fs::{FileAttr, FileType, FsInfo, SetFileAttr, SetTime};
 /// NFSv4.1 file attribute encoding and decoding.
 ///
 /// Handles the bitmap-driven attribute encoding used by GETATTR/SETATTR.
-
 use bytes::BytesMut;
-use nfs4_proto::*;
 use nfs4_proto::xdr::*;
-use crate::fs::{FileAttr, FileType, SetFileAttr, SetTime, FsInfo};
+use nfs4_proto::*;
 
 /// Encode file attributes according to the requested bitmap.
 pub fn encode_fattr4(attr: &FileAttr, request: &Bitmap4, fh: &NfsFh4, fs_info: &FsInfo) -> Fattr4 {
@@ -19,27 +18,54 @@ pub fn encode_fattr4(attr: &FileAttr, request: &Bitmap4, fh: &NfsFh4, fs_info: &
         result_bitmap.set(FATTR4_SUPPORTED_ATTRS);
         let mut supported = Bitmap4::new();
         for bit in &[
-            FATTR4_SUPPORTED_ATTRS, FATTR4_TYPE, FATTR4_FH_EXPIRE_TYPE,
-            FATTR4_CHANGE, FATTR4_SIZE, FATTR4_LINK_SUPPORT, FATTR4_SYMLINK_SUPPORT,
-            FATTR4_NAMED_ATTR, FATTR4_FSID, FATTR4_UNIQUE_HANDLES, FATTR4_LEASE_TIME,
-            FATTR4_RDATTR_ERROR, FATTR4_FILEHANDLE,
-            FATTR4_ACLSUPPORT, FATTR4_ARCHIVE, FATTR4_CANSETTIME,
-            FATTR4_CASE_INSENSITIVE, FATTR4_CASE_PRESERVING,
-            FATTR4_CHOWN_RESTRICTED, FATTR4_FILEID,
-            FATTR4_FILES_AVAIL, FATTR4_FILES_FREE, FATTR4_FILES_TOTAL,
-            FATTR4_HIDDEN, FATTR4_HOMOGENEOUS,
-            FATTR4_MAXFILESIZE, FATTR4_MAXLINK, FATTR4_MAXNAME,
-            FATTR4_MAXREAD, FATTR4_MAXWRITE,
-            FATTR4_MODE, FATTR4_NO_TRUNC, FATTR4_NUMLINKS,
-            FATTR4_OWNER, FATTR4_OWNER_GROUP,
+            FATTR4_SUPPORTED_ATTRS,
+            FATTR4_TYPE,
+            FATTR4_FH_EXPIRE_TYPE,
+            FATTR4_CHANGE,
+            FATTR4_SIZE,
+            FATTR4_LINK_SUPPORT,
+            FATTR4_SYMLINK_SUPPORT,
+            FATTR4_NAMED_ATTR,
+            FATTR4_FSID,
+            FATTR4_UNIQUE_HANDLES,
+            FATTR4_LEASE_TIME,
+            FATTR4_RDATTR_ERROR,
+            FATTR4_FILEHANDLE,
+            FATTR4_ACLSUPPORT,
+            FATTR4_ARCHIVE,
+            FATTR4_CANSETTIME,
+            FATTR4_CASE_INSENSITIVE,
+            FATTR4_CASE_PRESERVING,
+            FATTR4_CHOWN_RESTRICTED,
+            FATTR4_FILEID,
+            FATTR4_FILES_AVAIL,
+            FATTR4_FILES_FREE,
+            FATTR4_FILES_TOTAL,
+            FATTR4_HIDDEN,
+            FATTR4_HOMOGENEOUS,
+            FATTR4_MAXFILESIZE,
+            FATTR4_MAXLINK,
+            FATTR4_MAXNAME,
+            FATTR4_MAXREAD,
+            FATTR4_MAXWRITE,
+            FATTR4_MODE,
+            FATTR4_NO_TRUNC,
+            FATTR4_NUMLINKS,
+            FATTR4_OWNER,
+            FATTR4_OWNER_GROUP,
             FATTR4_RAWDEV,
-            FATTR4_SPACE_AVAIL, FATTR4_SPACE_FREE,
-            FATTR4_SPACE_TOTAL, FATTR4_SPACE_USED,
+            FATTR4_SPACE_AVAIL,
+            FATTR4_SPACE_FREE,
+            FATTR4_SPACE_TOTAL,
+            FATTR4_SPACE_USED,
             FATTR4_SYSTEM,
-            FATTR4_TIME_ACCESS, FATTR4_TIME_ACCESS_SET,
+            FATTR4_TIME_ACCESS,
+            FATTR4_TIME_ACCESS_SET,
             FATTR4_TIME_BACKUP,
-            FATTR4_TIME_CREATE, FATTR4_TIME_DELTA,
-            FATTR4_TIME_METADATA, FATTR4_TIME_MODIFY,
+            FATTR4_TIME_CREATE,
+            FATTR4_TIME_DELTA,
+            FATTR4_TIME_METADATA,
+            FATTR4_TIME_MODIFY,
             FATTR4_TIME_MODIFY_SET,
             FATTR4_MOUNTED_ON_FILEID,
             FATTR4_SUPPATTR_EXCLCREAT,
@@ -311,42 +337,60 @@ pub fn encode_fattr4(attr: &FileAttr, request: &Bitmap4, fh: &NfsFh4, fs_info: &
     // FATTR4_TIME_ACCESS (47)
     if request.is_set(FATTR4_TIME_ACCESS) {
         result_bitmap.set(FATTR4_TIME_ACCESS);
-        let t = NfsTime4 { seconds: attr.atime_sec, nseconds: attr.atime_nsec };
+        let t = NfsTime4 {
+            seconds: attr.atime_sec,
+            nseconds: attr.atime_nsec,
+        };
         t.encode(&mut vals);
     }
 
     // FATTR4_TIME_BACKUP (49) - same as creation time
     if request.is_set(FATTR4_TIME_BACKUP) {
         result_bitmap.set(FATTR4_TIME_BACKUP);
-        let t = NfsTime4 { seconds: attr.crtime_sec, nseconds: attr.crtime_nsec };
+        let t = NfsTime4 {
+            seconds: attr.crtime_sec,
+            nseconds: attr.crtime_nsec,
+        };
         t.encode(&mut vals);
     }
 
     // FATTR4_TIME_CREATE (50) - birth/creation time (macOS uses this)
     if request.is_set(FATTR4_TIME_CREATE) {
         result_bitmap.set(FATTR4_TIME_CREATE);
-        let t = NfsTime4 { seconds: attr.crtime_sec, nseconds: attr.crtime_nsec };
+        let t = NfsTime4 {
+            seconds: attr.crtime_sec,
+            nseconds: attr.crtime_nsec,
+        };
         t.encode(&mut vals);
     }
 
     // FATTR4_TIME_DELTA (51)
     if request.is_set(FATTR4_TIME_DELTA) {
         result_bitmap.set(FATTR4_TIME_DELTA);
-        let t = NfsTime4 { seconds: 0, nseconds: 1000000 }; // 1ms
+        let t = NfsTime4 {
+            seconds: 0,
+            nseconds: 1000000,
+        }; // 1ms
         t.encode(&mut vals);
     }
 
     // FATTR4_TIME_METADATA (52)
     if request.is_set(FATTR4_TIME_METADATA) {
         result_bitmap.set(FATTR4_TIME_METADATA);
-        let t = NfsTime4 { seconds: attr.ctime_sec, nseconds: attr.ctime_nsec };
+        let t = NfsTime4 {
+            seconds: attr.ctime_sec,
+            nseconds: attr.ctime_nsec,
+        };
         t.encode(&mut vals);
     }
 
     // FATTR4_TIME_MODIFY (53)
     if request.is_set(FATTR4_TIME_MODIFY) {
         result_bitmap.set(FATTR4_TIME_MODIFY);
-        let t = NfsTime4 { seconds: attr.mtime_sec, nseconds: attr.mtime_nsec };
+        let t = NfsTime4 {
+            seconds: attr.mtime_sec,
+            nseconds: attr.mtime_nsec,
+        };
         t.encode(&mut vals);
     }
 

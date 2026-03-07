@@ -1,20 +1,19 @@
+use bytes::{Bytes, BytesMut};
 /// NFSv4.1 server - COMPOUND procedure handling.
 ///
 /// This is the core of the NFS server. It receives COMPOUND requests,
 /// dispatches each operation, and builds the COMPOUND response.
-
 use std::sync::Arc;
-use bytes::{Bytes, BytesMut};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
-use nfs4_proto::*;
 use nfs4_proto::xdr::*;
+use nfs4_proto::*;
 
+use crate::attrs;
 use crate::fs::*;
 use crate::session::StateManager;
-use crate::attrs;
 
 /// The NFS server.
 pub struct NfsServer<F: NfsFileSystem> {
@@ -164,9 +163,14 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn handle_compound(&self, args: Compound4Args) -> Compound4Res {
-        debug!("COMPOUND: tag={:?}, minorversion={}, ops={}", args.tag, args.minorversion, args.argarray.len());
+        debug!(
+            "COMPOUND: tag={:?}, minorversion={}, ops={}",
+            args.tag,
+            args.minorversion,
+            args.argarray.len()
+        );
 
-        if args.minorversion > 1 {
+        if args.minorversion != 1 {
             return Compound4Res {
                 status: NfsStat4::MinorVersMismatch,
                 tag: args.tag,
@@ -174,12 +178,94 @@ impl<F: NfsFileSystem> NfsServer<F> {
             };
         }
 
+        let total_ops = args.argarray.len();
+        let first_op = args.argarray.first();
+        let starts_with_sequence = matches!(first_op, Some(NfsArgop4::Sequence(_)));
+        let leading_sequence_sessionid = match first_op {
+            Some(NfsArgop4::Sequence(sequence)) => Some(sequence.sessionid),
+            _ => None,
+        };
+        let leading_sequence_clientid = match leading_sequence_sessionid {
+            Some(sessionid) => self.state.session_clientid(&sessionid).await,
+            None => None,
+        };
+
+        if let Some(first_op) = first_op {
+            if !starts_with_sequence {
+                if allows_compound_without_sequence(first_op) {
+                    if total_ops != 1 {
+                        let res = error_res_for_op(first_op, NfsStat4::NotOnlyOp);
+                        return Compound4Res {
+                            status: NfsStat4::NotOnlyOp,
+                            tag: args.tag,
+                            resarray: vec![res],
+                        };
+                    }
+                } else {
+                    let status = if matches!(first_op, NfsArgop4::Illegal) {
+                        NfsStat4::OpIllegal
+                    } else {
+                        NfsStat4::OpNotInSession
+                    };
+                    let res = error_res_for_op(first_op, status);
+                    return Compound4Res {
+                        status,
+                        tag: args.tag,
+                        resarray: vec![res],
+                    };
+                }
+            }
+        }
+
         let mut current_fh: Option<NfsFh4> = None;
         let mut saved_fh: Option<NfsFh4> = None;
-        let mut resarray = Vec::with_capacity(args.argarray.len());
+        let mut resarray = Vec::with_capacity(total_ops);
         let mut overall_status = NfsStat4::Ok;
 
-        for op in args.argarray {
+        for (idx, op) in args.argarray.into_iter().enumerate() {
+            if idx > 0 {
+                if matches!(&op, NfsArgop4::Sequence(_)) {
+                    let res = NfsResop4::Sequence(NfsStat4::SequencePos, None);
+                    resarray.push(res);
+                    overall_status = NfsStat4::SequencePos;
+                    break;
+                }
+
+                if let NfsArgop4::BindConnToSession(_) = &op {
+                    let res = NfsResop4::BindConnToSession(NfsStat4::NotOnlyOp, None);
+                    resarray.push(res);
+                    overall_status = NfsStat4::NotOnlyOp;
+                    break;
+                }
+
+                if let NfsArgop4::DestroySession(args) = &op {
+                    if leading_sequence_sessionid == Some(args.sessionid) && idx + 1 != total_ops {
+                        let res = NfsResop4::DestroySession(NfsStat4::NotOnlyOp);
+                        resarray.push(res);
+                        overall_status = NfsStat4::NotOnlyOp;
+                        break;
+                    }
+                }
+
+                if let (Some(clientid), NfsArgop4::DestroyClientid(args)) =
+                    (leading_sequence_clientid, &op)
+                {
+                    if args.clientid == clientid {
+                        let res = NfsResop4::DestroyClientid(NfsStat4::ClientidBusy);
+                        resarray.push(res);
+                        overall_status = NfsStat4::ClientidBusy;
+                        break;
+                    }
+                }
+
+                if let NfsArgop4::MustNotImplement(opcode) = &op {
+                    let res = NfsResop4::MustNotImplement(*opcode, NfsStat4::Notsupp);
+                    resarray.push(res);
+                    overall_status = NfsStat4::Notsupp;
+                    break;
+                }
+            }
+
             let res = self.handle_op(op, &mut current_fh, &mut saved_fh).await;
 
             let status = res_status(&res);
@@ -218,12 +304,6 @@ impl<F: NfsFileSystem> NfsServer<F> {
             NfsArgop4::Lookup(args) => self.op_lookup(&args, current_fh).await,
             NfsArgop4::Lookupp => self.op_lookupp(current_fh).await,
             NfsArgop4::Open(args) => self.op_open(&args, current_fh).await,
-            NfsArgop4::OpenConfirm(args) => {
-                // For v4.0: confirm open, return the stateid with bumped seqid
-                let mut stateid = args.open_stateid;
-                stateid.seqid = stateid.seqid.wrapping_add(1);
-                NfsResop4::OpenConfirm(NfsStat4::Ok, Some(stateid))
-            }
             NfsArgop4::Putfh(args) => {
                 *current_fh = Some(args.object);
                 NfsResop4::Putfh(NfsStat4::Ok)
@@ -260,10 +340,13 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 }
             }
             NfsArgop4::Secinfo(_) => {
-                NfsResop4::Secinfo(NfsStat4::Ok, vec![
-                    SecinfoEntry4 { flavor: 1 }, // AUTH_SYS
-                    SecinfoEntry4 { flavor: 0 }, // AUTH_NONE
-                ])
+                NfsResop4::Secinfo(
+                    NfsStat4::Ok,
+                    vec![
+                        SecinfoEntry4 { flavor: 1 }, // AUTH_SYS
+                        SecinfoEntry4 { flavor: 0 }, // AUTH_NONE
+                    ],
+                )
             }
             NfsArgop4::Setattr(args) => self.op_setattr(&args, current_fh).await,
             NfsArgop4::Write(args) => self.op_write(&args, current_fh).await,
@@ -271,27 +354,21 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 let res = self.state.exchange_id(&args).await;
                 NfsResop4::ExchangeId(NfsStat4::Ok, Some(res))
             }
-            NfsArgop4::CreateSession(args) => {
-                match self.state.create_session(&args).await {
-                    Ok(res) => NfsResop4::CreateSession(NfsStat4::Ok, Some(res)),
-                    Err(status) => NfsResop4::CreateSession(status, None),
-                }
-            }
+            NfsArgop4::CreateSession(args) => match self.state.create_session(&args).await {
+                Ok(res) => NfsResop4::CreateSession(NfsStat4::Ok, Some(res)),
+                Err(status) => NfsResop4::CreateSession(status, None),
+            },
             NfsArgop4::DestroySession(args) => {
                 match self.state.destroy_session(&args.sessionid).await {
                     Ok(()) => NfsResop4::DestroySession(NfsStat4::Ok),
                     Err(status) => NfsResop4::DestroySession(status),
                 }
             }
-            NfsArgop4::Sequence(args) => {
-                match self.state.sequence(&args).await {
-                    Ok(res) => NfsResop4::Sequence(NfsStat4::Ok, Some(res)),
-                    Err(status) => NfsResop4::Sequence(status, None),
-                }
-            }
-            NfsArgop4::ReclaimComplete(_) => {
-                NfsResop4::ReclaimComplete(NfsStat4::Ok)
-            }
+            NfsArgop4::Sequence(args) => match self.state.sequence(&args).await {
+                Ok(res) => NfsResop4::Sequence(NfsStat4::Ok, Some(res)),
+                Err(status) => NfsResop4::Sequence(status, None),
+            },
+            NfsArgop4::ReclaimComplete(_) => NfsResop4::ReclaimComplete(NfsStat4::Ok),
             NfsArgop4::DestroyClientid(args) => {
                 match self.state.destroy_clientid(args.clientid).await {
                     Ok(()) => NfsResop4::DestroyClientid(NfsStat4::Ok),
@@ -305,38 +382,24 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 }
             }
             NfsArgop4::SecInfoNoName(_) => {
-                NfsResop4::SecInfoNoName(NfsStat4::Ok, vec![
-                    SecinfoEntry4 { flavor: 1 }, // AUTH_SYS
-                    SecinfoEntry4 { flavor: 0 }, // AUTH_NONE
-                ])
+                NfsResop4::SecInfoNoName(
+                    NfsStat4::Ok,
+                    vec![
+                        SecinfoEntry4 { flavor: 1 }, // AUTH_SYS
+                        SecinfoEntry4 { flavor: 0 }, // AUTH_NONE
+                    ],
+                )
             }
-            NfsArgop4::FreeStateid(args) => {
-                match self.state.free_stateid(&args.stateid).await {
-                    Ok(()) => NfsResop4::FreeStateid(NfsStat4::Ok),
-                    Err(status) => NfsResop4::FreeStateid(status),
-                }
-            }
+            NfsArgop4::FreeStateid(args) => match self.state.free_stateid(&args.stateid).await {
+                Ok(()) => NfsResop4::FreeStateid(NfsStat4::Ok),
+                Err(status) => NfsResop4::FreeStateid(status),
+            },
             NfsArgop4::TestStateid(args) => {
                 let results = vec![NfsStat4::Ok; args.stateids.len()];
                 NfsResop4::TestStateid(NfsStat4::Ok, results)
             }
-            NfsArgop4::DelegReturn(_) => {
-                NfsResop4::DelegReturn(NfsStat4::Ok)
-            }
-            NfsArgop4::SetClientId(args) => {
-                let res = self.state.set_client_id(&args).await;
-                NfsResop4::SetClientId(NfsStat4::Ok, Some(res))
-            }
-            NfsArgop4::SetClientIdConfirm(args) => {
-                match self.state.set_client_id_confirm(&args).await {
-                    Ok(()) => NfsResop4::SetClientIdConfirm(NfsStat4::Ok),
-                    Err(status) => NfsResop4::SetClientIdConfirm(status),
-                }
-            }
-            NfsArgop4::Renew(_clientid) => {
-                // Just accept it - refresh lease
-                NfsResop4::Renew(NfsStat4::Ok)
-            }
+            NfsArgop4::DelegReturn(_) => NfsResop4::DelegReturn(NfsStat4::Ok),
+            NfsArgop4::MustNotImplement(op) => NfsResop4::MustNotImplement(op, NfsStat4::Notsupp),
             NfsArgop4::Lock(args) => self.op_lock(&args, current_fh).await,
             NfsArgop4::Lockt(args) => self.op_lockt(&args, current_fh).await,
             NfsArgop4::Locku(args) => self.op_locku(&args).await,
@@ -344,12 +407,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 // Named attributes not supported
                 NfsResop4::OpenAttr(NfsStat4::Notsupp)
             }
-            NfsArgop4::DelegPurge => {
-                NfsResop4::DelegPurge(NfsStat4::Ok)
-            }
-            NfsArgop4::ReleaseLockowner => {
-                NfsResop4::ReleaseLockowner(NfsStat4::Ok)
-            }
+            NfsArgop4::DelegPurge => NfsResop4::DelegPurge(NfsStat4::Ok),
             NfsArgop4::Verify(vattr) => self.op_verify(&vattr, current_fh, false).await,
             NfsArgop4::Nverify(vattr) => self.op_verify(&vattr, current_fh, true).await,
             NfsArgop4::OpenDowngrade(args) => {
@@ -367,9 +425,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
             NfsArgop4::GetDeviceInfo => NfsResop4::GetDeviceInfo(NfsStat4::Notsupp),
             NfsArgop4::GetDeviceList => NfsResop4::GetDeviceList(NfsStat4::Notsupp),
             NfsArgop4::SetSsv => NfsResop4::SetSsv(NfsStat4::Notsupp),
-            NfsArgop4::Illegal => {
-                NfsResop4::Illegal(NfsStat4::OpIllegal)
-            }
+            NfsArgop4::Illegal => NfsResop4::Illegal(NfsStat4::OpIllegal),
         }
     }
 
@@ -388,7 +444,12 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
         match self.fs.getattr(file_id).await {
             Ok(attr) => {
-                let mut server_supported = ACCESS4_READ | ACCESS4_LOOKUP | ACCESS4_MODIFY | ACCESS4_EXTEND | ACCESS4_DELETE | ACCESS4_EXECUTE;
+                let mut server_supported = ACCESS4_READ
+                    | ACCESS4_LOOKUP
+                    | ACCESS4_MODIFY
+                    | ACCESS4_EXTEND
+                    | ACCESS4_DELETE
+                    | ACCESS4_EXECUTE;
                 if attr.file_type == FileType::Directory {
                     server_supported &= !(ACCESS4_EXECUTE);
                 }
@@ -435,13 +496,21 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
         let result = match &args.objtype {
             Createtype4::Dir => self.fs.mkdir(dir_id, &args.objname, &set_attrs).await,
-            Createtype4::Link(target) => self.fs.symlink(dir_id, &args.objname, target, &set_attrs).await,
+            Createtype4::Link(target) => {
+                self.fs
+                    .symlink(dir_id, &args.objname, target, &set_attrs)
+                    .await
+            }
             _ => Err(NfsError::Notsupp),
         };
 
         match result {
             Ok(new_id) => {
-                let dir_attr_after = self.fs.getattr(dir_id).await.unwrap_or(dir_attr_before.clone());
+                let dir_attr_after = self
+                    .fs
+                    .getattr(dir_id)
+                    .await
+                    .unwrap_or(dir_attr_before.clone());
                 let new_fh = self.state.file_id_to_fh(new_id).await;
                 *current_fh = Some(new_fh);
                 let cinfo = ChangeInfo4 {
@@ -479,7 +548,12 @@ impl<F: NfsFileSystem> NfsServer<F> {
         }
     }
 
-    async fn op_link(&self, args: &LinkArgs4, current_fh: &Option<NfsFh4>, saved_fh: &Option<NfsFh4>) -> NfsResop4 {
+    async fn op_link(
+        &self,
+        args: &LinkArgs4,
+        current_fh: &Option<NfsFh4>,
+        saved_fh: &Option<NfsFh4>,
+    ) -> NfsResop4 {
         let source_id = match self.resolve_fh(saved_fh).await {
             Ok(id) => id,
             Err(status) => return NfsResop4::Link(status, None),
@@ -496,7 +570,11 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
         match self.fs.link(source_id, dir_id, &args.newname).await {
             Ok(()) => {
-                let dir_attr_after = self.fs.getattr(dir_id).await.unwrap_or(dir_attr_before.clone());
+                let dir_attr_after = self
+                    .fs
+                    .getattr(dir_id)
+                    .await
+                    .unwrap_or(dir_attr_before.clone());
                 let cinfo = ChangeInfo4 {
                     atomic: true,
                     before: dir_attr_before.change_id,
@@ -597,12 +675,15 @@ impl<F: NfsFileSystem> NfsServer<F> {
         let dir_attr = self.fs.getattr(dir_id).await.unwrap_or_default();
         let new_fh = self.state.file_id_to_fh(file_id).await;
 
-        let stateid = self.state.create_open_state(
-            file_id,
-            args.owner.clientid,
-            args.share_access,
-            args.share_deny,
-        ).await;
+        let stateid = self
+            .state
+            .create_open_state(
+                file_id,
+                args.owner.clientid,
+                args.share_access,
+                args.share_deny,
+            )
+            .await;
 
         *current_fh = Some(new_fh);
 
@@ -614,13 +695,16 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
         let rflags = OPEN4_RESULT_LOCKTYPE_POSIX;
 
-        NfsResop4::Open(NfsStat4::Ok, Some(OpenRes4 {
-            stateid,
-            cinfo,
-            rflags,
-            attrset: Bitmap4::new(),
-            delegation: OpenDelegation4::None,
-        }))
+        NfsResop4::Open(
+            NfsStat4::Ok,
+            Some(OpenRes4 {
+                stateid,
+                cinfo,
+                rflags,
+                attrset: Bitmap4::new(),
+                delegation: OpenDelegation4::None,
+            }),
+        )
     }
 
     async fn op_read(&self, args: &ReadArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
@@ -630,9 +714,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
         };
 
         match self.fs.read(file_id, args.offset, args.count).await {
-            Ok((data, eof)) => {
-                NfsResop4::Read(NfsStat4::Ok, Some(ReadRes4 { eof, data }))
-            }
+            Ok((data, eof)) => NfsResop4::Read(NfsStat4::Ok, Some(ReadRes4 { eof, data })),
             Err(e) => NfsResop4::Read(e.to_nfsstat4(), None),
         }
     }
@@ -708,7 +790,10 @@ impl<F: NfsFileSystem> NfsServer<F> {
                     let attr_size = 12 + entry_fattr.attr_vals.len();
                     let entry_total = dir_entry_size + attr_size + 4;
 
-                    if !result_entries.is_empty() && (dir_bytes + dir_entry_size > dircount_limit || total_bytes + entry_total > maxcount_limit) {
+                    if !result_entries.is_empty()
+                        && (dir_bytes + dir_entry_size > dircount_limit
+                            || total_bytes + entry_total > maxcount_limit)
+                    {
                         break;
                     }
 
@@ -724,11 +809,14 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
                 let eof = result_entries.len() >= available.len();
 
-                NfsResop4::Readdir(NfsStat4::Ok, Some(ReaddirRes4 {
-                    cookieverf: args.cookieverf,
-                    entries: result_entries,
-                    eof,
-                }))
+                NfsResop4::Readdir(
+                    NfsStat4::Ok,
+                    Some(ReaddirRes4 {
+                        cookieverf: args.cookieverf,
+                        entries: result_entries,
+                        eof,
+                    }),
+                )
             }
             Err(e) => NfsResop4::Readdir(e.to_nfsstat4(), None),
         }
@@ -759,7 +847,11 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
         match self.fs.remove(dir_id, &args.target).await {
             Ok(()) => {
-                let dir_attr_after = self.fs.getattr(dir_id).await.unwrap_or(dir_attr_before.clone());
+                let dir_attr_after = self
+                    .fs
+                    .getattr(dir_id)
+                    .await
+                    .unwrap_or(dir_attr_before.clone());
                 let cinfo = ChangeInfo4 {
                     atomic: true,
                     before: dir_attr_before.change_id,
@@ -771,7 +863,12 @@ impl<F: NfsFileSystem> NfsServer<F> {
         }
     }
 
-    async fn op_rename(&self, args: &RenameArgs4, current_fh: &Option<NfsFh4>, saved_fh: &Option<NfsFh4>) -> NfsResop4 {
+    async fn op_rename(
+        &self,
+        args: &RenameArgs4,
+        current_fh: &Option<NfsFh4>,
+        saved_fh: &Option<NfsFh4>,
+    ) -> NfsResop4 {
         // Saved FH = source dir, Current FH = target dir
         let src_dir_id = match self.resolve_fh(saved_fh).await {
             Ok(id) => id,
@@ -791,10 +888,22 @@ impl<F: NfsFileSystem> NfsServer<F> {
             Err(e) => return NfsResop4::Rename(e.to_nfsstat4(), None, None),
         };
 
-        match self.fs.rename(src_dir_id, &args.oldname, tgt_dir_id, &args.newname).await {
+        match self
+            .fs
+            .rename(src_dir_id, &args.oldname, tgt_dir_id, &args.newname)
+            .await
+        {
             Ok(()) => {
-                let src_attr_after = self.fs.getattr(src_dir_id).await.unwrap_or(src_attr_before.clone());
-                let tgt_attr_after = self.fs.getattr(tgt_dir_id).await.unwrap_or(tgt_attr_before.clone());
+                let src_attr_after = self
+                    .fs
+                    .getattr(src_dir_id)
+                    .await
+                    .unwrap_or(src_attr_before.clone());
+                let tgt_attr_after = self
+                    .fs
+                    .getattr(tgt_dir_id)
+                    .await
+                    .unwrap_or(tgt_attr_before.clone());
                 let src_cinfo = ChangeInfo4 {
                     atomic: true,
                     before: src_attr_before.change_id,
@@ -832,13 +941,14 @@ impl<F: NfsFileSystem> NfsServer<F> {
         };
 
         match self.fs.write(file_id, args.offset, &args.data).await {
-            Ok(count) => {
-                NfsResop4::Write(NfsStat4::Ok, Some(WriteRes4 {
+            Ok(count) => NfsResop4::Write(
+                NfsStat4::Ok,
+                Some(WriteRes4 {
                     count,
                     committed: FILE_SYNC4,
                     writeverf: self.state.write_verifier,
-                }))
-            }
+                }),
+            ),
             Err(e) => NfsResop4::Write(e.to_nfsstat4(), None),
         }
     }
@@ -852,10 +962,9 @@ impl<F: NfsFileSystem> NfsServer<F> {
         // Create or update lock state
         let stateid = match &args.locker {
             Locker4::NewLockOwner(new_owner) => {
-                self.state.create_lock_state(
-                    &new_owner.open_stateid,
-                    &new_owner.lock_owner,
-                ).await
+                self.state
+                    .create_lock_state(&new_owner.open_stateid, &new_owner.lock_owner)
+                    .await
             }
             Locker4::ExistingLockOwner(existing) => {
                 self.state.update_lock_state(&existing.lock_stateid).await
@@ -888,9 +997,18 @@ impl<F: NfsFileSystem> NfsServer<F> {
     /// VERIFY returns OK if the supplied attrs match the file's current attrs,
     /// or NFS4ERR_NOT_SAME if they differ.
     /// NVERIFY returns OK if attrs differ, NFS4ERR_SAME if they match.
-    async fn op_verify(&self, client_fattr: &Fattr4, current_fh: &Option<NfsFh4>, negate: bool) -> NfsResop4 {
+    async fn op_verify(
+        &self,
+        client_fattr: &Fattr4,
+        current_fh: &Option<NfsFh4>,
+        negate: bool,
+    ) -> NfsResop4 {
         let make_res = |s: NfsStat4| {
-            if negate { NfsResop4::Nverify(s) } else { NfsResop4::Verify(s) }
+            if negate {
+                NfsResop4::Nverify(s)
+            } else {
+                NfsResop4::Verify(s)
+            }
         };
 
         let file_id = match self.resolve_fh(current_fh).await {
@@ -906,7 +1024,8 @@ impl<F: NfsFileSystem> NfsServer<F> {
         };
 
         // Encode the server's current attrs using the same bitmap the client sent
-        let server_fattr = attrs::encode_fattr4(&attr, &client_fattr.attrmask, fh, &self.fs.fs_info());
+        let server_fattr =
+            attrs::encode_fattr4(&attr, &client_fattr.attrmask, fh, &self.fs.fs_info());
 
         // Compare: same bitmap, same values?
         let attrs_match = server_fattr.attrmask == client_fattr.attrmask
@@ -914,11 +1033,88 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
         if negate {
             // NVERIFY: OK if different, SAME if match
-            if attrs_match { make_res(NfsStat4::Same) } else { make_res(NfsStat4::Ok) }
+            if attrs_match {
+                make_res(NfsStat4::Same)
+            } else {
+                make_res(NfsStat4::Ok)
+            }
         } else {
             // VERIFY: OK if match, NOT_SAME if different
-            if attrs_match { make_res(NfsStat4::Ok) } else { make_res(NfsStat4::NotSame) }
+            if attrs_match {
+                make_res(NfsStat4::Ok)
+            } else {
+                make_res(NfsStat4::NotSame)
+            }
         }
+    }
+}
+
+fn allows_compound_without_sequence(op: &NfsArgop4) -> bool {
+    matches!(
+        op,
+        NfsArgop4::ExchangeId(_)
+            | NfsArgop4::CreateSession(_)
+            | NfsArgop4::DestroySession(_)
+            | NfsArgop4::DestroyClientid(_)
+            | NfsArgop4::BindConnToSession(_)
+    )
+}
+
+fn error_res_for_op(op: &NfsArgop4, status: NfsStat4) -> NfsResop4 {
+    match op {
+        NfsArgop4::Access(_) => NfsResop4::Access(status, 0, 0),
+        NfsArgop4::Close(_) => NfsResop4::Close(status, Stateid4::default()),
+        NfsArgop4::Commit(_) => NfsResop4::Commit(status, [0u8; 8]),
+        NfsArgop4::Create(_) => NfsResop4::Create(status, None, Bitmap4::new()),
+        NfsArgop4::Getattr(_) => NfsResop4::Getattr(status, None),
+        NfsArgop4::Getfh => NfsResop4::Getfh(status, None),
+        NfsArgop4::Link(_) => NfsResop4::Link(status, None),
+        NfsArgop4::Lookup(_) => NfsResop4::Lookup(status),
+        NfsArgop4::Lookupp => NfsResop4::Lookupp(status),
+        NfsArgop4::Open(_) => NfsResop4::Open(status, None),
+        NfsArgop4::Putfh(_) => NfsResop4::Putfh(status),
+        NfsArgop4::Putpubfh => NfsResop4::Putpubfh(status),
+        NfsArgop4::Putrootfh => NfsResop4::Putrootfh(status),
+        NfsArgop4::Read(_) => NfsResop4::Read(status, None),
+        NfsArgop4::Readdir(_) => NfsResop4::Readdir(status, None),
+        NfsArgop4::Readlink => NfsResop4::Readlink(status, None),
+        NfsArgop4::Remove(_) => NfsResop4::Remove(status, None),
+        NfsArgop4::Rename(_) => NfsResop4::Rename(status, None, None),
+        NfsArgop4::Restorefh => NfsResop4::Restorefh(status),
+        NfsArgop4::Savefh => NfsResop4::Savefh(status),
+        NfsArgop4::Secinfo(_) => NfsResop4::Secinfo(status, vec![]),
+        NfsArgop4::Setattr(_) => NfsResop4::Setattr(status, Bitmap4::new()),
+        NfsArgop4::Write(_) => NfsResop4::Write(status, None),
+        NfsArgop4::ExchangeId(_) => NfsResop4::ExchangeId(status, None),
+        NfsArgop4::CreateSession(_) => NfsResop4::CreateSession(status, None),
+        NfsArgop4::DestroySession(_) => NfsResop4::DestroySession(status),
+        NfsArgop4::Sequence(_) => NfsResop4::Sequence(status, None),
+        NfsArgop4::ReclaimComplete(_) => NfsResop4::ReclaimComplete(status),
+        NfsArgop4::DestroyClientid(_) => NfsResop4::DestroyClientid(status),
+        NfsArgop4::BindConnToSession(_) => NfsResop4::BindConnToSession(status, None),
+        NfsArgop4::SecInfoNoName(_) => NfsResop4::SecInfoNoName(status, vec![]),
+        NfsArgop4::FreeStateid(_) => NfsResop4::FreeStateid(status),
+        NfsArgop4::TestStateid(_) => NfsResop4::TestStateid(status, vec![]),
+        NfsArgop4::DelegReturn(_) => NfsResop4::DelegReturn(status),
+        NfsArgop4::MustNotImplement(op) => NfsResop4::MustNotImplement(*op, status),
+        NfsArgop4::Lock(_) => NfsResop4::Lock(status, None, None),
+        NfsArgop4::Lockt(_) => NfsResop4::Lockt(status, None),
+        NfsArgop4::Locku(_) => NfsResop4::Locku(status, None),
+        NfsArgop4::OpenAttr(_) => NfsResop4::OpenAttr(status),
+        NfsArgop4::DelegPurge => NfsResop4::DelegPurge(status),
+        NfsArgop4::Verify(_) => NfsResop4::Verify(status),
+        NfsArgop4::Nverify(_) => NfsResop4::Nverify(status),
+        NfsArgop4::OpenDowngrade(_) => NfsResop4::OpenDowngrade(status, None),
+        NfsArgop4::LayoutGet => NfsResop4::LayoutGet(status),
+        NfsArgop4::LayoutReturn => NfsResop4::LayoutReturn(status),
+        NfsArgop4::LayoutCommit => NfsResop4::LayoutCommit(status),
+        NfsArgop4::GetDirDelegation => NfsResop4::GetDirDelegation(status),
+        NfsArgop4::WantDelegation => NfsResop4::WantDelegation(status),
+        NfsArgop4::BackchannelCtl => NfsResop4::BackchannelCtl(status),
+        NfsArgop4::GetDeviceInfo => NfsResop4::GetDeviceInfo(status),
+        NfsArgop4::GetDeviceList => NfsResop4::GetDeviceList(status),
+        NfsArgop4::SetSsv => NfsResop4::SetSsv(status),
+        NfsArgop4::Illegal => NfsResop4::Illegal(status),
     }
 }
 
@@ -959,16 +1155,12 @@ fn res_status(res: &NfsResop4) -> NfsStat4 {
         NfsResop4::FreeStateid(s) => *s,
         NfsResop4::TestStateid(s, _) => *s,
         NfsResop4::DelegReturn(s) => *s,
+        NfsResop4::MustNotImplement(_, s) => *s,
         NfsResop4::Lock(s, _, _) => *s,
         NfsResop4::Lockt(s, _) => *s,
         NfsResop4::Locku(s, _) => *s,
         NfsResop4::OpenAttr(s) => *s,
         NfsResop4::DelegPurge(s) => *s,
-        NfsResop4::SetClientId(s, _) => *s,
-        NfsResop4::SetClientIdConfirm(s) => *s,
-        NfsResop4::Renew(s) => *s,
-        NfsResop4::OpenConfirm(s, _) => *s,
-        NfsResop4::ReleaseLockowner(s) => *s,
         NfsResop4::Verify(s) => *s,
         NfsResop4::Nverify(s) => *s,
         NfsResop4::OpenDowngrade(s, _) => *s,

@@ -1,6 +1,6 @@
+use crate::xdr::*;
 /// NFSv4.1 protocol types per RFC 8881.
 use bytes::{Bytes, BytesMut};
-use crate::xdr::*;
 
 // ===== Basic types =====
 
@@ -116,24 +116,29 @@ pub enum NfsStat4 {
     RecallConflict = 10061,
     UnknownLayouttype = 10062,
     SeqMisordered = 10063,
-    SeqFalseRetry = 10064,
-    RetryUncachedRep = 10065,
-    BadHighSlot = 10066,
-    DeadSession = 10067,
-    EncrAlgUnsupp = 10068,
-    PnfsNoLayout = 10069,
-    NotOnlyOp = 10070,
-    WrongCred = 10071,
-    WrongType = 10072,
-    DirDelegUnavail = 10073,
-    RejectDeleg = 10074,
-    ReturnConflict = 10075,
-    DelegRevoked = 10076,
-    PartnerNotsupp = 10077,
-    PartnerNoAuth = 10078,
-    UnionNotsupp = 10079,
-    ReplayMe = 10080,
-    TooManyOps = 10081,
+    SequencePos = 10064,
+    ReqTooBig = 10065,
+    RepTooBig = 10066,
+    RepTooBigToCache = 10067,
+    RetryUncachedRep = 10068,
+    UnsafeCompound = 10069,
+    TooManyOps = 10070,
+    OpNotInSession = 10071,
+    HashAlgUnsupp = 10072,
+    ClientidBusy = 10074,
+    PnfsIoHole = 10075,
+    SeqFalseRetry = 10076,
+    BadHighSlot = 10077,
+    DeadSession = 10078,
+    EncrAlgUnsupp = 10079,
+    PnfsNoLayout = 10080,
+    NotOnlyOp = 10081,
+    WrongCred = 10082,
+    WrongType = 10083,
+    DirDelegUnavail = 10084,
+    RejectDeleg = 10085,
+    ReturnConflict = 10086,
+    DelegRevoked = 10087,
 }
 
 impl NfsStat4 {
@@ -164,11 +169,85 @@ impl NfsStat4 {
             10004 => NfsStat4::Notsupp,
             10005 => NfsStat4::Toosmall,
             10006 => NfsStat4::Serverfault,
+            10007 => NfsStat4::Badtype,
+            10008 => NfsStat4::Delay,
+            10009 => NfsStat4::Same,
+            10010 => NfsStat4::Denied,
+            10011 => NfsStat4::Expired,
+            10012 => NfsStat4::Locked,
+            10013 => NfsStat4::Grace,
+            10014 => NfsStat4::Fhexpired,
+            10015 => NfsStat4::ShareDenied,
+            10016 => NfsStat4::WrongSec,
+            10017 => NfsStat4::ClidInuse,
+            10019 => NfsStat4::Moved,
+            10020 => NfsStat4::Nofilehandle,
+            10021 => NfsStat4::MinorVersMismatch,
+            10022 => NfsStat4::StaleClientid,
+            10023 => NfsStat4::StaleStateid,
+            10024 => NfsStat4::OldStateid,
+            10025 => NfsStat4::BadStateid,
+            10026 => NfsStat4::BadSeqid,
+            10027 => NfsStat4::NotSame,
+            10028 => NfsStat4::LockRange,
+            10029 => NfsStat4::Symlink,
+            10030 => NfsStat4::Restorefh,
+            10031 => NfsStat4::LeaseMoved,
+            10032 => NfsStat4::AttrNotsupp,
+            10033 => NfsStat4::NoGrace,
+            10034 => NfsStat4::ReclaimBad,
+            10035 => NfsStat4::ReclaimConflict,
+            10036 => NfsStat4::BadXdr,
+            10037 => NfsStat4::LocksHeld,
+            10038 => NfsStat4::Openmode,
+            10039 => NfsStat4::BadOwner,
+            10040 => NfsStat4::Badchar,
+            10041 => NfsStat4::Badname,
+            10042 => NfsStat4::BadRange,
+            10043 => NfsStat4::LockNotsupp,
             10044 => NfsStat4::OpIllegal,
+            10045 => NfsStat4::Deadlock,
+            10046 => NfsStat4::FileOpen,
+            10047 => NfsStat4::AdminRevoked,
+            10048 => NfsStat4::CbPathDown,
+            10049 => NfsStat4::BadIomode,
+            10050 => NfsStat4::BadLayout,
+            10051 => NfsStat4::BadSessionDigest,
             10052 => NfsStat4::BadSession,
             10053 => NfsStat4::BadSlot,
+            10054 => NfsStat4::CompleteAlready,
+            10055 => NfsStat4::ConnNotBoundToSession,
+            10056 => NfsStat4::DelegAlreadyWanted,
+            10057 => NfsStat4::BackChanBusy,
+            10058 => NfsStat4::LayoutTrylater,
+            10059 => NfsStat4::LayoutUnavailable,
+            10060 => NfsStat4::NomatchingLayout,
+            10061 => NfsStat4::RecallConflict,
+            10062 => NfsStat4::UnknownLayouttype,
             10063 => NfsStat4::SeqMisordered,
-            10070 => NfsStat4::NotOnlyOp,
+            10064 => NfsStat4::SequencePos,
+            10065 => NfsStat4::ReqTooBig,
+            10066 => NfsStat4::RepTooBig,
+            10067 => NfsStat4::RepTooBigToCache,
+            10068 => NfsStat4::RetryUncachedRep,
+            10069 => NfsStat4::UnsafeCompound,
+            10070 => NfsStat4::TooManyOps,
+            10071 => NfsStat4::OpNotInSession,
+            10072 => NfsStat4::HashAlgUnsupp,
+            10074 => NfsStat4::ClientidBusy,
+            10075 => NfsStat4::PnfsIoHole,
+            10076 => NfsStat4::SeqFalseRetry,
+            10077 => NfsStat4::BadHighSlot,
+            10078 => NfsStat4::DeadSession,
+            10079 => NfsStat4::EncrAlgUnsupp,
+            10080 => NfsStat4::PnfsNoLayout,
+            10081 => NfsStat4::NotOnlyOp,
+            10082 => NfsStat4::WrongCred,
+            10083 => NfsStat4::WrongType,
+            10084 => NfsStat4::DirDelegUnavail,
+            10085 => NfsStat4::RejectDeleg,
+            10086 => NfsStat4::ReturnConflict,
+            10087 => NfsStat4::DelegRevoked,
             _ => NfsStat4::Serverfault,
         }
     }
@@ -258,9 +337,18 @@ pub struct Stateid4 {
 }
 
 impl Stateid4 {
-    pub const ANONYMOUS: Stateid4 = Stateid4 { seqid: 0, other: [0; 12] };
-    pub const CURRENT: Stateid4 = Stateid4 { seqid: 1, other: [0xff; 12] };
-    pub const BYPASS: Stateid4 = Stateid4 { seqid: 0xffffffff, other: [0xff; 12] };
+    pub const ANONYMOUS: Stateid4 = Stateid4 {
+        seqid: 0,
+        other: [0; 12],
+    };
+    pub const CURRENT: Stateid4 = Stateid4 {
+        seqid: 1,
+        other: [0xff; 12],
+    };
+    pub const BYPASS: Stateid4 = Stateid4 {
+        seqid: 0xffffffff,
+        other: [0xff; 12],
+    };
 }
 
 impl XdrEncode for Stateid4 {
@@ -283,8 +371,7 @@ impl XdrDecode for Stateid4 {
 // ===== File attributes =====
 
 /// Bitmap4 - variable length bitmap for file attributes.
-#[derive(Debug, Clone, Default)]
-#[derive(PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Bitmap4(pub Vec<u32>);
 
 impl Bitmap4 {
@@ -444,7 +531,10 @@ impl XdrDecode for Fattr4 {
     fn decode(src: &mut Bytes) -> XdrResult<Self> {
         let attrmask = Bitmap4::decode(src)?;
         let attr_vals = decode_opaque(src)?;
-        Ok(Fattr4 { attrmask, attr_vals })
+        Ok(Fattr4 {
+            attrmask,
+            attr_vals,
+        })
     }
 }
 
@@ -715,7 +805,6 @@ pub enum NfsArgop4 {
     Lookup(LookupArgs4),
     Lookupp,
     Open(OpenArgs4),
-    OpenConfirm(OpenConfirmArgs4),
     Putfh(PutfhArgs4),
     Putpubfh,
     Putrootfh,
@@ -740,15 +829,12 @@ pub enum NfsArgop4 {
     FreeStateid(FreeStateidArgs4),
     TestStateid(TestStateidArgs4),
     DelegReturn(DelegReturnArgs4),
-    SetClientId(SetClientIdArgs4),
-    SetClientIdConfirm(SetClientIdConfirmArgs4),
-    Renew(Clientid4),
+    MustNotImplement(MustNotImplementOp4),
     Lock(LockArgs4),
     Lockt(LocktArgs4),
     Locku(LockuArgs4),
     OpenAttr(OpenAttrArgs4),
     DelegPurge,
-    ReleaseLockowner,
     Verify(Fattr4),
     Nverify(Fattr4),
     OpenDowngrade(OpenDowngradeArgs4),
@@ -762,6 +848,28 @@ pub enum NfsArgop4 {
     GetDeviceList,
     SetSsv,
     Illegal,
+}
+
+/// NFSv4.0 operations that RFC 8881 marks as mandatory not-to-implement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MustNotImplementOp4 {
+    OpenConfirm,
+    Renew,
+    SetClientId,
+    SetClientIdConfirm,
+    ReleaseLockowner,
+}
+
+impl MustNotImplementOp4 {
+    pub fn opcode(self) -> u32 {
+        match self {
+            MustNotImplementOp4::OpenConfirm => OP_OPEN_CONFIRM,
+            MustNotImplementOp4::Renew => OP_RENEW,
+            MustNotImplementOp4::SetClientId => OP_SETCLIENTID,
+            MustNotImplementOp4::SetClientIdConfirm => OP_SETCLIENTID_CONFIRM,
+            MustNotImplementOp4::ReleaseLockowner => OP_RELEASE_LOCKOWNER,
+        }
+    }
 }
 
 // ===== Operation argument types =====
@@ -857,7 +965,10 @@ pub enum Createhow4 {
 pub enum OpenClaim4 {
     Null(String),
     Previous(u32),
-    DelegateCur { delegate_stateid: Stateid4, file: String },
+    DelegateCur {
+        delegate_stateid: Stateid4,
+        file: String,
+    },
     DelegatePrev(String),
     Fh,
     DelegCurFh(Stateid4),
@@ -899,31 +1010,6 @@ pub struct RenameArgs4 {
 #[derive(Debug)]
 pub struct SecinfoArgs4 {
     pub name: String,
-}
-
-#[derive(Debug)]
-pub struct OpenConfirmArgs4 {
-    pub open_stateid: Stateid4,
-    pub seqid: Seqid4,
-}
-
-#[derive(Debug)]
-pub struct SetClientIdArgs4 {
-    pub client: ClientOwner4,
-    pub callback: NfsClientCallback4,
-    pub callback_ident: u32,
-}
-
-#[derive(Debug)]
-pub struct NfsClientCallback4 {
-    pub cb_program: u32,
-    pub cb_location: String,
-}
-
-#[derive(Debug)]
-pub struct SetClientIdConfirmArgs4 {
-    pub clientid: Clientid4,
-    pub verifier: Verifier4,
 }
 
 #[derive(Debug)]
@@ -1240,16 +1326,12 @@ pub enum NfsResop4 {
     FreeStateid(NfsStat4),
     TestStateid(NfsStat4, Vec<NfsStat4>),
     DelegReturn(NfsStat4),
+    MustNotImplement(MustNotImplementOp4, NfsStat4),
     Lock(NfsStat4, Option<Stateid4>, Option<LockDenied4>),
     Lockt(NfsStat4, Option<LockDenied4>),
     Locku(NfsStat4, Option<Stateid4>),
     OpenAttr(NfsStat4),
     DelegPurge(NfsStat4),
-    SetClientId(NfsStat4, Option<SetClientIdRes4>),
-    SetClientIdConfirm(NfsStat4),
-    Renew(NfsStat4),
-    OpenConfirm(NfsStat4, Option<Stateid4>),
-    ReleaseLockowner(NfsStat4),
     Verify(NfsStat4),
     Nverify(NfsStat4),
     OpenDowngrade(NfsStat4, Option<Stateid4>),
@@ -1263,12 +1345,6 @@ pub enum NfsResop4 {
     GetDeviceList(NfsStat4),
     SetSsv(NfsStat4),
     Illegal(NfsStat4),
-}
-
-#[derive(Debug)]
-pub struct SetClientIdRes4 {
-    pub clientid: Clientid4,
-    pub verifier: Verifier4,
 }
 
 #[derive(Debug)]
@@ -1486,8 +1562,8 @@ impl XdrEncode for NfsResop4 {
                                 (*why as u32).encode(dst);
                                 // Only CONTENTION and RESOURCE have a bool
                                 match why {
-                                    WhyNoDelegation4::Contention |
-                                    WhyNoDelegation4::ResourceNotAvail => {
+                                    WhyNoDelegation4::Contention
+                                    | WhyNoDelegation4::ResourceNotAvail => {
                                         false.encode(dst);
                                     }
                                     _ => {}
@@ -1702,6 +1778,10 @@ impl XdrEncode for NfsResop4 {
                 OP_DELEGRETURN.encode(dst);
                 status.encode(dst);
             }
+            NfsResop4::MustNotImplement(op, status) => {
+                op.opcode().encode(dst);
+                status.encode(dst);
+            }
             NfsResop4::Lock(status, stateid, denied) => {
                 OP_LOCK.encode(dst);
                 status.encode(dst);
@@ -1747,37 +1827,6 @@ impl XdrEncode for NfsResop4 {
             }
             NfsResop4::DelegPurge(status) => {
                 OP_DELEGPURGE.encode(dst);
-                status.encode(dst);
-            }
-            NfsResop4::SetClientId(status, res) => {
-                OP_SETCLIENTID.encode(dst);
-                status.encode(dst);
-                if *status == NfsStat4::Ok {
-                    if let Some(r) = res {
-                        r.clientid.encode(dst);
-                        dst.extend_from_slice(&r.verifier);
-                    }
-                }
-            }
-            NfsResop4::SetClientIdConfirm(status) => {
-                OP_SETCLIENTID_CONFIRM.encode(dst);
-                status.encode(dst);
-            }
-            NfsResop4::Renew(status) => {
-                OP_RENEW.encode(dst);
-                status.encode(dst);
-            }
-            NfsResop4::OpenConfirm(status, stateid) => {
-                OP_OPEN_CONFIRM.encode(dst);
-                status.encode(dst);
-                if *status == NfsStat4::Ok {
-                    if let Some(s) = stateid {
-                        s.encode(dst);
-                    }
-                }
-            }
-            NfsResop4::ReleaseLockowner(status) => {
-                OP_RELEASE_LOCKOWNER.encode(dst);
                 status.encode(dst);
             }
             NfsResop4::Verify(status) => {
@@ -1852,7 +1901,11 @@ impl Compound4Args {
         for _ in 0..count {
             argarray.push(decode_nfs_argop4(src)?);
         }
-        Ok(Compound4Args { tag, minorversion, argarray })
+        Ok(Compound4Args {
+            tag,
+            minorversion,
+            argarray,
+        })
     }
 }
 
@@ -1866,7 +1919,10 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
         OP_CLOSE => {
             let seqid = u32::decode(src)?;
             let open_stateid = Stateid4::decode(src)?;
-            Ok(NfsArgop4::Close(CloseArgs4 { seqid, open_stateid }))
+            Ok(NfsArgop4::Close(CloseArgs4 {
+                seqid,
+                open_stateid,
+            }))
         }
         OP_COMMIT => {
             let offset = u64::decode(src)?;
@@ -1876,19 +1932,28 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
         OP_CREATE => {
             let type_val = u32::decode(src)?;
             let objtype = match type_val {
-                5 => {  // NF4LNK
+                5 => {
+                    // NF4LNK
                     let linkdata = String::decode(src)?;
                     Createtype4::Link(linkdata)
                 }
-                3 => {  // NF4BLK
+                3 => {
+                    // NF4BLK
                     let s1 = u32::decode(src)?;
                     let s2 = u32::decode(src)?;
-                    Createtype4::Blk(Specdata4 { specdata1: s1, specdata2: s2 })
+                    Createtype4::Blk(Specdata4 {
+                        specdata1: s1,
+                        specdata2: s2,
+                    })
                 }
-                4 => {  // NF4CHR
+                4 => {
+                    // NF4CHR
                     let s1 = u32::decode(src)?;
                     let s2 = u32::decode(src)?;
-                    Createtype4::Chr(Specdata4 { specdata1: s1, specdata2: s2 })
+                    Createtype4::Chr(Specdata4 {
+                        specdata1: s1,
+                        specdata2: s2,
+                    })
                 }
                 6 => Createtype4::Sock,
                 7 => Createtype4::Fifo,
@@ -1897,7 +1962,11 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             };
             let objname = String::decode(src)?;
             let createattrs = Fattr4::decode(src)?;
-            Ok(NfsArgop4::Create(CreateArgs4 { objtype, objname, createattrs }))
+            Ok(NfsArgop4::Create(CreateArgs4 {
+                objtype,
+                objname,
+                createattrs,
+            }))
         }
         OP_GETATTR => {
             let attr_request = Bitmap4::decode(src)?;
@@ -1924,21 +1993,25 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
                 // OPEN4_CREATE
                 let createmode = u32::decode(src)?;
                 let how = match createmode {
-                    0 => { // UNCHECKED4
+                    0 => {
+                        // UNCHECKED4
                         let attrs = Fattr4::decode(src)?;
                         Createhow4::Unchecked(attrs)
                     }
-                    1 => { // GUARDED4
+                    1 => {
+                        // GUARDED4
                         let attrs = Fattr4::decode(src)?;
                         Createhow4::Guarded(attrs)
                     }
-                    2 => { // EXCLUSIVE4
+                    2 => {
+                        // EXCLUSIVE4
                         let vdata = decode_fixed_opaque(src, 8)?;
                         let mut v = [0u8; 8];
                         v.copy_from_slice(&vdata);
                         Createhow4::Exclusive(v)
                     }
-                    3 => { // EXCLUSIVE4_1
+                    3 => {
+                        // EXCLUSIVE4_1
                         let vdata = decode_fixed_opaque(src, 8)?;
                         let mut v = [0u8; 8];
                         v.copy_from_slice(&vdata);
@@ -1954,20 +2027,27 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             // open_claim4
             let claim_type = u32::decode(src)?;
             let claim = match claim_type {
-                0 => { // CLAIM_NULL
+                0 => {
+                    // CLAIM_NULL
                     let file = String::decode(src)?;
                     OpenClaim4::Null(file)
                 }
-                1 => { // CLAIM_PREVIOUS
+                1 => {
+                    // CLAIM_PREVIOUS
                     let dt = u32::decode(src)?;
                     OpenClaim4::Previous(dt)
                 }
-                2 => { // CLAIM_DELEGATE_CUR
+                2 => {
+                    // CLAIM_DELEGATE_CUR
                     let ds = Stateid4::decode(src)?;
                     let file = String::decode(src)?;
-                    OpenClaim4::DelegateCur { delegate_stateid: ds, file }
+                    OpenClaim4::DelegateCur {
+                        delegate_stateid: ds,
+                        file,
+                    }
                 }
-                3 => { // CLAIM_DELEGATE_PREV
+                3 => {
+                    // CLAIM_DELEGATE_PREV
                     let file = String::decode(src)?;
                     OpenClaim4::DelegatePrev(file)
                 }
@@ -1989,16 +2069,23 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             }))
         }
         OP_OPEN_CONFIRM => {
-            let open_stateid = Stateid4::decode(src)?;
-            let seqid = u32::decode(src)?;
-            Ok(NfsArgop4::OpenConfirm(OpenConfirmArgs4 { open_stateid, seqid }))
+            let _open_stateid = Stateid4::decode(src)?;
+            let _seqid = u32::decode(src)?;
+            Ok(NfsArgop4::MustNotImplement(
+                MustNotImplementOp4::OpenConfirm,
+            ))
         }
         OP_OPEN_DOWNGRADE => {
             let open_stateid = Stateid4::decode(src)?;
             let seqid = u32::decode(src)?;
             let share_access = u32::decode(src)?;
             let share_deny = u32::decode(src)?;
-            Ok(NfsArgop4::OpenDowngrade(OpenDowngradeArgs4 { open_stateid, seqid, share_access, share_deny }))
+            Ok(NfsArgop4::OpenDowngrade(OpenDowngradeArgs4 {
+                open_stateid,
+                seqid,
+                share_access,
+                share_deny,
+            }))
         }
         OP_PUTFH => {
             let object = NfsFh4::decode(src)?;
@@ -2010,7 +2097,11 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             let stateid = Stateid4::decode(src)?;
             let offset = u64::decode(src)?;
             let count = u32::decode(src)?;
-            Ok(NfsArgop4::Read(ReadArgs4 { stateid, offset, count }))
+            Ok(NfsArgop4::Read(ReadArgs4 {
+                stateid,
+                offset,
+                count,
+            }))
         }
         OP_READDIR => {
             let cookie = u64::decode(src)?;
@@ -2021,7 +2112,11 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             let maxcount = u32::decode(src)?;
             let attr_request = Bitmap4::decode(src)?;
             Ok(NfsArgop4::Readdir(ReaddirArgs4 {
-                cookie, cookieverf, dircount, maxcount, attr_request,
+                cookie,
+                cookieverf,
+                dircount,
+                maxcount,
+                attr_request,
             }))
         }
         OP_READLINK => Ok(NfsArgop4::Readlink),
@@ -2043,14 +2138,22 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
         OP_SETATTR => {
             let stateid = Stateid4::decode(src)?;
             let obj_attributes = Fattr4::decode(src)?;
-            Ok(NfsArgop4::Setattr(SetattrArgs4 { stateid, obj_attributes }))
+            Ok(NfsArgop4::Setattr(SetattrArgs4 {
+                stateid,
+                obj_attributes,
+            }))
         }
         OP_WRITE => {
             let stateid = Stateid4::decode(src)?;
             let offset = u64::decode(src)?;
             let stable = u32::decode(src)?;
             let data = decode_opaque(src)?;
-            Ok(NfsArgop4::Write(WriteArgs4 { stateid, offset, stable, data }))
+            Ok(NfsArgop4::Write(WriteArgs4 {
+                stateid,
+                offset,
+                stable,
+                data,
+            }))
         }
         OP_EXCHANGE_ID => {
             let clientowner = ClientOwner4::decode(src)?;
@@ -2061,7 +2164,9 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
                 1 => {
                     let enforce = Bitmap4::decode(src)?;
                     let allow = Bitmap4::decode(src)?;
-                    StateProtect4A::MachCred { ops: StateProt4MachOps { enforce, allow } }
+                    StateProtect4A::MachCred {
+                        ops: StateProt4MachOps { enforce, allow },
+                    }
                 }
                 _ => {
                     // Skip SSV and others
@@ -2070,7 +2175,10 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             };
             let client_impl_id = decode_list(src)?;
             Ok(NfsArgop4::ExchangeId(ExchangeIdArgs4 {
-                clientowner, flags, state_protect, client_impl_id,
+                clientowner,
+                flags,
+                state_protect,
+                client_impl_id,
             }))
         }
         OP_CREATE_SESSION => {
@@ -2082,8 +2190,13 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             let cb_program = u32::decode(src)?;
             let sec_parms = decode_list(src)?;
             Ok(NfsArgop4::CreateSession(CreateSessionArgs4 {
-                clientid, sequence, flags, fore_chan_attrs, back_chan_attrs,
-                cb_program, sec_parms,
+                clientid,
+                sequence,
+                flags,
+                fore_chan_attrs,
+                back_chan_attrs,
+                cb_program,
+                sec_parms,
             }))
         }
         OP_DESTROY_SESSION => {
@@ -2101,7 +2214,11 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             let highest_slotid = u32::decode(src)?;
             let cachethis = bool::decode(src)?;
             Ok(NfsArgop4::Sequence(SequenceArgs4 {
-                sessionid, sequenceid, slotid, highest_slotid, cachethis,
+                sessionid,
+                sequenceid,
+                slotid,
+                highest_slotid,
+                cachethis,
             }))
         }
         OP_RECLAIM_COMPLETE => {
@@ -2110,7 +2227,9 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
         }
         OP_DESTROY_CLIENTID => {
             let clientid = u64::decode(src)?;
-            Ok(NfsArgop4::DestroyClientid(DestroyClientidArgs4 { clientid }))
+            Ok(NfsArgop4::DestroyClientid(DestroyClientidArgs4 {
+                clientid,
+            }))
         }
         OP_BIND_CONN_TO_SESSION => {
             let sid = decode_fixed_opaque(src, 16)?;
@@ -2119,7 +2238,9 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             let dir = u32::decode(src)?;
             let use_conn_in_rdma_mode = bool::decode(src)?;
             Ok(NfsArgop4::BindConnToSession(BindConnToSessionArgs4 {
-                sessionid, dir, use_conn_in_rdma_mode,
+                sessionid,
+                dir,
+                use_conn_in_rdma_mode,
             }))
         }
         OP_SECINFO_NO_NAME => {
@@ -2143,34 +2264,34 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             let mut verifier = [0u8; 8];
             verifier.copy_from_slice(&vdata);
             let ownerid = decode_opaque(src)?;
-            let client = ClientOwner4 { verifier, ownerid };
+            let _client = ClientOwner4 { verifier, ownerid };
             // callback: cb_program + cb_location (netaddr4 = netid + addr)
-            let cb_program = u32::decode(src)?;
-            let cb_netid = String::decode(src)?;
-            let cb_addr = String::decode(src)?;
-            let callback = NfsClientCallback4 {
-                cb_program,
-                cb_location: format!("{cb_netid}://{cb_addr}"),
-            };
-            let callback_ident = u32::decode(src)?;
-            Ok(NfsArgop4::SetClientId(SetClientIdArgs4 { client, callback, callback_ident }))
+            let _cb_program = u32::decode(src)?;
+            let _cb_netid = String::decode(src)?;
+            let _cb_addr = String::decode(src)?;
+            let _callback_ident = u32::decode(src)?;
+            Ok(NfsArgop4::MustNotImplement(
+                MustNotImplementOp4::SetClientId,
+            ))
         }
         OP_SETCLIENTID_CONFIRM => {
-            let clientid = u64::decode(src)?;
-            let vdata = decode_fixed_opaque(src, 8)?;
-            let mut verifier = [0u8; 8];
-            verifier.copy_from_slice(&vdata);
-            Ok(NfsArgop4::SetClientIdConfirm(SetClientIdConfirmArgs4 { clientid, verifier }))
+            let _clientid = u64::decode(src)?;
+            let _verifier = decode_fixed_opaque(src, 8)?;
+            Ok(NfsArgop4::MustNotImplement(
+                MustNotImplementOp4::SetClientIdConfirm,
+            ))
         }
         OP_RENEW => {
-            let clientid = u64::decode(src)?;
-            Ok(NfsArgop4::Renew(clientid))
+            let _clientid = u64::decode(src)?;
+            Ok(NfsArgop4::MustNotImplement(MustNotImplementOp4::Renew))
         }
         OP_RELEASE_LOCKOWNER => {
             // lock_owner: clientid + owner
             let _clientid = u64::decode(src)?;
             let _owner = decode_opaque(src)?;
-            Ok(NfsArgop4::ReleaseLockowner)
+            Ok(NfsArgop4::MustNotImplement(
+                MustNotImplementOp4::ReleaseLockowner,
+            ))
         }
         OP_LOCK => {
             let locktype = NfsLockType4::decode(src)?;
@@ -2198,7 +2319,13 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
                     lock_seqid,
                 })
             };
-            Ok(NfsArgop4::Lock(LockArgs4 { locktype, reclaim, offset, length, locker }))
+            Ok(NfsArgop4::Lock(LockArgs4 {
+                locktype,
+                reclaim,
+                offset,
+                length,
+                locker,
+            }))
         }
         OP_LOCKT => {
             let locktype = NfsLockType4::decode(src)?;
@@ -2207,7 +2334,9 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             let clientid = u64::decode(src)?;
             let owner = decode_opaque(src)?;
             Ok(NfsArgop4::Lockt(LocktArgs4 {
-                locktype, offset, length,
+                locktype,
+                offset,
+                length,
                 owner: StateOwner4 { clientid, owner },
             }))
         }
@@ -2217,7 +2346,13 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             let lock_stateid = Stateid4::decode(src)?;
             let offset = u64::decode(src)?;
             let length = u64::decode(src)?;
-            Ok(NfsArgop4::Locku(LockuArgs4 { locktype, seqid, lock_stateid, offset, length }))
+            Ok(NfsArgop4::Locku(LockuArgs4 {
+                locktype,
+                seqid,
+                lock_stateid,
+                offset,
+                length,
+            }))
         }
         OP_OPENATTR => {
             let createdir = bool::decode(src)?;
@@ -2243,14 +2378,16 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
                 let flavor = u32::decode(src)?;
                 match flavor {
                     0 => {} // AUTH_NONE
-                    1 => {  // AUTH_SYS
+                    1 => {
+                        // AUTH_SYS
                         let _stamp = u32::decode(src)?;
                         let _name = String::decode(src)?;
                         let _uid = u32::decode(src)?;
                         let _gid = u32::decode(src)?;
                         let _gids = decode_list::<u32>(src)?;
                     }
-                    6 => { // RPCSEC_GSS
+                    6 => {
+                        // RPCSEC_GSS
                         let _gcbp_service = u32::decode(src)?;
                         let _gss_handle = decode_opaque(src)?;
                         let _gcbp_handle_from_server = decode_opaque(src)?;
@@ -2321,7 +2458,8 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             let _iomode = u32::decode(src)?;
             let _return_type = u32::decode(src)?;
             match _return_type {
-                1 => { // LAYOUTRETURN4_FILE
+                1 => {
+                    // LAYOUTRETURN4_FILE
                     let _offset = u64::decode(src)?;
                     let _length = u64::decode(src)?;
                     let _stateid = Stateid4::decode(src)?;
@@ -2343,7 +2481,8 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             let _claim_type = u32::decode(src)?;
             match _claim_type {
                 0 => {} // CLAIM_NULL
-                3 => { // CLAIM_DELEGATE_PREV
+                3 => {
+                    // CLAIM_DELEGATE_PREV
                     let _file = String::decode(src)?;
                 }
                 _ => {}
@@ -2354,5 +2493,40 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             // Unknown op - return Illegal
             Ok(NfsArgop4::Illegal)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_nfsstat4_v41_status_codes_match_rfc8881() {
+        assert_eq!(NfsStat4::SequencePos as u32, 10064);
+        assert_eq!(NfsStat4::ReqTooBig as u32, 10065);
+        assert_eq!(NfsStat4::RepTooBig as u32, 10066);
+        assert_eq!(NfsStat4::RepTooBigToCache as u32, 10067);
+        assert_eq!(NfsStat4::RetryUncachedRep as u32, 10068);
+        assert_eq!(NfsStat4::UnsafeCompound as u32, 10069);
+        assert_eq!(NfsStat4::TooManyOps as u32, 10070);
+        assert_eq!(NfsStat4::OpNotInSession as u32, 10071);
+        assert_eq!(NfsStat4::ClientidBusy as u32, 10074);
+        assert_eq!(NfsStat4::SeqFalseRetry as u32, 10076);
+        assert_eq!(NfsStat4::BadHighSlot as u32, 10077);
+        assert_eq!(NfsStat4::NotOnlyOp as u32, 10081);
+        assert_eq!(NfsStat4::WrongCred as u32, 10082);
+        assert_eq!(NfsStat4::WrongType as u32, 10083);
+        assert_eq!(NfsStat4::DelegRevoked as u32, 10087);
+    }
+
+    #[test]
+    fn test_nfsstat4_from_u32_decodes_newer_v41_errors() {
+        assert_eq!(NfsStat4::from_u32(10064), NfsStat4::SequencePos);
+        assert_eq!(NfsStat4::from_u32(10068), NfsStat4::RetryUncachedRep);
+        assert_eq!(NfsStat4::from_u32(10071), NfsStat4::OpNotInSession);
+        assert_eq!(NfsStat4::from_u32(10074), NfsStat4::ClientidBusy);
+        assert_eq!(NfsStat4::from_u32(10081), NfsStat4::NotOnlyOp);
+        assert_eq!(NfsStat4::from_u32(10082), NfsStat4::WrongCred);
+        assert_eq!(NfsStat4::from_u32(10083), NfsStat4::WrongType);
     }
 }

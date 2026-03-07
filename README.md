@@ -1,6 +1,6 @@
 # nfsserve4-rs
 
-A production-quality NFSv4.1 (and NFSv4.0) server library in Rust. Implement a filesystem trait; the library handles the wire protocol, state management, and serves it over TCP.
+A production-quality NFSv4.1 server library in Rust. Implement a filesystem trait; the library handles the wire protocol, state management, and serves it over TCP.
 
 The primary use case is embedding as a localhost NFS server — a FUSE replacement that needs no kernel modules. macOS and Linux ship NFSv4 clients in-kernel, so the mount just works.
 
@@ -29,11 +29,13 @@ Then mount:
 
 ```bash
 # Linux
-mount -t nfs4 -o vers=4.0,proto=tcp,port=2049 127.0.0.1:/ /mnt/nfs
+mount -t nfs4 -o vers=4.1,proto=tcp,port=2049 127.0.0.1:/ /mnt/nfs
 
 # macOS
-mount -t nfs -o vers=4,tcp,port=2049 127.0.0.1:/ /mnt/nfs
+mount_nfs -o vers=4.1,tcp,port=2049 127.0.0.1:/ /mnt/nfs
 ```
+
+Note: on macOS, `vers=4` means NFSv4.0. Use `vers=4.1` explicitly.
 
 ## Implementing a Filesystem
 
@@ -61,14 +63,13 @@ The root directory must have `FileId = 1`. The server handles all protocol detai
 
 | Operation | Status |
 |-----------|--------|
-| EXCHANGE_ID / CREATE_SESSION | Supported (NFSv4.1) |
-| SETCLIENTID / SETCLIENTID_CONFIRM | Supported (NFSv4.0) |
+| EXCHANGE_ID / CREATE_SESSION | Supported |
 | SEQUENCE | Supported |
 | PUTROOTFH / PUTFH / GETFH | Supported |
 | LOOKUP / LOOKUPP | Supported |
 | GETATTR / SETATTR | Supported |
 | ACCESS | Supported |
-| OPEN / CLOSE / OPEN_CONFIRM | Supported |
+| OPEN / CLOSE / OPEN_DOWNGRADE | Supported |
 | READ / WRITE / COMMIT | Supported |
 | CREATE (mkdir, symlink) | Supported |
 | READDIR | Supported |
@@ -76,6 +77,7 @@ The root directory must have `FileId = 1`. The server handles all protocol detai
 | REMOVE | Supported |
 | RENAME | Supported |
 | LINK | Supported |
+| BIND_CONN_TO_SESSION | Supported |
 | SAVEFH / RESTOREFH | Supported |
 | SECINFO / SECINFO_NO_NAME | Supported |
 | RECLAIM_COMPLETE | Supported |

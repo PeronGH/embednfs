@@ -1,14 +1,13 @@
+use crate::fs::FileId;
+use dashmap::DashMap;
 /// NFSv4.1 session and state management.
 ///
 /// Manages client IDs, sessions, slot tables, open state, and file handle mappings.
-
 use nfs4_proto::*;
-use dashmap::DashMap;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use tokio::sync::RwLock;
-use crate::fs::FileId;
 
 /// Lock state for a file.
 #[derive(Debug)]
@@ -132,17 +131,23 @@ impl StateManager {
 
         // Check if we already have this client
         let clientid = {
-            let existing = inner.clients.values().find(|c| c.owner.ownerid == args.clientowner.ownerid);
+            let existing = inner
+                .clients
+                .values()
+                .find(|c| c.owner.ownerid == args.clientowner.ownerid);
             if let Some(c) = existing {
                 c.clientid
             } else {
                 let id = self.next_clientid.fetch_add(1, Ordering::Relaxed);
-                inner.clients.insert(id, ClientState {
-                    clientid: id,
-                    owner: args.clientowner.clone(),
-                    confirmed: false,
-                    sequence_id: 1,
-                });
+                inner.clients.insert(
+                    id,
+                    ClientState {
+                        clientid: id,
+                        owner: args.clientowner.clone(),
+                        confirmed: false,
+                        sequence_id: 1,
+                    },
+                );
                 id
             }
         };
@@ -164,7 +169,11 @@ impl StateManager {
             EXCHGID4_FLAG_USE_NON_PNFS
         };
         // - CONFIRMED_R: only set if client record is already confirmed
-        let confirmed_flag = if confirmed { EXCHGID4_FLAG_CONFIRMED_R } else { 0 };
+        let confirmed_flag = if confirmed {
+            EXCHGID4_FLAG_CONFIRMED_R
+        } else {
+            0
+        };
 
         ExchangeIdRes4 {
             clientid,
@@ -176,16 +185,24 @@ impl StateManager {
             server_impl_id: vec![NfsImplId4 {
                 domain: "nfsserve4-rs.local".into(),
                 name: "nfsserve4-rs".into(),
-                date: NfsTime4 { seconds: 0, nseconds: 0 },
+                date: NfsTime4 {
+                    seconds: 0,
+                    nseconds: 0,
+                },
             }],
         }
     }
 
     /// Handle CREATE_SESSION.
-    pub async fn create_session(&self, args: &CreateSessionArgs4) -> Result<CreateSessionRes4, NfsStat4> {
+    pub async fn create_session(
+        &self,
+        args: &CreateSessionArgs4,
+    ) -> Result<CreateSessionRes4, NfsStat4> {
         let mut inner = self.inner.write().await;
 
-        let client = inner.clients.get_mut(&args.clientid)
+        let client = inner
+            .clients
+            .get_mut(&args.clientid)
             .ok_or(NfsStat4::StaleClientid)?;
 
         // Validate sequence
@@ -201,7 +218,13 @@ impl StateManager {
         sessionid[8..16].copy_from_slice(&(client.sequence_id as u64).to_be_bytes());
 
         let max_slots = args.fore_chan_attrs.maxrequests.min(64) as usize;
-        let slots = vec![SlotState { sequence_id: 1, cached_reply: None }; max_slots.max(1)];
+        let slots = vec![
+            SlotState {
+                sequence_id: 1,
+                cached_reply: None
+            };
+            max_slots.max(1)
+        ];
 
         let fore_chan = ChannelAttrs4 {
             headerpadsize: 0,
@@ -223,11 +246,14 @@ impl StateManager {
             rdma_ird: vec![],
         };
 
-        inner.sessions.insert(sessionid, SessionState {
-            clientid: args.clientid,
-            slots,
-            fore_chan_attrs: fore_chan.clone(),
-        });
+        inner.sessions.insert(
+            sessionid,
+            SessionState {
+                clientid: args.clientid,
+                slots,
+                fore_chan_attrs: fore_chan.clone(),
+            },
+        );
 
         Ok(CreateSessionRes4 {
             sessionid,
@@ -242,7 +268,9 @@ impl StateManager {
     pub async fn sequence(&self, args: &SequenceArgs4) -> Result<SequenceRes4, NfsStat4> {
         let mut inner = self.inner.write().await;
 
-        let session = inner.sessions.get_mut(&args.sessionid)
+        let session = inner
+            .sessions
+            .get_mut(&args.sessionid)
             .ok_or(NfsStat4::BadSession)?;
 
         let slot_idx = args.slotid as usize;
@@ -277,7 +305,9 @@ impl StateManager {
     /// Handle DESTROY_SESSION.
     pub async fn destroy_session(&self, sessionid: &Sessionid4) -> Result<(), NfsStat4> {
         let mut inner = self.inner.write().await;
-        inner.sessions.remove(sessionid)
+        inner
+            .sessions
+            .remove(sessionid)
             .ok_or(NfsStat4::BadSession)?;
         Ok(())
     }
@@ -287,13 +317,18 @@ impl StateManager {
         let mut inner = self.inner.write().await;
         // Remove all sessions for this client
         inner.sessions.retain(|_, s| s.clientid != clientid);
-        inner.clients.remove(&clientid)
+        inner
+            .clients
+            .remove(&clientid)
             .ok_or(NfsStat4::StaleClientid)?;
         Ok(())
     }
 
     /// Handle BIND_CONN_TO_SESSION.
-    pub async fn bind_conn_to_session(&self, args: &BindConnToSessionArgs4) -> Result<BindConnToSessionRes4, NfsStat4> {
+    pub async fn bind_conn_to_session(
+        &self,
+        args: &BindConnToSessionArgs4,
+    ) -> Result<BindConnToSessionRes4, NfsStat4> {
         let inner = self.inner.read().await;
         if !inner.sessions.contains_key(&args.sessionid) {
             return Err(NfsStat4::BadSession);
@@ -306,20 +341,29 @@ impl StateManager {
     }
 
     /// Create an open state for a file. Returns a Stateid4.
-    pub async fn create_open_state(&self, file_id: FileId, clientid: Clientid4, share_access: u32, share_deny: u32) -> Stateid4 {
+    pub async fn create_open_state(
+        &self,
+        file_id: FileId,
+        clientid: Clientid4,
+        share_access: u32,
+        share_deny: u32,
+    ) -> Stateid4 {
         let seq = self.next_stateid.fetch_add(1, Ordering::Relaxed);
         let mut other = [0u8; 12];
         other[..4].copy_from_slice(&seq.to_be_bytes());
         other[4..12].copy_from_slice(&clientid.to_be_bytes());
 
         let mut inner = self.inner.write().await;
-        inner.open_files.insert(other, OpenFileState {
-            file_id,
-            clientid,
-            stateid_seq: 1,
-            share_access,
-            share_deny,
-        });
+        inner.open_files.insert(
+            other,
+            OpenFileState {
+                file_id,
+                clientid,
+                stateid_seq: 1,
+                share_access,
+                share_deny,
+            },
+        );
 
         Stateid4 { seqid: 1, other }
     }
@@ -327,7 +371,9 @@ impl StateManager {
     /// Close an open state.
     pub async fn close_state(&self, stateid: &Stateid4) -> Result<Stateid4, NfsStat4> {
         let mut inner = self.inner.write().await;
-        inner.open_files.remove(&stateid.other)
+        inner
+            .open_files
+            .remove(&stateid.other)
             .ok_or(NfsStat4::BadStateid)?;
         // Return a stateid with seqid+1 and all-zeros other (marks as closed)
         Ok(Stateid4 {
@@ -346,58 +392,40 @@ impl StateManager {
     /// Get the max request size for a session.
     pub async fn get_session_max_request(&self, sessionid: &Sessionid4) -> Option<u32> {
         let inner = self.inner.read().await;
-        inner.sessions.get(sessionid).map(|s| s.fore_chan_attrs.maxresponsesize)
+        inner
+            .sessions
+            .get(sessionid)
+            .map(|s| s.fore_chan_attrs.maxresponsesize)
     }
 
-    /// Handle SETCLIENTID (NFSv4.0).
-    pub async fn set_client_id(&self, args: &SetClientIdArgs4) -> SetClientIdRes4 {
-        let mut inner = self.inner.write().await;
-
-        // Check if we already have this client
-        let clientid = {
-            let existing = inner.clients.values().find(|c| c.owner.ownerid == args.client.ownerid);
-            if let Some(c) = existing {
-                c.clientid
-            } else {
-                let id = self.next_clientid.fetch_add(1, Ordering::Relaxed);
-                inner.clients.insert(id, ClientState {
-                    clientid: id,
-                    owner: args.client.clone(),
-                    confirmed: false,
-                    sequence_id: 1,
-                });
-                id
-            }
-        };
-
-        // Generate a verifier for confirmation
-        let mut verifier = [0u8; 8];
-        verifier[..8].copy_from_slice(&clientid.to_be_bytes());
-
-        SetClientIdRes4 { clientid, verifier }
-    }
-
-    /// Handle SETCLIENTID_CONFIRM (NFSv4.0).
-    pub async fn set_client_id_confirm(&self, args: &SetClientIdConfirmArgs4) -> Result<(), NfsStat4> {
-        let mut inner = self.inner.write().await;
-        let client = inner.clients.get_mut(&args.clientid)
-            .ok_or(NfsStat4::StaleClientid)?;
-        client.confirmed = true;
-        Ok(())
+    /// Look up the client ID associated with a session.
+    pub async fn session_clientid(&self, sessionid: &Sessionid4) -> Option<Clientid4> {
+        let inner = self.inner.read().await;
+        inner
+            .sessions
+            .get(sessionid)
+            .map(|session| session.clientid)
     }
 
     /// Create a new lock state (LOCK with new lock owner).
-    pub async fn create_lock_state(&self, _open_stateid: &Stateid4, owner: &StateOwner4) -> Result<Stateid4, NfsStat4> {
+    pub async fn create_lock_state(
+        &self,
+        _open_stateid: &Stateid4,
+        owner: &StateOwner4,
+    ) -> Result<Stateid4, NfsStat4> {
         let seq = self.next_stateid.fetch_add(1, Ordering::Relaxed);
         let mut other = [0u8; 12];
         other[..4].copy_from_slice(&seq.to_be_bytes());
         other[4..12].copy_from_slice(&owner.clientid.to_be_bytes());
 
         let mut inner = self.inner.write().await;
-        inner.lock_files.insert(other, LockFileState {
-            owner: owner.clone(),
-            stateid_seq: 1,
-        });
+        inner.lock_files.insert(
+            other,
+            LockFileState {
+                owner: owner.clone(),
+                stateid_seq: 1,
+            },
+        );
 
         Ok(Stateid4 { seqid: 1, other })
     }
@@ -405,7 +433,9 @@ impl StateManager {
     /// Update an existing lock state (LOCK with existing lock owner).
     pub async fn update_lock_state(&self, lock_stateid: &Stateid4) -> Result<Stateid4, NfsStat4> {
         let mut inner = self.inner.write().await;
-        let state = inner.lock_files.get_mut(&lock_stateid.other)
+        let state = inner
+            .lock_files
+            .get_mut(&lock_stateid.other)
             .ok_or(NfsStat4::BadStateid)?;
         state.stateid_seq += 1;
         Ok(Stateid4 {
@@ -417,7 +447,9 @@ impl StateManager {
     /// Unlock (LOCKU).
     pub async fn unlock_state(&self, lock_stateid: &Stateid4) -> Result<Stateid4, NfsStat4> {
         let mut inner = self.inner.write().await;
-        let state = inner.lock_files.get_mut(&lock_stateid.other)
+        let state = inner
+            .lock_files
+            .get_mut(&lock_stateid.other)
             .ok_or(NfsStat4::BadStateid)?;
         state.stateid_seq += 1;
         let new_seqid = state.stateid_seq;

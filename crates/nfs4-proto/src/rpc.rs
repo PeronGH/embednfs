@@ -1,6 +1,6 @@
+use crate::xdr::*;
 /// Sun RPC (ONC RPC) message types per RFC 5531.
 use bytes::{Bytes, BytesMut};
-use crate::xdr::*;
 
 pub const RPC_VERSION: u32 = 2;
 pub const NFS_PROGRAM: u32 = 100003;
@@ -137,7 +137,13 @@ impl XdrDecode for AuthSysParams {
         let uid = u32::decode(src)?;
         let gid = u32::decode(src)?;
         let gids = decode_list(src)?;
-        Ok(AuthSysParams { stamp, machinename, uid, gid, gids })
+        Ok(AuthSysParams {
+            stamp,
+            machinename,
+            uid,
+            gid,
+            gids,
+        })
     }
 }
 
@@ -166,7 +172,15 @@ impl XdrDecode for RpcCallHeader {
         let proc_num = u32::decode(src)?;
         let cred = OpaqueAuth::decode(src)?;
         let verf = OpaqueAuth::decode(src)?;
-        Ok(RpcCallHeader { xid, rpcvers, prog, vers, proc_num, cred, verf })
+        Ok(RpcCallHeader {
+            xid,
+            rpcvers,
+            prog,
+            vers,
+            proc_num,
+            cred,
+            verf,
+        })
     }
 }
 

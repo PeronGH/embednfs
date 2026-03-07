@@ -2,7 +2,6 @@
 ///
 /// Provides a fully functional in-memory filesystem for testing and as
 /// a reference implementation of the [`NfsFileSystem`] trait.
-
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -70,10 +69,13 @@ impl MemFs {
         };
 
         // No . or .. stored; they're synthesized by the server
-        inodes.insert(1, Inode {
-            attr: root_attr,
-            data: InodeData::Directory(HashMap::new()),
-        });
+        inodes.insert(
+            1,
+            Inode {
+                attr: root_attr,
+                data: InodeData::Directory(HashMap::new()),
+            },
+        );
 
         MemFs {
             inner: RwLock::new(MemFsInner { inodes }),
@@ -98,7 +100,9 @@ impl MemFs {
 impl NfsFileSystem for MemFs {
     async fn getattr(&self, id: FileId) -> NfsResult<FileAttr> {
         let inner = self.inner.read().await;
-        inner.inodes.get(&id)
+        inner
+            .inodes
+            .get(&id)
             .map(|i| i.attr.clone())
             .ok_or(NfsError::Stale)
     }
@@ -172,9 +176,7 @@ impl NfsFileSystem for MemFs {
         let inner = self.inner.read().await;
         let inode = inner.inodes.get(&dir_id).ok_or(NfsError::Stale)?;
         match &inode.data {
-            InodeData::Directory(entries) => {
-                entries.get(name).copied().ok_or(NfsError::Noent)
-            }
+            InodeData::Directory(entries) => entries.get(name).copied().ok_or(NfsError::Noent),
             _ => Err(NfsError::Notdir),
         }
     }
@@ -316,10 +318,13 @@ impl NfsFileSystem for MemFs {
             _ => return Err(NfsError::Notdir),
         }
 
-        inner.inodes.insert(new_id, Inode {
-            attr: file_attr,
-            data: InodeData::File(Vec::new()),
-        });
+        inner.inodes.insert(
+            new_id,
+            Inode {
+                attr: file_attr,
+                data: InodeData::File(Vec::new()),
+            },
+        );
 
         Ok(new_id)
     }
@@ -373,15 +378,24 @@ impl NfsFileSystem for MemFs {
             _ => return Err(NfsError::Notdir),
         }
 
-        inner.inodes.insert(new_id, Inode {
-            attr: dir_attr,
-            data: InodeData::Directory(HashMap::new()),
-        });
+        inner.inodes.insert(
+            new_id,
+            Inode {
+                attr: dir_attr,
+                data: InodeData::Directory(HashMap::new()),
+            },
+        );
 
         Ok(new_id)
     }
 
-    async fn symlink(&self, dir_id: FileId, name: &str, target: &str, attrs: &SetFileAttr) -> NfsResult<FileId> {
+    async fn symlink(
+        &self,
+        dir_id: FileId,
+        name: &str,
+        target: &str,
+        attrs: &SetFileAttr,
+    ) -> NfsResult<FileId> {
         let new_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (now_s, now_ns) = Self::now();
 
@@ -425,10 +439,13 @@ impl NfsFileSystem for MemFs {
             _ => return Err(NfsError::Notdir),
         }
 
-        inner.inodes.insert(new_id, Inode {
-            attr: link_attr,
-            data: InodeData::Symlink(target.to_string()),
-        });
+        inner.inodes.insert(
+            new_id,
+            Inode {
+                attr: link_attr,
+                data: InodeData::Symlink(target.to_string()),
+            },
+        );
 
         Ok(new_id)
     }
@@ -448,9 +465,7 @@ impl NfsFileSystem for MemFs {
         let child_id = {
             let dir = inner.inodes.get(&dir_id).ok_or(NfsError::Stale)?;
             match &dir.data {
-                InodeData::Directory(entries) => {
-                    *entries.get(name).ok_or(NfsError::Noent)?
-                }
+                InodeData::Directory(entries) => *entries.get(name).ok_or(NfsError::Noent)?,
                 _ => return Err(NfsError::Notdir),
             }
         };
@@ -480,16 +495,20 @@ impl NfsFileSystem for MemFs {
         Ok(())
     }
 
-    async fn rename(&self, from_dir: FileId, from_name: &str, to_dir: FileId, to_name: &str) -> NfsResult<()> {
+    async fn rename(
+        &self,
+        from_dir: FileId,
+        from_name: &str,
+        to_dir: FileId,
+        to_name: &str,
+    ) -> NfsResult<()> {
         let mut inner = self.inner.write().await;
 
         // Get source file id
         let child_id = {
             let dir = inner.inodes.get(&from_dir).ok_or(NfsError::Stale)?;
             match &dir.data {
-                InodeData::Directory(entries) => {
-                    *entries.get(from_name).ok_or(NfsError::Noent)?
-                }
+                InodeData::Directory(entries) => *entries.get(from_name).ok_or(NfsError::Noent)?,
                 _ => return Err(NfsError::Notdir),
             }
         };
@@ -572,7 +591,10 @@ mod tests {
     #[tokio::test]
     async fn test_create_and_read() {
         let fs = MemFs::new();
-        let id = fs.create(1, "test.txt", &SetFileAttr::default()).await.unwrap();
+        let id = fs
+            .create(1, "test.txt", &SetFileAttr::default())
+            .await
+            .unwrap();
         let written = fs.write(id, 0, b"hello world").await.unwrap();
         assert_eq!(written, 11);
         let (data, eof) = fs.read(id, 0, 1024).await.unwrap();
@@ -583,7 +605,10 @@ mod tests {
     #[tokio::test]
     async fn test_mkdir_and_readdir() {
         let fs = MemFs::new();
-        let dir_id = fs.mkdir(1, "subdir", &SetFileAttr::default()).await.unwrap();
+        let dir_id = fs
+            .mkdir(1, "subdir", &SetFileAttr::default())
+            .await
+            .unwrap();
         let entries = fs.readdir(1).await.unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "subdir");
@@ -593,7 +618,10 @@ mod tests {
     #[tokio::test]
     async fn test_remove() {
         let fs = MemFs::new();
-        let _id = fs.create(1, "to_delete.txt", &SetFileAttr::default()).await.unwrap();
+        let _id = fs
+            .create(1, "to_delete.txt", &SetFileAttr::default())
+            .await
+            .unwrap();
         fs.remove(1, "to_delete.txt").await.unwrap();
         assert!(fs.lookup(1, "to_delete.txt").await.is_err());
     }
@@ -601,7 +629,9 @@ mod tests {
     #[tokio::test]
     async fn test_rename() {
         let fs = MemFs::new();
-        fs.create(1, "old.txt", &SetFileAttr::default()).await.unwrap();
+        fs.create(1, "old.txt", &SetFileAttr::default())
+            .await
+            .unwrap();
         fs.rename(1, "old.txt", 1, "new.txt").await.unwrap();
         assert!(fs.lookup(1, "old.txt").await.is_err());
         assert!(fs.lookup(1, "new.txt").await.is_ok());

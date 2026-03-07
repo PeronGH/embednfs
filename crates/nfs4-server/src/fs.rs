@@ -3,7 +3,6 @@
 /// Implement this trait to expose any data source as an NFS filesystem.
 /// The server library handles all protocol details — implementors only
 /// need to think in terms of files, directories, and metadata.
-
 use async_trait::async_trait;
 use std::fmt;
 
@@ -210,7 +209,13 @@ pub trait NfsFileSystem: Send + Sync + 'static {
     async fn mkdir(&self, dir_id: FileId, name: &str, attrs: &SetFileAttr) -> NfsResult<FileId>;
 
     /// Create a symbolic link. Returns the new symlink ID.
-    async fn symlink(&self, dir_id: FileId, name: &str, target: &str, attrs: &SetFileAttr) -> NfsResult<FileId>;
+    async fn symlink(
+        &self,
+        dir_id: FileId,
+        name: &str,
+        target: &str,
+        attrs: &SetFileAttr,
+    ) -> NfsResult<FileId>;
 
     /// Read a symbolic link target.
     async fn readlink(&self, id: FileId) -> NfsResult<String>;
@@ -219,7 +224,13 @@ pub trait NfsFileSystem: Send + Sync + 'static {
     async fn remove(&self, dir_id: FileId, name: &str) -> NfsResult<()>;
 
     /// Rename/move an entry.
-    async fn rename(&self, from_dir: FileId, from_name: &str, to_dir: FileId, to_name: &str) -> NfsResult<()>;
+    async fn rename(
+        &self,
+        from_dir: FileId,
+        from_name: &str,
+        to_dir: FileId,
+        to_name: &str,
+    ) -> NfsResult<()>;
 
     /// Create a hard link.
     async fn link(&self, id: FileId, dir_id: FileId, name: &str) -> NfsResult<()>;
@@ -251,15 +262,15 @@ pub struct FsInfo {
 impl Default for FsInfo {
     fn default() -> Self {
         FsInfo {
-            total_bytes: 1 << 40,    // 1 TB
-            free_bytes: 1 << 39,     // 512 GB
+            total_bytes: 1 << 40, // 1 TB
+            free_bytes: 1 << 39,  // 512 GB
             avail_bytes: 1 << 39,
             total_files: 1 << 30,
             free_files: 1 << 29,
             avail_files: 1 << 29,
             max_file_size: 1 << 40,
             max_name: 255,
-            max_read: 1048576,       // 1 MB
+            max_read: 1048576, // 1 MB
             max_write: 1048576,
         }
     }
