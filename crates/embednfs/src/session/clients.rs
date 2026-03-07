@@ -5,6 +5,18 @@ use embednfs_proto::*;
 use super::manager::StateManager;
 use super::state::{ClientState, SessionState, SlotState};
 
+/// Result of SEQUENCE processing.
+pub enum SequenceResult {
+    /// New request — execute the compound and cache the result.
+    NewRequest {
+        res: SequenceRes4,
+        sessionid: Sessionid4,
+        slotid: u32,
+    },
+    /// Retransmit — return the cached encoded Compound4Res bytes.
+    CachedReply(Vec<u8>),
+}
+
 impl StateManager {
     /// Handle EXCHANGE_ID.
     pub async fn exchange_id(&self, args: &ExchangeIdArgs4) -> ExchangeIdRes4 {
@@ -83,7 +95,7 @@ impl StateManager {
         let max_slots = args.fore_chan_attrs.maxrequests.min(64) as usize;
         let slots = vec![
             SlotState {
-                sequence_id: 1,
+                sequence_id: 0,
                 cached_reply: None,
             };
             max_slots.max(1)
@@ -126,8 +138,11 @@ impl StateManager {
         })
     }
 
-    /// Handle SEQUENCE.
-    pub async fn sequence(&self, args: &SequenceArgs4) -> Result<SequenceRes4, NfsStat4> {
+    /// Handle SEQUENCE (RFC 8881 §18.46).
+    ///
+    /// Slot stores the last executed sequence ID. A new request has
+    /// `sequenceid == stored + 1`; a retransmit has `sequenceid == stored`.
+    pub async fn sequence(&self, args: &SequenceArgs4) -> Result<SequenceResult, NfsStat4> {
         let mut inner = self.inner.write().await;
         let session = inner
             .sessions
@@ -139,22 +154,49 @@ impl StateManager {
             return Err(NfsStat4::BadSlot);
         }
 
-        let slot = &mut session.slots[slot_idx];
-        if args.sequenceid == slot.sequence_id {
-            slot.sequence_id += 1;
-        } else if args.sequenceid != slot.sequence_id - 1 {
-            return Err(NfsStat4::SeqMisordered);
-        }
-
         let highest_slot = (session.slots.len() - 1) as u32;
-        Ok(SequenceRes4 {
-            sessionid: args.sessionid,
-            sequenceid: args.sequenceid,
-            slotid: args.slotid,
-            highest_slotid: highest_slot,
-            target_highest_slotid: highest_slot,
-            status_flags: 0,
-        })
+        let slot = &mut session.slots[slot_idx];
+
+        if args.sequenceid == slot.sequence_id + 1 {
+            // New request — advance slot.
+            slot.sequence_id = args.sequenceid;
+            slot.cached_reply = None;
+            Ok(SequenceResult::NewRequest {
+                res: SequenceRes4 {
+                    sessionid: args.sessionid,
+                    sequenceid: args.sequenceid,
+                    slotid: args.slotid,
+                    highest_slotid: highest_slot,
+                    target_highest_slotid: highest_slot,
+                    status_flags: 0,
+                },
+                sessionid: args.sessionid,
+                slotid: args.slotid,
+            })
+        } else if args.sequenceid == slot.sequence_id {
+            // Retransmit — return cached reply if available.
+            match &slot.cached_reply {
+                Some(cached) => Ok(SequenceResult::CachedReply(cached.clone())),
+                None => Err(NfsStat4::RetryUncachedRep),
+            }
+        } else {
+            Err(NfsStat4::SeqMisordered)
+        }
+    }
+
+    /// Cache the encoded Compound4Res for a slot's replay cache.
+    pub async fn cache_slot_reply(
+        &self,
+        sessionid: &Sessionid4,
+        slotid: u32,
+        encoded: Vec<u8>,
+    ) {
+        let mut inner = self.inner.write().await;
+        if let Some(session) = inner.sessions.get_mut(sessionid)
+            && let Some(slot) = session.slots.get_mut(slotid as usize)
+        {
+            slot.cached_reply = Some(encoded);
+        }
     }
 
     /// Handle DESTROY_SESSION.

@@ -34,8 +34,9 @@ pub(super) struct SessionState {
 
 #[derive(Clone)]
 pub(super) struct SlotState {
+    /// Last executed sequence ID (0 = no request executed yet).
     pub sequence_id: Sequenceid4,
-    #[allow(dead_code)]
+    /// Cached encoded Compound4Res for replay on retransmit.
     pub cached_reply: Option<Vec<u8>>,
 }
 

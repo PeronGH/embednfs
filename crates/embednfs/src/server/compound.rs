@@ -3,6 +3,7 @@ use tracing::{debug, trace};
 use embednfs_proto::*;
 
 use crate::fs::FileSystem;
+use crate::session::SequenceResult;
 
 use super::handles::path_to_fh;
 use super::util::{
@@ -10,8 +11,19 @@ use super::util::{
 };
 use super::NfsServer;
 
+/// Result of compound processing, distinguishing new results from cached replays.
+pub(super) enum CompoundResult {
+    /// Freshly computed result, with optional session/slot for caching.
+    Fresh {
+        result: Compound4Res,
+        cache_slot: Option<(Sessionid4, u32)>,
+    },
+    /// Cached encoded Compound4Res bytes from the replay cache.
+    CachedReply(Vec<u8>),
+}
+
 impl<F: FileSystem> NfsServer<F> {
-    pub(super) async fn handle_compound(&self, args: Compound4Args) -> Compound4Res {
+    pub(super) async fn handle_compound(&self, args: Compound4Args) -> CompoundResult {
         let op_names: Vec<&'static str> = args.argarray.iter().map(argop_name).collect();
         debug!(
             "COMPOUND: tag={:?}, minorversion={}, ops={}, sequence={:?}",
@@ -22,10 +34,13 @@ impl<F: FileSystem> NfsServer<F> {
         );
 
         if args.minorversion != 1 {
-            return Compound4Res {
-                status: NfsStat4::MinorVersMismatch,
-                tag: args.tag,
-                resarray: vec![],
+            return CompoundResult::Fresh {
+                result: Compound4Res {
+                    status: NfsStat4::MinorVersMismatch,
+                    tag: args.tag,
+                    resarray: vec![],
+                },
+                cache_slot: None,
             };
         }
 
@@ -47,10 +62,13 @@ impl<F: FileSystem> NfsServer<F> {
             if allows_compound_without_sequence(first_op) {
                 if total_ops != 1 {
                     let res = error_res_for_op(first_op, NfsStat4::NotOnlyOp);
-                    return Compound4Res {
-                        status: NfsStat4::NotOnlyOp,
-                        tag: args.tag,
-                        resarray: vec![res],
+                    return CompoundResult::Fresh {
+                        result: Compound4Res {
+                            status: NfsStat4::NotOnlyOp,
+                            tag: args.tag,
+                            resarray: vec![res],
+                        },
+                        cache_slot: None,
                     };
                 }
             } else {
@@ -60,10 +78,13 @@ impl<F: FileSystem> NfsServer<F> {
                     NfsStat4::OpNotInSession
                 };
                 let res = error_res_for_op(first_op, status);
-                return Compound4Res {
-                    status,
-                    tag: args.tag,
-                    resarray: vec![res],
+                return CompoundResult::Fresh {
+                    result: Compound4Res {
+                        status,
+                        tag: args.tag,
+                        resarray: vec![res],
+                    },
+                    cache_slot: None,
                 };
             }
         }
@@ -72,6 +93,7 @@ impl<F: FileSystem> NfsServer<F> {
         let mut saved_fh: Option<NfsFh4> = None;
         let mut resarray = Vec::with_capacity(total_ops);
         let mut overall_status = NfsStat4::Ok;
+        let mut cache_slot: Option<(Sessionid4, u32)> = None;
 
         for (idx, op) in args.argarray.into_iter().enumerate() {
             if idx > 0 {
@@ -116,7 +138,27 @@ impl<F: FileSystem> NfsServer<F> {
                 }
             }
 
-            let res = self.handle_op(op, &mut current_fh, &mut saved_fh).await;
+            // Handle SEQUENCE at position 0 specially for replay cache.
+            let res = if idx == 0
+                && let NfsArgop4::Sequence(ref seq_args) = op
+            {
+                match self.state.sequence(seq_args).await {
+                    Ok(SequenceResult::NewRequest {
+                        res,
+                        sessionid,
+                        slotid,
+                    }) => {
+                        cache_slot = Some((sessionid, slotid));
+                        NfsResop4::Sequence(NfsStat4::Ok, Some(res))
+                    }
+                    Ok(SequenceResult::CachedReply(cached)) => {
+                        return CompoundResult::CachedReply(cached);
+                    }
+                    Err(status) => NfsResop4::Sequence(status, None),
+                }
+            } else {
+                self.handle_op(op, &mut current_fh, &mut saved_fh).await
+            };
             let status = res_status(&res);
             trace!("  result: op={}, status={:?}", resop_name(&res), status);
             if status != NfsStat4::Ok {
@@ -130,10 +172,13 @@ impl<F: FileSystem> NfsServer<F> {
             }
         }
 
-        Compound4Res {
-            status: overall_status,
-            tag: args.tag,
-            resarray,
+        CompoundResult::Fresh {
+            result: Compound4Res {
+                status: overall_status,
+                tag: args.tag,
+                resarray,
+            },
+            cache_slot,
         }
     }
 
@@ -206,10 +251,9 @@ impl<F: FileSystem> NfsServer<F> {
                 Ok(()) => NfsResop4::DestroySession(NfsStat4::Ok),
                 Err(status) => NfsResop4::DestroySession(status),
             },
-            NfsArgop4::Sequence(args) => match self.state.sequence(&args).await {
-                Ok(res) => NfsResop4::Sequence(NfsStat4::Ok, Some(res)),
-                Err(status) => NfsResop4::Sequence(status, None),
-            },
+            NfsArgop4::Sequence(_) => {
+                unreachable!("SEQUENCE is handled directly in handle_compound")
+            }
             NfsArgop4::ReclaimComplete(_) => NfsResop4::ReclaimComplete(NfsStat4::Ok),
             NfsArgop4::DestroyClientid(args) => {
                 match self.state.destroy_clientid(args.clientid).await {

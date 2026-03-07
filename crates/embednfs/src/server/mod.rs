@@ -171,9 +171,31 @@ impl<F: FileSystem> NfsServer<F> {
             }
             1 => match Compound4Args::decode(&mut src) {
                 Ok(args) => {
-                    let result = self.handle_compound(args).await;
-                    encode_rpc_reply_accepted(&mut response, call.xid);
-                    result.encode(&mut response);
+                    use crate::server::compound::CompoundResult;
+                    match self.handle_compound(args).await {
+                        CompoundResult::Fresh {
+                            result,
+                            cache_slot,
+                        } => {
+                            let mut compound_buf = BytesMut::new();
+                            result.encode(&mut compound_buf);
+                            if let Some((sessionid, slotid)) = cache_slot {
+                                self.state
+                                    .cache_slot_reply(
+                                        &sessionid,
+                                        slotid,
+                                        compound_buf.to_vec(),
+                                    )
+                                    .await;
+                            }
+                            encode_rpc_reply_accepted(&mut response, call.xid);
+                            response.extend_from_slice(&compound_buf);
+                        }
+                        CompoundResult::CachedReply(cached) => {
+                            encode_rpc_reply_accepted(&mut response, call.xid);
+                            response.extend_from_slice(&cached);
+                        }
+                    }
                 }
                 Err(e) => {
                     warn!("Failed to decode COMPOUND: {e}");

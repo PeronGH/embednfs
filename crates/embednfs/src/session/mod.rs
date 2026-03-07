@@ -5,4 +5,5 @@ mod locks;
 mod manager;
 mod state;
 
+pub use clients::SequenceResult;
 pub use manager::StateManager;
