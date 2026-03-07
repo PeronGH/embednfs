@@ -1,7 +1,7 @@
 /// In-memory filesystem implementation.
 ///
 /// Provides a fully functional in-memory filesystem for testing and as
-/// a reference implementation of the [`NfsFileSystem`] trait.
+/// a reference implementation of the [`FileSystem`] trait.
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

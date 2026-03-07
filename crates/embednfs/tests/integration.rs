@@ -9,8 +9,7 @@ use tokio::net::TcpStream;
 
 use embednfs_proto::xdr::*;
 use embednfs_proto::*;
-use embednfs::fs::SetFileAttr;
-use embednfs::{MemFs, NfsFileSystem, NfsServer};
+use embednfs::{FileSystem, MemFs, NfsServer};
 
 async fn start_server() -> u16 {
     start_server_with_fs(MemFs::new()).await
@@ -279,7 +278,7 @@ async fn setup_session(stream: &mut TcpStream) -> [u8; 16] {
 async fn populated_fs(names: &[&str]) -> MemFs {
     let fs = MemFs::new();
     for name in names {
-        fs.create(1, name, &SetFileAttr::default()).await.unwrap();
+        fs.create_file(&format!("/{name}")).await.unwrap();
     }
     fs
 }

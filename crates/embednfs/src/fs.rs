@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use std::fmt;
 
 /// Unique file identifier (inode number equivalent).
-pub type FileId = u64;
+pub(crate) type FileId = u64;
 
 /// Opaque revision token used for optimistic concurrency when available.
 pub type Revision = String;
@@ -137,7 +137,7 @@ pub struct PathDirEntry {
 
 /// File attributes (metadata).
 #[derive(Debug, Clone)]
-pub struct FileAttr {
+pub(crate) struct FileAttr {
     pub fileid: FileId,
     pub file_type: FileType,
     pub size: u64,
@@ -199,8 +199,9 @@ impl Default for FileAttr {
 }
 
 /// A directory entry returned by readdir.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
-pub struct DirEntry {
+pub(crate) struct DirEntry {
     pub fileid: FileId,
     pub name: String,
     pub attr: FileAttr,
@@ -208,14 +209,14 @@ pub struct DirEntry {
 
 /// Set-time specification.
 #[derive(Debug, Clone, Copy)]
-pub enum SetTime {
+pub(crate) enum SetTime {
     ServerTime,
     ClientTime(i64, u32),
 }
 
 /// Attributes to set (only fields that are Some get applied).
 #[derive(Debug, Clone, Default)]
-pub struct SetFileAttr {
+pub(crate) struct SetFileAttr {
     pub size: Option<u64>,
     pub mode: Option<u32>,
     pub uid: Option<u32>,
@@ -302,8 +303,8 @@ impl FsError {
 }
 
 pub type FsResult<T> = Result<T, FsError>;
-pub type NfsError = FsError;
-pub type NfsResult<T> = FsResult<T>;
+pub(crate) type NfsError = FsError;
+pub(crate) type NfsResult<T> = FsResult<T>;
 
 /// A simple, path-based filesystem API.
 #[async_trait]
@@ -372,8 +373,9 @@ pub trait FileSystem: Send + Sync + 'static {
 /// library manages the mapping between NFS file handles and FileIds.
 ///
 /// The root directory always has FileId 1.
+#[allow(dead_code)]
 #[async_trait]
-pub trait NfsFileSystem: Send + Sync + 'static {
+pub(crate) trait NfsFileSystem: Send + Sync + 'static {
     /// Get file attributes by file ID.
     async fn getattr(&self, id: FileId) -> NfsResult<FileAttr>;
 

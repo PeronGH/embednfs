@@ -7,7 +7,11 @@ use embednfs_proto::xdr::*;
 use embednfs_proto::*;
 
 /// Synthesize NFS-facing attributes from the high-level metadata model.
-pub fn synthesize_file_attr(path: &str, metadata: &Metadata, caps: &FsCapabilities) -> FileAttr {
+pub(crate) fn synthesize_file_attr(
+    path: &str,
+    metadata: &Metadata,
+    caps: &FsCapabilities,
+) -> FileAttr {
     let defaults = &caps.posix;
     let base_mode = match metadata.file_type {
         FileType::Regular => defaults.file_mode,
@@ -112,7 +116,12 @@ fn stable_hash(bytes: &[u8]) -> u64 {
 }
 
 /// Encode file attributes according to the requested bitmap.
-pub fn encode_fattr4(attr: &FileAttr, request: &Bitmap4, fh: &NfsFh4, fs_info: &FsInfo) -> Fattr4 {
+pub(crate) fn encode_fattr4(
+    attr: &FileAttr,
+    request: &Bitmap4,
+    fh: &NfsFh4,
+    fs_info: &FsInfo,
+) -> Fattr4 {
     let mut result_bitmap = Bitmap4::new();
     let mut vals = BytesMut::with_capacity(256);
 
@@ -524,7 +533,7 @@ pub fn encode_fattr4(attr: &FileAttr, request: &Bitmap4, fh: &NfsFh4, fs_info: &
 }
 
 /// Decode setattr attributes from an Fattr4.
-pub fn decode_setattr(fattr: &Fattr4) -> SetFileAttr {
+pub(crate) fn decode_setattr(fattr: &Fattr4) -> SetFileAttr {
     let mut result = SetFileAttr::default();
     let mut src = bytes::Bytes::from(fattr.attr_vals.clone());
 

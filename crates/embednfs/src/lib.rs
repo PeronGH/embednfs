@@ -10,8 +10,8 @@ pub mod server;
 pub mod session;
 
 pub use fs::{
-    DirEntry, FileAttr, FileSystem, FileType, FsCapabilities, FsError, FsInfo, FsResult,
-    Metadata, NfsFileSystem, PathDirEntry, PosixDefaults, Revision, WriteCapability,
+    FileSystem, FileType, FsCapabilities, FsError, FsInfo, FsResult, Metadata, PathDirEntry,
+    PosixDefaults, Revision, WriteCapability,
 };
 pub use memfs::MemFs;
 pub use server::NfsServer;

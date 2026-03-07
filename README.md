@@ -1,6 +1,6 @@
 # embednfs
 
-A production-quality NFSv4.1 server library in Rust. Implement a filesystem trait; the library handles the wire protocol, state management, and serves it over TCP.
+An embeddable NFSv4.1 server library in Rust. Implement a path-based filesystem trait; the library handles the wire protocol, session management, and serves it over TCP.
 
 The primary use case is embedding as a localhost NFS server — a FUSE replacement that needs no kernel modules. macOS and Linux ship NFSv4.1 clients in-kernel, so the mount just works.
 
@@ -41,7 +41,7 @@ Note: on macOS, `vers=4` means NFSv4.0. Use `vers=4.1` explicitly.
 
 ## Implementing a Filesystem
 
-Implement the `NfsFileSystem` trait:
+Implement the `FileSystem` trait:
 
 ```rust
 use async_trait::async_trait;
@@ -50,16 +50,20 @@ use embednfs::fs::*;
 struct MyFs;
 
 #[async_trait]
-impl NfsFileSystem for MyFs {
-    async fn getattr(&self, id: FileId) -> NfsResult<FileAttr> { /* ... */ }
-    async fn lookup(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> { /* ... */ }
-    async fn readdir(&self, dir_id: FileId) -> NfsResult<Vec<DirEntry>> { /* ... */ }
-    async fn read(&self, id: FileId, offset: u64, count: u32) -> NfsResult<(Vec<u8>, bool)> { /* ... */ }
-    // ... and other operations
+impl FileSystem for MyFs {
+    async fn metadata(&self, path: &str) -> FsResult<Metadata> { /* ... */ }
+    async fn list(&self, path: &str) -> FsResult<Vec<PathDirEntry>> { /* ... */ }
+    async fn read(&self, path: &str, offset: u64, count: u32) -> FsResult<Vec<u8>> { /* ... */ }
+    async fn create_file(&self, path: &str) -> FsResult<()> { /* ... */ }
+    async fn create_dir(&self, path: &str) -> FsResult<()> { /* ... */ }
+    async fn create_symlink(&self, path: &str, target: &str) -> FsResult<()> { /* ... */ }
+    async fn read_symlink(&self, path: &str) -> FsResult<String> { /* ... */ }
+    async fn remove(&self, path: &str, expected_revision: Option<&str>) -> FsResult<()> { /* ... */ }
+    async fn rename(&self, from: &str, to: &str, expected_revision: Option<&str>) -> FsResult<()> { /* ... */ }
 }
 ```
 
-The root directory must have `FileId = 1`. The server handles all protocol details — your implementation only deals with files, directories, and metadata.
+The server handles filehandles, state, and path traversal. Your implementation only deals with paths, content, and metadata.
 
 ## Supported Operations
 
@@ -69,7 +73,7 @@ The root directory must have `FileId = 1`. The server handles all protocol detai
 | SEQUENCE | Supported |
 | PUTROOTFH / PUTFH / GETFH | Supported |
 | LOOKUP / LOOKUPP | Supported |
-| GETATTR / SETATTR | Supported |
+| GETATTR / SETATTR | Supported (`SETATTR` is intentionally limited) |
 | ACCESS | Supported |
 | OPEN / CLOSE / OPEN_DOWNGRADE | Supported |
 | READ / WRITE / COMMIT | Supported |
@@ -78,7 +82,7 @@ The root directory must have `FileId = 1`. The server handles all protocol detai
 | READLINK | Supported |
 | REMOVE | Supported |
 | RENAME | Supported |
-| LINK | Supported |
+| LINK | Not supported |
 | BIND_CONN_TO_SESSION | Supported |
 | SAVEFH / RESTOREFH | Supported |
 | SECINFO / SECINFO_NO_NAME | Supported |
