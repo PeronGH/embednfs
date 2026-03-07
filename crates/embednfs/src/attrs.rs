@@ -267,7 +267,7 @@ pub fn encode_fattr4(attr: &FileAttr, request: &Bitmap4, fh: &NfsFh4, fs_info: &
     // FATTR4_MODE (33)
     if request.is_set(FATTR4_MODE) {
         result_bitmap.set(FATTR4_MODE);
-        attr.mode.encode(&mut vals);
+        (attr.mode & 0o7777).encode(&mut vals);
     }
 
     // FATTR4_NO_TRUNC (34)
@@ -442,7 +442,7 @@ pub fn decode_setattr(fattr: &Fattr4) -> SetFileAttr {
 
     if fattr.attrmask.is_set(FATTR4_MODE) {
         if let Ok(mode) = u32::decode(&mut src) {
-            result.mode = Some(mode);
+            result.mode = Some(mode & 0o7777);
         }
     }
 
@@ -513,4 +513,41 @@ pub fn decode_setattr(fattr: &Fattr4) -> SetFileAttr {
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_decode_setattr_masks_file_type_bits_from_mode() {
+        let mut bitmap = Bitmap4::new();
+        bitmap.set(FATTR4_MODE);
+
+        let mut vals = BytesMut::new();
+        0o100644u32.encode(&mut vals);
+
+        let attrs = decode_setattr(&Fattr4 {
+            attrmask: bitmap,
+            attr_vals: vals.to_vec(),
+        });
+
+        assert_eq!(attrs.mode, Some(0o644));
+    }
+
+    #[test]
+    fn test_encode_fattr4_masks_mode_to_permission_bits() {
+        let mut request = Bitmap4::new();
+        request.set(FATTR4_MODE);
+
+        let attr = FileAttr {
+            mode: 0o100644,
+            ..FileAttr::default()
+        };
+        let fh = NfsFh4(vec![1, 2, 3, 4]);
+        let fattr = encode_fattr4(&attr, &request, &fh, &FsInfo::default());
+        let mut src = bytes::Bytes::from(fattr.attr_vals);
+
+        assert_eq!(u32::decode(&mut src).unwrap(), 0o644);
+    }
 }

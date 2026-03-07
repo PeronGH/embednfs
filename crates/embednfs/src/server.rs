@@ -97,7 +97,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn process_rpc_message(&self, data: &[u8]) -> Bytes {
-        trace!("RPC request bytes={} hex={:02x?}", data.len(), data);
+        trace!("RPC request bytes={} hex={}", data.len(), hex_bytes(data));
         let mut src = Bytes::copy_from_slice(data);
 
         // Parse RPC call header
@@ -162,10 +162,10 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
         let response = response.freeze();
         trace!(
-            "RPC response xid={} bytes={} hex={:02x?}",
+            "RPC response xid={} bytes={} hex={}",
             call.xid,
             response.len(),
-            response
+            hex_bytes(&response)
         );
         response
     }
@@ -552,6 +552,10 @@ impl<F: NfsFileSystem> NfsServer<F> {
                     fattr.attrmask.0,
                     fattr.attr_vals.len()
                 );
+                trace!(
+                    "GETATTR attr payload: file_id={file_id}, attr_hex={}",
+                    hex_bytes(&fattr.attr_vals)
+                );
                 NfsResop4::Getattr(NfsStat4::Ok, Some(fattr))
             }
             Err(e) => NfsResop4::Getattr(e.to_nfsstat4(), None),
@@ -852,6 +856,12 @@ impl<F: NfsFileSystem> NfsServer<F> {
                         entry.attrs.attrmask.0,
                         entry.attrs.attr_vals.len()
                     );
+                    trace!(
+                        "READDIR entry payload: dir_id={dir_id}, cookie={}, name={:?}, attr_hex={}",
+                        entry.cookie,
+                        entry.name,
+                        hex_bytes(&entry.attrs.attr_vals)
+                    );
                 }
 
                 NfsResop4::Readdir(
@@ -1096,6 +1106,15 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
 fn xdr_opaque_len(len: usize) -> usize {
     4 + len + xdr_pad(len)
+}
+
+fn hex_bytes(data: &[u8]) -> String {
+    let mut out = String::with_capacity(data.len() * 2);
+    for byte in data {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
 }
 
 fn xdr_bitmap4_len(bitmap: &Bitmap4) -> usize {
