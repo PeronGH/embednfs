@@ -41,7 +41,7 @@ int main(void) {
     printf("PASS: creat\n");
 
     // 2. Write data
-    const char *data = "Hello, NFSv4 World! Testing 1 2 3.";
+    const char *data = "Hello, NFSv4.1 World! Testing 1 2 3.";
     ret = nfs_write(nfs, nfsfh, strlen(data), (char *)data);
     CHECK(ret == (int)strlen(data), "write: got %d, want %d", ret, (int)strlen(data));
     nfs_close(nfs, nfsfh);

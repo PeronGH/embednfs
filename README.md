@@ -8,7 +8,7 @@ The primary use case is embedding as a localhost NFS server — a FUSE replaceme
 
 This is a Cargo workspace with three crates:
 
-- **`embednfs-proto`** — XDR encoding/decoding and all NFSv4 protocol types (RFC 8881, RFC 5531)
+- **`embednfs-proto`** — XDR encoding/decoding and NFSv4.1 protocol types (RFC 8881, RFC 5531)
 - **`embednfs`** — Embeddable server library with filesystem trait, session management, and COMPOUND handler
 - **`embednfs-cli`** — CLI/demo binary for running the server locally
 
