@@ -1,11 +1,13 @@
 /// Example NFSv4.1 server using the in-memory filesystem.
-use nfs4_server::{NfsServer, MemFs};
+use embednfs::{MemFs, NfsServer};
 use tracing_subscriber;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter("info")
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
         .init();
 
     let fs = MemFs::new();

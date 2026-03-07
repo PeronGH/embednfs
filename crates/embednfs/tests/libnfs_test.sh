@@ -3,7 +3,7 @@
 # Requires libnfs-dev installed and the NFS server binary built.
 set -e
 
-SERVER_BIN="${1:-../../target/release/nfs4-serve}"
+SERVER_BIN="${1:-../../target/release/embednfs-cli}"
 PORT=2049
 
 # Build test program

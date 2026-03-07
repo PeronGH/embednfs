@@ -8,8 +8,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, info, warn};
 
-use nfs4_proto::xdr::*;
-use nfs4_proto::*;
+use embednfs_proto::xdr::*;
+use embednfs_proto::*;
 
 use crate::attrs;
 use crate::fs::*;

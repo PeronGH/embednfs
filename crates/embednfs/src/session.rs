@@ -3,7 +3,7 @@ use dashmap::DashMap;
 /// NFSv4.1 session and state management.
 ///
 /// Manages client IDs, sessions, slot tables, open state, and file handle mappings.
-use nfs4_proto::*;
+use embednfs_proto::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -86,7 +86,7 @@ impl StateManager {
 
         let server_owner = ServerOwner4 {
             minor_id: 0,
-            major_id: b"nfsserve4-rs".to_vec(),
+            major_id: b"embednfs".to_vec(),
         };
 
         StateManager {
@@ -181,10 +181,10 @@ impl StateManager {
             flags: pnfs_role | confirmed_flag,
             state_protect: StateProtect4R::None,
             server_owner: self.server_owner.clone(),
-            server_scope: b"nfsserve4-rs".to_vec(),
+            server_scope: b"embednfs".to_vec(),
             server_impl_id: vec![NfsImplId4 {
-                domain: "nfsserve4-rs.local".into(),
-                name: "nfsserve4-rs".into(),
+                domain: "embednfs.local".into(),
+                name: "embednfs".into(),
                 date: NfsTime4 {
                     seconds: 0,
                     nseconds: 0,

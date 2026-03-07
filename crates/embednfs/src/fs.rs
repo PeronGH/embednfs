@@ -145,8 +145,8 @@ impl fmt::Display for NfsError {
 impl std::error::Error for NfsError {}
 
 impl NfsError {
-    pub fn to_nfsstat4(self) -> nfs4_proto::NfsStat4 {
-        use nfs4_proto::NfsStat4;
+    pub fn to_nfsstat4(self) -> embednfs_proto::NfsStat4 {
+        use embednfs_proto::NfsStat4;
         match self {
             NfsError::Ok => NfsStat4::Ok,
             NfsError::Perm => NfsStat4::Perm,

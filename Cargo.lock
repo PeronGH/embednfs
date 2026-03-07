@@ -67,6 +67,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "embednfs"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "dashmap",
+ "embednfs-proto",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "embednfs-cli"
+version = "0.1.0"
+dependencies = [
+ "embednfs",
+ "embednfs-proto",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "embednfs-proto"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "num-derive",
+ "num-traits",
+]
+
+[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -133,39 +166,6 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys",
-]
-
-[[package]]
-name = "nfs4-proto"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "num-derive",
- "num-traits",
-]
-
-[[package]]
-name = "nfs4-serve"
-version = "0.1.0"
-dependencies = [
- "nfs4-proto",
- "nfs4-server",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "nfs4-server"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "dashmap",
- "nfs4-proto",
- "thiserror",
- "tokio",
- "tracing",
 ]
 
 [[package]]

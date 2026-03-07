@@ -3,8 +3,8 @@ use crate::fs::{FileAttr, FileType, FsInfo, SetFileAttr, SetTime};
 ///
 /// Handles the bitmap-driven attribute encoding used by GETATTR/SETATTR.
 use bytes::BytesMut;
-use nfs4_proto::xdr::*;
-use nfs4_proto::*;
+use embednfs_proto::xdr::*;
+use embednfs_proto::*;
 
 /// Encode file attributes according to the requested bitmap.
 pub fn encode_fattr4(attr: &FileAttr, request: &Bitmap4, fh: &NfsFh4, fs_info: &FsInfo) -> Fattr4 {

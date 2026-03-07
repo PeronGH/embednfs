@@ -7,9 +7,9 @@ use bytes::{BufMut, Bytes, BytesMut};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use nfs4_proto::xdr::*;
-use nfs4_proto::*;
-use nfs4_server::{MemFs, NfsServer};
+use embednfs_proto::xdr::*;
+use embednfs_proto::*;
+use embednfs::{MemFs, NfsServer};
 
 async fn start_server() -> u16 {
     let fs = MemFs::new();
