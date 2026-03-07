@@ -343,6 +343,9 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 // Named attributes not supported
                 NfsResop4::OpenAttr(NfsStat4::Notsupp)
             }
+            NfsArgop4::DelegPurge => {
+                NfsResop4::DelegPurge(NfsStat4::Ok)
+            }
             NfsArgop4::ReleaseLockowner => {
                 NfsResop4::ReleaseLockowner(NfsStat4::Ok)
             }
@@ -893,6 +896,7 @@ fn res_status(res: &NfsResop4) -> NfsStat4 {
         NfsResop4::Lockt(s, _) => *s,
         NfsResop4::Locku(s, _) => *s,
         NfsResop4::OpenAttr(s) => *s,
+        NfsResop4::DelegPurge(s) => *s,
         NfsResop4::SetClientId(s, _) => *s,
         NfsResop4::SetClientIdConfirm(s) => *s,
         NfsResop4::Renew(s) => *s,

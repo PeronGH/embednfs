@@ -102,7 +102,8 @@ pub fn encode_fattr4(attr: &FileAttr, request: &Bitmap4, fh: &NfsFh4, fs_info: &
     // FATTR4_FSID (8) - mandatory
     if request.is_set(FATTR4_FSID) {
         result_bitmap.set(FATTR4_FSID);
-        let fsid = Fsid4 { major: 0, minor: 0 };
+        // Use a non-zero fsid; macOS uses this to identify the filesystem
+        let fsid = Fsid4 { major: 1, minor: 1 };
         fsid.encode(&mut vals);
     }
 
