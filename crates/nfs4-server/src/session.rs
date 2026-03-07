@@ -149,11 +149,27 @@ impl StateManager {
 
         let client = inner.clients.get(&clientid).unwrap();
         let seq = client.sequence_id;
+        let confirmed = client.confirmed;
+
+        // Compute response flags:
+        // - pNFS role: AND client's requested pNFS bits with what we support (NON_PNFS only)
+        let client_pnfs = args.flags & EXCHGID4_FLAG_MASK_PNFS;
+        let pnfs_role = if client_pnfs & EXCHGID4_FLAG_USE_NON_PNFS != 0 {
+            EXCHGID4_FLAG_USE_NON_PNFS
+        } else if client_pnfs == 0 {
+            // Client didn't specify; default to non-pNFS
+            EXCHGID4_FLAG_USE_NON_PNFS
+        } else {
+            // Client only wants pNFS roles we don't support
+            EXCHGID4_FLAG_USE_NON_PNFS
+        };
+        // - CONFIRMED_R: only set if client record is already confirmed
+        let confirmed_flag = if confirmed { EXCHGID4_FLAG_CONFIRMED_R } else { 0 };
 
         ExchangeIdRes4 {
             clientid,
             sequenceid: seq,
-            flags: EXCHGID4_FLAG_USE_NON_PNFS | EXCHGID4_FLAG_CONFIRMED_R,
+            flags: pnfs_role | confirmed_flag,
             state_protect: StateProtect4R::None,
             server_owner: self.server_owner.clone(),
             server_scope: b"nfsserve4-rs".to_vec(),

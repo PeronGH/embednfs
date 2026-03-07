@@ -284,6 +284,7 @@ impl XdrDecode for Stateid4 {
 
 /// Bitmap4 - variable length bitmap for file attributes.
 #[derive(Debug, Clone, Default)]
+#[derive(PartialEq, Eq)]
 pub struct Bitmap4(pub Vec<u32>);
 
 impl Bitmap4 {
