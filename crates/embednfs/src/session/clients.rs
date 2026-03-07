@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering;
 use embednfs_proto::*;
 
 use super::manager::StateManager;
-use super::state::{ClientState, SessionState, SlotState};
+use super::state::{ClientState, SessionState, SlotState, StateInner};
 
 /// Result of SEQUENCE processing.
 pub enum SequenceResult {
@@ -18,7 +18,9 @@ pub enum SequenceResult {
 }
 
 impl StateManager {
-    /// Handle EXCHANGE_ID.
+    /// Handle EXCHANGE_ID (RFC 8881 §18.35).
+    ///
+    /// Compares both `co_ownerid` and `co_verifier` to detect client restarts.
     pub async fn exchange_id(&self, args: &ExchangeIdArgs4) -> ExchangeIdRes4 {
         let mut inner = self.inner.write().await;
 
@@ -28,8 +30,43 @@ impl StateManager {
                 .values()
                 .find(|client| client.owner.ownerid == args.clientowner.ownerid);
             if let Some(client) = existing {
-                client.clientid
+                if client.owner.verifier == args.clientowner.verifier {
+                    // Same ownerid + same verifier: return existing clientid.
+                    client.clientid
+                } else if client.confirmed {
+                    // Same ownerid + different verifier + confirmed: client restart.
+                    // Purge old state and allocate a new clientid.
+                    let old_clientid = client.clientid;
+                    Self::purge_client_state_inner(&mut inner, old_clientid);
+                    let clientid = self.next_clientid.fetch_add(1, Ordering::Relaxed);
+                    inner.clients.insert(
+                        clientid,
+                        ClientState {
+                            clientid,
+                            owner: args.clientowner.clone(),
+                            confirmed: false,
+                            sequence_id: 1,
+                        },
+                    );
+                    clientid
+                } else {
+                    // Same ownerid + different verifier + unconfirmed: replace record.
+                    let old_clientid = client.clientid;
+                    inner.clients.remove(&old_clientid);
+                    let clientid = self.next_clientid.fetch_add(1, Ordering::Relaxed);
+                    inner.clients.insert(
+                        clientid,
+                        ClientState {
+                            clientid,
+                            owner: args.clientowner.clone(),
+                            confirmed: false,
+                            sequence_id: 1,
+                        },
+                    );
+                    clientid
+                }
             } else {
+                // New client.
                 let clientid = self.next_clientid.fetch_add(1, Ordering::Relaxed);
                 inner.clients.insert(
                     clientid,
@@ -45,7 +82,6 @@ impl StateManager {
         };
 
         let client = inner.clients.get(&clientid).expect("client inserted above");
-        let _client_pnfs = args.flags & EXCHGID4_FLAG_MASK_PNFS;
         let pnfs_role = EXCHGID4_FLAG_USE_NON_PNFS;
         let confirmed_flag = if client.confirmed {
             EXCHGID4_FLAG_CONFIRMED_R
@@ -209,12 +245,21 @@ impl StateManager {
     /// Handle DESTROY_CLIENTID.
     pub async fn destroy_clientid(&self, clientid: Clientid4) -> Result<(), NfsStat4> {
         let mut inner = self.inner.write().await;
-        inner.sessions.retain(|_, session| session.clientid != clientid);
-        inner
-            .clients
-            .remove(&clientid)
-            .ok_or(NfsStat4::StaleClientid)?;
+        if !inner.clients.contains_key(&clientid) {
+            return Err(NfsStat4::StaleClientid);
+        }
+        Self::purge_client_state_inner(&mut inner, clientid);
         Ok(())
+    }
+
+    /// Remove all state (sessions, opens, locks) for a client.
+    fn purge_client_state_inner(inner: &mut StateInner, clientid: Clientid4) {
+        inner.sessions.retain(|_, session| session.clientid != clientid);
+        inner.open_files.retain(|_, open| open.clientid != clientid);
+        inner
+            .lock_files
+            .retain(|_, lock| lock.owner.clientid != clientid);
+        inner.clients.remove(&clientid);
     }
 
     /// Handle BIND_CONN_TO_SESSION.

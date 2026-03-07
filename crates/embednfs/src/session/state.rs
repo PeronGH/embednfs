@@ -6,7 +6,6 @@ use crate::fs::FileId;
 
 #[derive(Debug)]
 pub(super) struct LockFileState {
-    #[allow(dead_code)]
     pub owner: StateOwner4,
     pub stateid_seq: u32,
 }
@@ -21,7 +20,6 @@ pub(super) struct StateInner {
 #[derive(Debug)]
 pub(super) struct ClientState {
     pub clientid: Clientid4,
-    #[allow(dead_code)]
     pub owner: ClientOwner4,
     pub confirmed: bool,
     pub sequence_id: Sequenceid4,
@@ -41,15 +39,11 @@ pub(super) struct SlotState {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)] // Fields used in upcoming Phase F (stateid enforcement).
 pub(super) struct OpenFileState {
-    #[allow(dead_code)]
     pub file_id: FileId,
-    #[allow(dead_code)]
     pub clientid: Clientid4,
-    #[allow(dead_code)]
     pub stateid_seq: u32,
-    #[allow(dead_code)]
     pub share_access: u32,
-    #[allow(dead_code)]
     pub share_deny: u32,
 }
