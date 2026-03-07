@@ -746,6 +746,7 @@ pub enum NfsArgop4 {
     Lockt(LocktArgs4),
     Locku(LockuArgs4),
     OpenAttr(OpenAttrArgs4),
+    DelegPurge,
     ReleaseLockowner,
     Verify(Fattr4),
     Nverify(Fattr4),
@@ -1233,6 +1234,7 @@ pub enum NfsResop4 {
     Lockt(NfsStat4, Option<LockDenied4>),
     Locku(NfsStat4, Option<Stateid4>),
     OpenAttr(NfsStat4),
+    DelegPurge(NfsStat4),
     SetClientId(NfsStat4, Option<SetClientIdRes4>),
     SetClientIdConfirm(NfsStat4),
     Renew(NfsStat4),
@@ -1724,6 +1726,10 @@ impl XdrEncode for NfsResop4 {
                 OP_OPENATTR.encode(dst);
                 status.encode(dst);
             }
+            NfsResop4::DelegPurge(status) => {
+                OP_DELEGPURGE.encode(dst);
+                status.encode(dst);
+            }
             NfsResop4::SetClientId(status, res) => {
                 OP_SETCLIENTID.encode(dst);
                 status.encode(dst);
@@ -2161,6 +2167,10 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
         OP_OPENATTR => {
             let createdir = bool::decode(src)?;
             Ok(NfsArgop4::OpenAttr(OpenAttrArgs4 { createdir }))
+        }
+        OP_DELEGPURGE => {
+            let _clientid = u64::decode(src)?;
+            Ok(NfsArgop4::DelegPurge)
         }
         OP_VERIFY => {
             let attrs = Fattr4::decode(src)?;
