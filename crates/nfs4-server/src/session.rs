@@ -9,6 +9,14 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use crate::fs::FileId;
 
+/// Lock state for a file.
+#[derive(Debug)]
+struct LockFileState {
+    #[allow(dead_code)]
+    owner: StateOwner4,
+    stateid_seq: u32,
+}
+
 /// Manages all server-side state.
 pub struct StateManager {
     inner: Arc<RwLock<StateInner>>,
@@ -29,6 +37,8 @@ struct StateInner {
     next_fh: u64,
     /// Open file state: stateid -> OpenFileState
     open_files: HashMap<[u8; 12], OpenFileState>,
+    /// Lock state: stateid.other -> LockFileState
+    lock_files: HashMap<[u8; 12], LockFileState>,
 }
 
 #[derive(Debug)]
@@ -88,6 +98,7 @@ impl StateManager {
                 id_to_fh: HashMap::new(),
                 next_fh: 1,
                 open_files: HashMap::new(),
+                lock_files: HashMap::new(),
             })),
             next_clientid: AtomicU64::new(1),
             next_stateid: AtomicU32::new(1),
@@ -359,5 +370,47 @@ impl StateManager {
             .ok_or(NfsStat4::StaleClientid)?;
         client.confirmed = true;
         Ok(())
+    }
+
+    /// Create a new lock state (LOCK with new lock owner).
+    pub async fn create_lock_state(&self, _open_stateid: &Stateid4, owner: &StateOwner4) -> Result<Stateid4, NfsStat4> {
+        let seq = self.next_stateid.fetch_add(1, Ordering::Relaxed);
+        let mut other = [0u8; 12];
+        other[..4].copy_from_slice(&seq.to_be_bytes());
+        other[4..12].copy_from_slice(&owner.clientid.to_be_bytes());
+
+        let mut inner = self.inner.write().await;
+        inner.lock_files.insert(other, LockFileState {
+            owner: owner.clone(),
+            stateid_seq: 1,
+        });
+
+        Ok(Stateid4 { seqid: 1, other })
+    }
+
+    /// Update an existing lock state (LOCK with existing lock owner).
+    pub async fn update_lock_state(&self, lock_stateid: &Stateid4) -> Result<Stateid4, NfsStat4> {
+        let mut inner = self.inner.write().await;
+        let state = inner.lock_files.get_mut(&lock_stateid.other)
+            .ok_or(NfsStat4::BadStateid)?;
+        state.stateid_seq += 1;
+        Ok(Stateid4 {
+            seqid: state.stateid_seq,
+            other: lock_stateid.other,
+        })
+    }
+
+    /// Unlock (LOCKU).
+    pub async fn unlock_state(&self, lock_stateid: &Stateid4) -> Result<Stateid4, NfsStat4> {
+        let mut inner = self.inner.write().await;
+        let state = inner.lock_files.get_mut(&lock_stateid.other)
+            .ok_or(NfsStat4::BadStateid)?;
+        state.stateid_seq += 1;
+        let new_seqid = state.stateid_seq;
+        // Keep the state around (may be reused)
+        Ok(Stateid4 {
+            seqid: new_seqid,
+            other: lock_stateid.other,
+        })
     }
 }

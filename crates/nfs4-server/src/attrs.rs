@@ -35,7 +35,8 @@ pub fn encode_fattr4(attr: &FileAttr, request: &Bitmap4, fh: &NfsFh4, fs_info: &
             FATTR4_RAWDEV,
             FATTR4_SPACE_AVAIL, FATTR4_SPACE_FREE,
             FATTR4_SPACE_TOTAL, FATTR4_SPACE_USED,
-            FATTR4_TIME_ACCESS, FATTR4_TIME_DELTA,
+            FATTR4_TIME_ACCESS, FATTR4_TIME_BACKUP,
+            FATTR4_TIME_CREATE, FATTR4_TIME_DELTA,
             FATTR4_TIME_METADATA, FATTR4_TIME_MODIFY,
             FATTR4_TIME_MODIFY_SET,
             FATTR4_MOUNTED_ON_FILEID,
@@ -290,6 +291,20 @@ pub fn encode_fattr4(attr: &FileAttr, request: &Bitmap4, fh: &NfsFh4, fs_info: &
     if request.is_set(FATTR4_TIME_ACCESS) {
         result_bitmap.set(FATTR4_TIME_ACCESS);
         let t = NfsTime4 { seconds: attr.atime_sec, nseconds: attr.atime_nsec };
+        t.encode(&mut vals);
+    }
+
+    // FATTR4_TIME_BACKUP (49) - same as creation time
+    if request.is_set(FATTR4_TIME_BACKUP) {
+        result_bitmap.set(FATTR4_TIME_BACKUP);
+        let t = NfsTime4 { seconds: attr.crtime_sec, nseconds: attr.crtime_nsec };
+        t.encode(&mut vals);
+    }
+
+    // FATTR4_TIME_CREATE (50) - birth/creation time (macOS uses this)
+    if request.is_set(FATTR4_TIME_CREATE) {
+        result_bitmap.set(FATTR4_TIME_CREATE);
+        let t = NfsTime4 { seconds: attr.crtime_sec, nseconds: attr.crtime_nsec };
         t.encode(&mut vals);
     }
 

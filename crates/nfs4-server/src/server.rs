@@ -327,6 +327,13 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 // Just accept it - refresh lease
                 NfsResop4::Renew(NfsStat4::Ok)
             }
+            NfsArgop4::Lock(args) => self.op_lock(&args, current_fh).await,
+            NfsArgop4::Lockt(args) => self.op_lockt(&args, current_fh).await,
+            NfsArgop4::Locku(args) => self.op_locku(&args).await,
+            NfsArgop4::OpenAttr(_) => {
+                // Named attributes not supported
+                NfsResop4::OpenAttr(NfsStat4::Notsupp)
+            }
             NfsArgop4::ReleaseLockowner => {
                 NfsResop4::ReleaseLockowner(NfsStat4::Ok)
             }
@@ -788,6 +795,46 @@ impl<F: NfsFileSystem> NfsServer<F> {
             Err(e) => NfsResop4::Write(e.to_nfsstat4(), None),
         }
     }
+
+    async fn op_lock(&self, args: &LockArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
+        let _file_id = match self.resolve_fh(current_fh).await {
+            Ok(id) => id,
+            Err(status) => return NfsResop4::Lock(status, None, None),
+        };
+
+        // Create or update lock state
+        let stateid = match &args.locker {
+            Locker4::NewLockOwner(new_owner) => {
+                self.state.create_lock_state(
+                    &new_owner.open_stateid,
+                    &new_owner.lock_owner,
+                ).await
+            }
+            Locker4::ExistingLockOwner(existing) => {
+                self.state.update_lock_state(&existing.lock_stateid).await
+            }
+        };
+
+        match stateid {
+            Ok(sid) => NfsResop4::Lock(NfsStat4::Ok, Some(sid), None),
+            Err(status) => NfsResop4::Lock(status, None, None),
+        }
+    }
+
+    async fn op_lockt(&self, _args: &LocktArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
+        // Test if a lock would conflict - we don't track conflicts, always say OK
+        match self.resolve_fh(current_fh).await {
+            Ok(_) => NfsResop4::Lockt(NfsStat4::Ok, None),
+            Err(status) => NfsResop4::Lockt(status, None),
+        }
+    }
+
+    async fn op_locku(&self, args: &LockuArgs4) -> NfsResop4 {
+        match self.state.unlock_state(&args.lock_stateid).await {
+            Ok(sid) => NfsResop4::Locku(NfsStat4::Ok, Some(sid)),
+            Err(status) => NfsResop4::Locku(status, None),
+        }
+    }
 }
 
 /// Extract the status from a result operation.
@@ -827,6 +874,10 @@ fn res_status(res: &NfsResop4) -> NfsStat4 {
         NfsResop4::FreeStateid(s) => *s,
         NfsResop4::TestStateid(s, _) => *s,
         NfsResop4::DelegReturn(s) => *s,
+        NfsResop4::Lock(s, _, _) => *s,
+        NfsResop4::Lockt(s, _) => *s,
+        NfsResop4::Locku(s, _) => *s,
+        NfsResop4::OpenAttr(s) => *s,
         NfsResop4::SetClientId(s, _) => *s,
         NfsResop4::SetClientIdConfirm(s) => *s,
         NfsResop4::Renew(s) => *s,

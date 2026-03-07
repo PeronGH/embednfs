@@ -742,6 +742,10 @@ pub enum NfsArgop4 {
     SetClientId(SetClientIdArgs4),
     SetClientIdConfirm(SetClientIdConfirmArgs4),
     Renew(Clientid4),
+    Lock(LockArgs4),
+    Lockt(LocktArgs4),
+    Locku(LockuArgs4),
+    OpenAttr(OpenAttrArgs4),
     ReleaseLockowner,
     Verify(Fattr4),
     Nverify(Fattr4),
@@ -1061,6 +1065,104 @@ pub struct DelegReturnArgs4 {
     pub stateid: Stateid4,
 }
 
+// ===== Lock types =====
+
+/// Lock type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum NfsLockType4 {
+    ReadLt = 1,
+    WriteLt = 2,
+    ReadwLt = 3,
+    WritewLt = 4,
+}
+
+impl XdrDecode for NfsLockType4 {
+    fn decode(src: &mut Bytes) -> XdrResult<Self> {
+        let v = u32::decode(src)?;
+        match v {
+            1 => Ok(NfsLockType4::ReadLt),
+            2 => Ok(NfsLockType4::WriteLt),
+            3 => Ok(NfsLockType4::ReadwLt),
+            4 => Ok(NfsLockType4::WritewLt),
+            _ => Err(XdrError::InvalidEnum(v)),
+        }
+    }
+}
+
+impl XdrEncode for NfsLockType4 {
+    fn encode(&self, dst: &mut BytesMut) {
+        (*self as u32).encode(dst);
+    }
+}
+
+/// Open-to-lock owner (new lock).
+#[derive(Debug)]
+pub struct OpenToLockOwner4 {
+    pub open_seqid: Seqid4,
+    pub open_stateid: Stateid4,
+    pub lock_seqid: Seqid4,
+    pub lock_owner: StateOwner4,
+}
+
+/// Existing lock owner.
+#[derive(Debug)]
+pub struct ExistLockOwner4 {
+    pub lock_stateid: Stateid4,
+    pub lock_seqid: Seqid4,
+}
+
+/// Lock owner union.
+#[derive(Debug)]
+pub enum Locker4 {
+    NewLockOwner(OpenToLockOwner4),
+    ExistingLockOwner(ExistLockOwner4),
+}
+
+/// LOCK args.
+#[derive(Debug)]
+pub struct LockArgs4 {
+    pub locktype: NfsLockType4,
+    pub reclaim: bool,
+    pub offset: Offset4,
+    pub length: Length4,
+    pub locker: Locker4,
+}
+
+/// LOCKT args.
+#[derive(Debug)]
+pub struct LocktArgs4 {
+    pub locktype: NfsLockType4,
+    pub offset: Offset4,
+    pub length: Length4,
+    pub owner: StateOwner4,
+}
+
+/// LOCKU args.
+#[derive(Debug)]
+pub struct LockuArgs4 {
+    pub locktype: NfsLockType4,
+    pub seqid: Seqid4,
+    pub lock_stateid: Stateid4,
+    pub offset: Offset4,
+    pub length: Length4,
+}
+
+/// Lock denied info.
+#[derive(Debug)]
+pub struct LockDenied4 {
+    pub offset: Offset4,
+    pub length: Length4,
+    pub locktype: NfsLockType4,
+    pub owner: StateOwner4,
+}
+
+/// OPENATTR args.
+#[derive(Debug)]
+pub struct OpenAttrArgs4 {
+    pub createdir: bool,
+}
+
 // ===== Compound request/response =====
 
 /// A COMPOUND request (NFSv4.1 procedure 1).
@@ -1127,6 +1229,10 @@ pub enum NfsResop4 {
     FreeStateid(NfsStat4),
     TestStateid(NfsStat4, Vec<NfsStat4>),
     DelegReturn(NfsStat4),
+    Lock(NfsStat4, Option<Stateid4>, Option<LockDenied4>),
+    Lockt(NfsStat4, Option<LockDenied4>),
+    Locku(NfsStat4, Option<Stateid4>),
+    OpenAttr(NfsStat4),
     SetClientId(NfsStat4, Option<SetClientIdRes4>),
     SetClientIdConfirm(NfsStat4),
     Renew(NfsStat4),
@@ -1575,6 +1681,49 @@ impl XdrEncode for NfsResop4 {
                 OP_DELEGRETURN.encode(dst);
                 status.encode(dst);
             }
+            NfsResop4::Lock(status, stateid, denied) => {
+                OP_LOCK.encode(dst);
+                status.encode(dst);
+                if *status == NfsStat4::Ok {
+                    if let Some(s) = stateid {
+                        s.encode(dst);
+                    }
+                } else if *status == NfsStat4::Denied {
+                    if let Some(d) = denied {
+                        d.offset.encode(dst);
+                        d.length.encode(dst);
+                        d.locktype.encode(dst);
+                        d.owner.clientid.encode(dst);
+                        encode_opaque(dst, &d.owner.owner);
+                    }
+                }
+            }
+            NfsResop4::Lockt(status, denied) => {
+                OP_LOCKT.encode(dst);
+                status.encode(dst);
+                if *status == NfsStat4::Denied {
+                    if let Some(d) = denied {
+                        d.offset.encode(dst);
+                        d.length.encode(dst);
+                        d.locktype.encode(dst);
+                        d.owner.clientid.encode(dst);
+                        encode_opaque(dst, &d.owner.owner);
+                    }
+                }
+            }
+            NfsResop4::Locku(status, stateid) => {
+                OP_LOCKU.encode(dst);
+                status.encode(dst);
+                if *status == NfsStat4::Ok {
+                    if let Some(s) = stateid {
+                        s.encode(dst);
+                    }
+                }
+            }
+            NfsResop4::OpenAttr(status) => {
+                OP_OPENATTR.encode(dst);
+                status.encode(dst);
+            }
             NfsResop4::SetClientId(status, res) => {
                 OP_SETCLIENTID.encode(dst);
                 status.encode(dst);
@@ -1961,6 +2110,57 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             let _clientid = u64::decode(src)?;
             let _owner = decode_opaque(src)?;
             Ok(NfsArgop4::ReleaseLockowner)
+        }
+        OP_LOCK => {
+            let locktype = NfsLockType4::decode(src)?;
+            let reclaim = bool::decode(src)?;
+            let offset = u64::decode(src)?;
+            let length = u64::decode(src)?;
+            let new_lock_owner = bool::decode(src)?;
+            let locker = if new_lock_owner {
+                let open_seqid = u32::decode(src)?;
+                let open_stateid = Stateid4::decode(src)?;
+                let lock_seqid = u32::decode(src)?;
+                let clientid = u64::decode(src)?;
+                let owner = decode_opaque(src)?;
+                Locker4::NewLockOwner(OpenToLockOwner4 {
+                    open_seqid,
+                    open_stateid,
+                    lock_seqid,
+                    lock_owner: StateOwner4 { clientid, owner },
+                })
+            } else {
+                let lock_stateid = Stateid4::decode(src)?;
+                let lock_seqid = u32::decode(src)?;
+                Locker4::ExistingLockOwner(ExistLockOwner4 {
+                    lock_stateid,
+                    lock_seqid,
+                })
+            };
+            Ok(NfsArgop4::Lock(LockArgs4 { locktype, reclaim, offset, length, locker }))
+        }
+        OP_LOCKT => {
+            let locktype = NfsLockType4::decode(src)?;
+            let offset = u64::decode(src)?;
+            let length = u64::decode(src)?;
+            let clientid = u64::decode(src)?;
+            let owner = decode_opaque(src)?;
+            Ok(NfsArgop4::Lockt(LocktArgs4 {
+                locktype, offset, length,
+                owner: StateOwner4 { clientid, owner },
+            }))
+        }
+        OP_LOCKU => {
+            let locktype = NfsLockType4::decode(src)?;
+            let seqid = u32::decode(src)?;
+            let lock_stateid = Stateid4::decode(src)?;
+            let offset = u64::decode(src)?;
+            let length = u64::decode(src)?;
+            Ok(NfsArgop4::Locku(LockuArgs4 { locktype, seqid, lock_stateid, offset, length }))
+        }
+        OP_OPENATTR => {
+            let createdir = bool::decode(src)?;
+            Ok(NfsArgop4::OpenAttr(OpenAttrArgs4 { createdir }))
         }
         OP_VERIFY => {
             let attrs = Fattr4::decode(src)?;
