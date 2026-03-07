@@ -321,4 +321,41 @@ impl StateManager {
         let inner = self.inner.read().await;
         inner.sessions.get(sessionid).map(|s| s.fore_chan_attrs.maxresponsesize)
     }
+
+    /// Handle SETCLIENTID (NFSv4.0).
+    pub async fn set_client_id(&self, args: &SetClientIdArgs4) -> SetClientIdRes4 {
+        let mut inner = self.inner.write().await;
+
+        // Check if we already have this client
+        let clientid = {
+            let existing = inner.clients.values().find(|c| c.owner.ownerid == args.client.ownerid);
+            if let Some(c) = existing {
+                c.clientid
+            } else {
+                let id = self.next_clientid.fetch_add(1, Ordering::Relaxed);
+                inner.clients.insert(id, ClientState {
+                    clientid: id,
+                    owner: args.client.clone(),
+                    confirmed: false,
+                    sequence_id: 1,
+                });
+                id
+            }
+        };
+
+        // Generate a verifier for confirmation
+        let mut verifier = [0u8; 8];
+        verifier[..8].copy_from_slice(&clientid.to_be_bytes());
+
+        SetClientIdRes4 { clientid, verifier }
+    }
+
+    /// Handle SETCLIENTID_CONFIRM (NFSv4.0).
+    pub async fn set_client_id_confirm(&self, args: &SetClientIdConfirmArgs4) -> Result<(), NfsStat4> {
+        let mut inner = self.inner.write().await;
+        let client = inner.clients.get_mut(&args.clientid)
+            .ok_or(NfsStat4::StaleClientid)?;
+        client.confirmed = true;
+        Ok(())
+    }
 }
