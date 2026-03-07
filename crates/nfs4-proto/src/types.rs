@@ -751,6 +751,15 @@ pub enum NfsArgop4 {
     Verify(Fattr4),
     Nverify(Fattr4),
     OpenDowngrade(OpenDowngradeArgs4),
+    LayoutGet,
+    LayoutReturn,
+    LayoutCommit,
+    GetDirDelegation,
+    WantDelegation,
+    BackchannelCtl,
+    GetDeviceInfo,
+    GetDeviceList,
+    SetSsv,
     Illegal,
 }
 
@@ -1243,6 +1252,15 @@ pub enum NfsResop4 {
     Verify(NfsStat4),
     Nverify(NfsStat4),
     OpenDowngrade(NfsStat4, Option<Stateid4>),
+    LayoutGet(NfsStat4),
+    LayoutReturn(NfsStat4),
+    LayoutCommit(NfsStat4),
+    GetDirDelegation(NfsStat4),
+    WantDelegation(NfsStat4),
+    BackchannelCtl(NfsStat4),
+    GetDeviceInfo(NfsStat4),
+    GetDeviceList(NfsStat4),
+    SetSsv(NfsStat4),
     Illegal(NfsStat4),
 }
 
@@ -1778,6 +1796,42 @@ impl XdrEncode for NfsResop4 {
                     }
                 }
             }
+            NfsResop4::LayoutGet(status) => {
+                OP_LAYOUTGET.encode(dst);
+                status.encode(dst);
+            }
+            NfsResop4::LayoutReturn(status) => {
+                OP_LAYOUTRETURN.encode(dst);
+                status.encode(dst);
+            }
+            NfsResop4::LayoutCommit(status) => {
+                OP_LAYOUTCOMMIT.encode(dst);
+                status.encode(dst);
+            }
+            NfsResop4::GetDirDelegation(status) => {
+                OP_GET_DIR_DELEGATION.encode(dst);
+                status.encode(dst);
+            }
+            NfsResop4::WantDelegation(status) => {
+                OP_WANT_DELEGATION.encode(dst);
+                status.encode(dst);
+            }
+            NfsResop4::BackchannelCtl(status) => {
+                OP_BACKCHANNEL_CTL.encode(dst);
+                status.encode(dst);
+            }
+            NfsResop4::GetDeviceInfo(status) => {
+                OP_GETDEVICEINFO.encode(dst);
+                status.encode(dst);
+            }
+            NfsResop4::GetDeviceList(status) => {
+                OP_GETDEVICELIST.encode(dst);
+                status.encode(dst);
+            }
+            NfsResop4::SetSsv(status) => {
+                OP_SET_SSV.encode(dst);
+                status.encode(dst);
+            }
             NfsResop4::Illegal(status) => {
                 OP_ILLEGAL.encode(dst);
                 status.encode(dst);
@@ -2179,6 +2233,121 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
         OP_NVERIFY => {
             let attrs = Fattr4::decode(src)?;
             Ok(NfsArgop4::Nverify(attrs))
+        }
+        OP_BACKCHANNEL_CTL => {
+            // cb_program(u32) + sec_parms(list of callback_sec_parms4)
+            let _cb_program = u32::decode(src)?;
+            let count = u32::decode(src)?;
+            for _ in 0..count {
+                let flavor = u32::decode(src)?;
+                match flavor {
+                    0 => {} // AUTH_NONE
+                    1 => {  // AUTH_SYS
+                        let _stamp = u32::decode(src)?;
+                        let _name = String::decode(src)?;
+                        let _uid = u32::decode(src)?;
+                        let _gid = u32::decode(src)?;
+                        let _gids = decode_list::<u32>(src)?;
+                    }
+                    6 => { // RPCSEC_GSS
+                        let _gcbp_service = u32::decode(src)?;
+                        let _gss_handle = decode_opaque(src)?;
+                        let _gcbp_handle_from_server = decode_opaque(src)?;
+                        let _gcbp_handle_from_client = decode_opaque(src)?;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(NfsArgop4::BackchannelCtl)
+        }
+        OP_GET_DIR_DELEGATION => {
+            // Signal deleg_avail; just skip the args
+            let _signal = bool::decode(src)?;
+            let _notif_types = Bitmap4::decode(src)?;
+            let _child_attr_delay = u64::decode(src)?; // nfstime4
+            let _ = u32::decode(src)?;
+            let _dir_attr_delay = u64::decode(src)?;
+            let _ = u32::decode(src)?;
+            let _child_attrs = Bitmap4::decode(src)?;
+            let _dir_attrs = Bitmap4::decode(src)?;
+            Ok(NfsArgop4::GetDirDelegation)
+        }
+        OP_GETDEVICEINFO => {
+            let _deviceid = decode_fixed_opaque(src, 16)?;
+            let _layout_type = u32::decode(src)?;
+            let _maxcount = u32::decode(src)?;
+            let _notif_types = Bitmap4::decode(src)?;
+            Ok(NfsArgop4::GetDeviceInfo)
+        }
+        OP_GETDEVICELIST => {
+            let _layout_type = u32::decode(src)?;
+            let _maxdevices = u32::decode(src)?;
+            let _cookie = u64::decode(src)?;
+            let _vdata = decode_fixed_opaque(src, 8)?;
+            Ok(NfsArgop4::GetDeviceList)
+        }
+        OP_LAYOUTCOMMIT => {
+            let _offset = u64::decode(src)?;
+            let _length = u64::decode(src)?;
+            let _reclaim = bool::decode(src)?;
+            let _stateid = Stateid4::decode(src)?;
+            let _new_offset = bool::decode(src)?;
+            if _new_offset {
+                let _last_byte = u64::decode(src)?;
+            }
+            let _time_modify = bool::decode(src)?;
+            if _time_modify {
+                let _t = NfsTime4::decode(src)?;
+            }
+            let _layout_type = u32::decode(src)?;
+            let _layoutupdate = decode_opaque(src)?;
+            Ok(NfsArgop4::LayoutCommit)
+        }
+        OP_LAYOUTGET => {
+            let _signal = bool::decode(src)?;
+            let _layout_type = u32::decode(src)?;
+            let _iomode = u32::decode(src)?;
+            let _offset = u64::decode(src)?;
+            let _length = u64::decode(src)?;
+            let _minlength = u64::decode(src)?;
+            let _stateid = Stateid4::decode(src)?;
+            let _maxcount = u32::decode(src)?;
+            Ok(NfsArgop4::LayoutGet)
+        }
+        OP_LAYOUTRETURN => {
+            let _reclaim = bool::decode(src)?;
+            let _layout_type = u32::decode(src)?;
+            let _iomode = u32::decode(src)?;
+            let _return_type = u32::decode(src)?;
+            match _return_type {
+                1 => { // LAYOUTRETURN4_FILE
+                    let _offset = u64::decode(src)?;
+                    let _length = u64::decode(src)?;
+                    let _stateid = Stateid4::decode(src)?;
+                    let _body = decode_opaque(src)?;
+                }
+                2 | 3 => {} // LAYOUTRETURN4_FSID / LAYOUTRETURN4_ALL
+                _ => {}
+            }
+            Ok(NfsArgop4::LayoutReturn)
+        }
+        OP_SET_SSV => {
+            let _ssv = decode_opaque(src)?;
+            let _digest = decode_opaque(src)?;
+            Ok(NfsArgop4::SetSsv)
+        }
+        OP_WANT_DELEGATION => {
+            let _want = u32::decode(src)?;
+            // want_signal_deleg_avail: union on want
+            let _claim_type = u32::decode(src)?;
+            match _claim_type {
+                0 => {} // CLAIM_NULL
+                3 => { // CLAIM_DELEGATE_PREV
+                    let _file = String::decode(src)?;
+                }
+                _ => {}
+            }
+            Ok(NfsArgop4::WantDelegation)
         }
         _ => {
             // Unknown op - return Illegal
