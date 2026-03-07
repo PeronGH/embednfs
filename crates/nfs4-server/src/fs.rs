@@ -41,6 +41,9 @@ pub struct FileAttr {
     pub mtime_nsec: u32,
     pub ctime_sec: i64,
     pub ctime_nsec: u32,
+    /// Birth/creation time (macOS expects this).
+    pub crtime_sec: i64,
+    pub crtime_nsec: u32,
     pub change_id: u64,
     /// Device numbers for block/char devices
     pub rdev_major: u32,
@@ -66,6 +69,8 @@ impl Default for FileAttr {
             mtime_nsec: 0,
             ctime_sec: 0,
             ctime_nsec: 0,
+            crtime_sec: 0,
+            crtime_nsec: 0,
             change_id: 0,
             rdev_major: 0,
             rdev_minor: 0,
