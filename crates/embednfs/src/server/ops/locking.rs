@@ -11,23 +11,81 @@ impl<F: FileSystem> NfsServer<F> {
         args: &LockArgs4,
         current_fh: &Option<NfsFh4>,
     ) -> NfsResop4 {
-        let _path = match self.resolve_fh(current_fh) {
-            Ok(path) => path,
-            Err(status) => return NfsResop4::Lock(status, None, None),
+        let fh = match current_fh {
+            Some(fh) => fh,
+            None => return NfsResop4::Lock(NfsStat4::Nofilehandle, None, None),
         };
+        let file_id = self.fileid_for_fh(fh);
 
-        let stateid = match &args.locker {
-            Locker4::NewLockOwner(new_owner) => {
-                self.state
-                    .create_lock_state(&new_owner.open_stateid, &new_owner.lock_owner)
-                    .await
-            }
+        // Check for conflicting locks.
+        let owner = match &args.locker {
+            Locker4::NewLockOwner(new_owner) => &new_owner.lock_owner,
             Locker4::ExistingLockOwner(existing) => {
-                self.state.update_lock_state(&existing.lock_stateid).await
+                // Look up the owner from the existing lock state.
+                match self.state.lock_owner(&existing.lock_stateid).await {
+                    Some(owner) => return self.do_lock_existing(
+                        file_id, args, existing, &owner,
+                    ).await,
+                    None => return NfsResop4::Lock(NfsStat4::BadStateid, None, None),
+                }
             }
         };
 
-        match stateid {
+        if let Some(denied) = self
+            .state
+            .find_lock_conflict(file_id, &args.locktype, args.offset, args.length, owner)
+            .await
+        {
+            return NfsResop4::Lock(NfsStat4::Denied, None, Some(denied));
+        }
+
+        let Locker4::NewLockOwner(new_owner) = &args.locker else {
+            unreachable!();
+        };
+
+        match self
+            .state
+            .create_lock_state(
+                file_id,
+                &new_owner.open_stateid,
+                &new_owner.lock_owner,
+                args.locktype,
+                args.offset,
+                args.length,
+            )
+            .await
+        {
+            Ok(stateid) => NfsResop4::Lock(NfsStat4::Ok, Some(stateid), None),
+            Err(status) => NfsResop4::Lock(status, None, None),
+        }
+    }
+
+    async fn do_lock_existing(
+        &self,
+        file_id: u64,
+        args: &LockArgs4,
+        existing: &ExistLockOwner4,
+        owner: &StateOwner4,
+    ) -> NfsResop4 {
+        if let Some(denied) = self
+            .state
+            .find_lock_conflict(file_id, &args.locktype, args.offset, args.length, owner)
+            .await
+        {
+            return NfsResop4::Lock(NfsStat4::Denied, None, Some(denied));
+        }
+
+        match self
+            .state
+            .update_lock_state(
+                file_id,
+                &existing.lock_stateid,
+                args.locktype,
+                args.offset,
+                args.length,
+            )
+            .await
+        {
             Ok(stateid) => NfsResop4::Lock(NfsStat4::Ok, Some(stateid), None),
             Err(status) => NfsResop4::Lock(status, None, None),
         }
@@ -35,17 +93,41 @@ impl<F: FileSystem> NfsServer<F> {
 
     pub(crate) async fn op_lockt(
         &self,
-        _args: &LocktArgs4,
+        args: &LocktArgs4,
         current_fh: &Option<NfsFh4>,
     ) -> NfsResop4 {
-        match self.resolve_fh(current_fh) {
-            Ok(_) => NfsResop4::Lockt(NfsStat4::Ok, None),
-            Err(status) => NfsResop4::Lockt(status, None),
+        let fh = match current_fh {
+            Some(fh) => fh,
+            None => return NfsResop4::Lockt(NfsStat4::Nofilehandle, None),
+        };
+        let file_id = self.fileid_for_fh(fh);
+
+        match self
+            .state
+            .find_lock_conflict(file_id, &args.locktype, args.offset, args.length, &args.owner)
+            .await
+        {
+            Some(denied) => NfsResop4::Lockt(NfsStat4::Denied, Some(denied)),
+            None => NfsResop4::Lockt(NfsStat4::Ok, None),
         }
     }
 
-    pub(crate) async fn op_locku(&self, args: &LockuArgs4) -> NfsResop4 {
-        match self.state.unlock_state(&args.lock_stateid).await {
+    pub(crate) async fn op_locku(
+        &self,
+        args: &LockuArgs4,
+        current_fh: &Option<NfsFh4>,
+    ) -> NfsResop4 {
+        let fh = match current_fh {
+            Some(fh) => fh,
+            None => return NfsResop4::Locku(NfsStat4::Nofilehandle, None),
+        };
+        let file_id = self.fileid_for_fh(fh);
+
+        match self
+            .state
+            .unlock_state(file_id, &args.lock_stateid, args.offset, args.length)
+            .await
+        {
             Ok(stateid) => NfsResop4::Locku(NfsStat4::Ok, Some(stateid)),
             Err(status) => NfsResop4::Locku(status, None),
         }

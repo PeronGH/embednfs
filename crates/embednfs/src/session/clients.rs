@@ -255,10 +255,38 @@ impl StateManager {
     /// Remove all state (sessions, opens, locks) for a client.
     fn purge_client_state_inner(inner: &mut StateInner, clientid: Clientid4) {
         inner.sessions.retain(|_, session| session.clientid != clientid);
+        // Collect open stateid others being removed.
+        let removed_opens: Vec<[u8; 12]> = inner
+            .open_files
+            .iter()
+            .filter(|(_, open)| open.clientid == clientid)
+            .map(|(other, _)| *other)
+            .collect();
         inner.open_files.retain(|_, open| open.clientid != clientid);
+        // Clean up file_opens reverse index.
+        if !removed_opens.is_empty() {
+            for opens in inner.file_opens.values_mut() {
+                opens.retain(|o| !removed_opens.contains(o));
+            }
+            inner.file_opens.retain(|_, v| !v.is_empty());
+        }
+        // Collect lock stateid others being removed.
+        let removed_locks: Vec<[u8; 12]> = inner
+            .lock_files
+            .iter()
+            .filter(|(_, lock)| lock.owner.clientid == clientid)
+            .map(|(other, _)| *other)
+            .collect();
         inner
             .lock_files
             .retain(|_, lock| lock.owner.clientid != clientid);
+        // Clean up file_locks ranges.
+        if !removed_locks.is_empty() {
+            for ranges in inner.file_locks.values_mut() {
+                ranges.retain(|r| !removed_locks.contains(&r.lock_stateid_other));
+            }
+            inner.file_locks.retain(|_, v| !v.is_empty());
+        }
         inner.clients.remove(&clientid);
     }
 

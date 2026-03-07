@@ -8,6 +8,18 @@ use crate::fs::FileId;
 pub(super) struct LockFileState {
     pub owner: StateOwner4,
     pub stateid_seq: u32,
+    /// The open stateid that this lock is associated with.
+    pub open_stateid_other: [u8; 12],
+}
+
+/// A single byte-range lock held on a file.
+#[derive(Debug, Clone)]
+pub(super) struct LockRange {
+    pub offset: u64,
+    pub length: u64,
+    pub lock_type: NfsLockType4,
+    pub owner: StateOwner4,
+    pub lock_stateid_other: [u8; 12],
 }
 
 pub(super) struct StateInner {
@@ -17,6 +29,8 @@ pub(super) struct StateInner {
     pub lock_files: HashMap<[u8; 12], LockFileState>,
     /// Reverse index: file_id → list of open stateid `other` values.
     pub file_opens: HashMap<FileId, Vec<[u8; 12]>>,
+    /// Per-file byte-range locks.
+    pub file_locks: HashMap<FileId, Vec<LockRange>>,
 }
 
 #[derive(Debug)]

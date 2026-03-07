@@ -318,7 +318,7 @@ impl<F: FileSystem> NfsServer<F> {
             NfsArgop4::MustNotImplement(op) => NfsResop4::MustNotImplement(op, NfsStat4::Notsupp),
             NfsArgop4::Lock(args) => self.op_lock(&args, current_fh).await,
             NfsArgop4::Lockt(args) => self.op_lockt(&args, current_fh).await,
-            NfsArgop4::Locku(args) => self.op_locku(&args).await,
+            NfsArgop4::Locku(args) => self.op_locku(&args, current_fh).await,
             NfsArgop4::OpenAttr(_) => NfsResop4::OpenAttr(NfsStat4::Notsupp),
             NfsArgop4::DelegPurge => NfsResop4::DelegPurge(NfsStat4::Ok),
             NfsArgop4::Verify(vattr) => self.op_verify(&vattr, current_fh, false).await,
