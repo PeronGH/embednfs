@@ -1,0 +1,14 @@
+[package]
+name = "nfs4-server"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "NFSv4.1 server library"
+
+[dependencies]
+async-trait = "0.1.89"
+bytes = "1.11.1"
+nfs4-proto = { path = "../nfs4-proto" }
+thiserror = "2.0.18"
+tokio = { version = "1.50.0", features = ["full"] }
+tracing = "0.1.44"
