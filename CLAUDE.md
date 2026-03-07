@@ -16,7 +16,7 @@ Before writing any module, read the relevant RFC sections, then study how existi
 
 ### Feedback Loop
 
-**Set up the feedback loop before writing any library code.** Install a userspace NFSv4.1 client, write a test script that tries to connect to your server, and verify you can run it. Only then start implementing. If you can't test it, you can't build it.
+**Set up the feedback loop before writing any library code.** If you can't test it, you can't build it.
 
 Then iterate:
 
@@ -30,9 +30,7 @@ Never implement a large chunk speculatively. Every piece of protocol handling sh
 
 ### Testing
 
-Use a userspace NFSv4.1 client library for automated testing — something that doesn't require root or kernel mounts. Also test with the Linux kernel NFS client when useful (the container has root). Find existing NFSv4 protocol test suites and borrow from them.
-
-Start with the simplest possible handshake. Build up operation by operation, each tested before the next.
+Use a userspace NFSv4.1 client library for automated testing — something that doesn't require root or kernel mounts. Also test with the kernel NFS client when useful. Find existing NFSv4 protocol test suites and borrow from them.
 
 ## Coding Standards
 
