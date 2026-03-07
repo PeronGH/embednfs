@@ -1,0 +1,117 @@
+use tracing::{debug, trace};
+
+use embednfs_proto::*;
+
+use crate::attrs;
+use crate::fs::{FileSystem, FileType, FsError, WriteCapability};
+
+use super::super::NfsServer;
+
+impl<F: FileSystem> NfsServer<F> {
+    pub(crate) async fn op_access(
+        &self,
+        args: &AccessArgs4,
+        current_fh: &Option<NfsFh4>,
+    ) -> NfsResop4 {
+        let path = match self.resolve_fh(current_fh) {
+            Ok(path) => path,
+            Err(status) => return NfsResop4::Access(status, 0, 0),
+        };
+
+        match self.attr_for_path(&path).await {
+            Ok(attr) => {
+                let mut server_supported = ACCESS4_READ
+                    | ACCESS4_LOOKUP
+                    | ACCESS4_MODIFY
+                    | ACCESS4_EXTEND
+                    | ACCESS4_DELETE
+                    | ACCESS4_EXECUTE;
+                if attr.file_type == FileType::Directory {
+                    server_supported &= !ACCESS4_EXECUTE;
+                }
+                let supported = args.access & server_supported;
+                NfsResop4::Access(NfsStat4::Ok, supported, supported)
+            }
+            Err(e) => NfsResop4::Access(e.to_nfsstat4(), 0, 0),
+        }
+    }
+
+    pub(crate) async fn op_getattr(
+        &self,
+        args: &GetattrArgs4,
+        current_fh: &Option<NfsFh4>,
+    ) -> NfsResop4 {
+        let path = match self.resolve_fh(current_fh) {
+            Ok(path) => path,
+            Err(status) => return NfsResop4::Getattr(status, None),
+        };
+        let fh = current_fh.as_ref().unwrap();
+
+        match self.attr_for_path(&path).await {
+            Ok(attr) => {
+                let caps = self.fs.capabilities();
+                let fattr = attrs::encode_fattr4(&attr, &args.attr_request, fh, &caps.fs_info);
+                debug!(
+                    "GETATTR response: path={path}, request={:?}, returned={:?}, attr_bytes={}",
+                    args.attr_request.0,
+                    fattr.attrmask.0,
+                    fattr.attr_vals.len()
+                );
+                trace!(
+                    "GETATTR attr payload: path={path}, attr_hex={}",
+                    super::super::util::hex_bytes(&fattr.attr_vals)
+                );
+                NfsResop4::Getattr(NfsStat4::Ok, Some(fattr))
+            }
+            Err(e) => NfsResop4::Getattr(e.to_nfsstat4(), None),
+        }
+    }
+
+    pub(crate) async fn op_getfh(&self, current_fh: &Option<NfsFh4>) -> NfsResop4 {
+        match current_fh {
+            Some(fh) => NfsResop4::Getfh(NfsStat4::Ok, Some(fh.clone())),
+            None => NfsResop4::Getfh(NfsStat4::Nofilehandle, None),
+        }
+    }
+
+    pub(crate) async fn op_setattr(
+        &self,
+        args: &SetattrArgs4,
+        current_fh: &Option<NfsFh4>,
+    ) -> NfsResop4 {
+        let path = match self.resolve_fh(current_fh) {
+            Ok(path) => path,
+            Err(status) => return NfsResop4::Setattr(status, Bitmap4::new()),
+        };
+
+        let set_attrs = attrs::decode_setattr(&args.obj_attributes);
+        let mut applied = Bitmap4::new();
+
+        if let Some(size) = set_attrs.size {
+            let result = if self.fs.capabilities().write_capability == WriteCapability::ReplaceOnly {
+                self.stage_set_len(&path, size).await
+            } else {
+                self.fs.set_len(&path, size).await
+            };
+            match result {
+                Ok(()) => applied.set(FATTR4_SIZE),
+                Err(FsError::Notsupp) | Err(FsError::AttrNotsupp) => {
+                    return NfsResop4::Setattr(NfsStat4::AttrNotsupp, Bitmap4::new());
+                }
+                Err(e) => return NfsResop4::Setattr(e.to_nfsstat4(), Bitmap4::new()),
+            }
+        }
+
+        if set_attrs.mode.is_some()
+            || set_attrs.uid.is_some()
+            || set_attrs.gid.is_some()
+            || set_attrs.atime.is_some()
+            || set_attrs.mtime.is_some()
+            || set_attrs.crtime.is_some()
+        {
+            return NfsResop4::Setattr(NfsStat4::AttrNotsupp, applied);
+        }
+
+        NfsResop4::Setattr(NfsStat4::Ok, applied)
+    }
+}

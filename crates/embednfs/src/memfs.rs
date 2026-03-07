@@ -382,7 +382,6 @@ impl MemFs {
                 for (name, child_id) in entries {
                     if let Some(child) = inner.inodes.get(child_id) {
                         result.push(DirEntry {
-                            fileid: *child_id,
                             name: name.clone(),
                             attr: child.attr.clone(),
                         });

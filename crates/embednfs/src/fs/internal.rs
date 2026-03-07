@@ -66,7 +66,6 @@ impl Default for FileAttr {
 /// Internal directory entry representation.
 #[derive(Debug, Clone)]
 pub(crate) struct DirEntry {
-    pub fileid: FileId,
     pub name: String,
     pub attr: FileAttr,
 }
