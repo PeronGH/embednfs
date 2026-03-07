@@ -1401,6 +1401,7 @@ impl XdrEncode for SecinfoEntry4 {
 }
 
 // ===== Open result flags =====
+/// NFSv4.0 only — MUST NOT be set in NFSv4.1 OPEN responses (RFC 8881 §18.16.3).
 pub const OPEN4_RESULT_CONFIRM: u32 = 0x00000002;
 pub const OPEN4_RESULT_LOCKTYPE_POSIX: u32 = 0x00000004;
 pub const OPEN4_RESULT_PRESERVE_UNLINKED: u32 = 0x00000008;

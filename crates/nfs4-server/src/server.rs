@@ -185,7 +185,8 @@ impl<F: NfsFileSystem> NfsServer<F> {
     async fn handle_compound(&self, args: Compound4Args) -> Compound4Res {
         debug!("COMPOUND: tag={:?}, minorversion={}, ops={}", args.tag, args.minorversion, args.argarray.len());
 
-        if args.minorversion > 1 {
+        // NFSv4.1 server: only accept minorversion=1 per RFC 8881 §16.2.3
+        if args.minorversion != 1 {
             return Compound4Res {
                 status: NfsStat4::MinorVersMismatch,
                 tag: args.tag,
@@ -241,11 +242,9 @@ impl<F: NfsFileSystem> NfsServer<F> {
             NfsArgop4::Lookup(args) => self.op_lookup(&args, current_fh).await,
             NfsArgop4::Lookupp => self.op_lookupp(current_fh).await,
             NfsArgop4::Open(args) => self.op_open(&args, current_fh).await,
-            NfsArgop4::OpenConfirm(args) => {
-                // For v4.0: confirm open, return the stateid with bumped seqid
-                let mut stateid = args.open_stateid;
-                stateid.seqid = stateid.seqid.wrapping_add(1);
-                NfsResop4::OpenConfirm(NfsStat4::Ok, Some(stateid))
+            NfsArgop4::OpenConfirm(_) => {
+                // Mandatory not-to-implement in NFSv4.1 (RFC 8881 §8.1)
+                NfsResop4::OpenConfirm(NfsStat4::Notsupp, None)
             }
             NfsArgop4::Putfh(args) => {
                 *current_fh = Some(args.object);
@@ -346,19 +345,17 @@ impl<F: NfsFileSystem> NfsServer<F> {
             NfsArgop4::DelegReturn(_) => {
                 NfsResop4::DelegReturn(NfsStat4::Ok)
             }
-            NfsArgop4::SetClientId(args) => {
-                let res = self.state.set_client_id(&args).await;
-                NfsResop4::SetClientId(NfsStat4::Ok, Some(res))
+            NfsArgop4::SetClientId(_) => {
+                // Mandatory not-to-implement in NFSv4.1 (RFC 8881 §8.1)
+                NfsResop4::SetClientId(NfsStat4::Notsupp, None)
             }
-            NfsArgop4::SetClientIdConfirm(args) => {
-                match self.state.set_client_id_confirm(&args).await {
-                    Ok(()) => NfsResop4::SetClientIdConfirm(NfsStat4::Ok),
-                    Err(status) => NfsResop4::SetClientIdConfirm(status),
-                }
+            NfsArgop4::SetClientIdConfirm(_) => {
+                // Mandatory not-to-implement in NFSv4.1 (RFC 8881 §8.1)
+                NfsResop4::SetClientIdConfirm(NfsStat4::Notsupp)
             }
-            NfsArgop4::Renew(_clientid) => {
-                // Just accept it - refresh lease
-                NfsResop4::Renew(NfsStat4::Ok)
+            NfsArgop4::Renew(_) => {
+                // Mandatory not-to-implement in NFSv4.1 (RFC 8881 §8.1)
+                NfsResop4::Renew(NfsStat4::Notsupp)
             }
             NfsArgop4::Lock(args) => self.op_lock(&args, current_fh).await,
             NfsArgop4::Lockt(args) => self.op_lockt(&args, current_fh).await,
@@ -371,7 +368,8 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 NfsResop4::DelegPurge(NfsStat4::Ok)
             }
             NfsArgop4::ReleaseLockowner => {
-                NfsResop4::ReleaseLockowner(NfsStat4::Ok)
+                // Mandatory not-to-implement in NFSv4.1 (RFC 8881 §8.1)
+                NfsResop4::ReleaseLockowner(NfsStat4::Notsupp)
             }
             NfsArgop4::Verify(vattr) => self.op_verify(&vattr, current_fh, false).await,
             NfsArgop4::Nverify(vattr) => self.op_verify(&vattr, current_fh, true).await,

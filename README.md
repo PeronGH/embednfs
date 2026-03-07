@@ -1,6 +1,6 @@
 # nfsserve4-rs
 
-A production-quality NFSv4.1 (and NFSv4.0) server library in Rust. Implement a filesystem trait; the library handles the wire protocol, state management, and serves it over TCP.
+A production-quality NFSv4.1 server library in Rust. Implement a filesystem trait; the library handles the wire protocol, state management, and serves it over TCP.
 
 The primary use case is embedding as a localhost NFS server — a FUSE replacement that needs no kernel modules. macOS and Linux ship NFSv4 clients in-kernel, so the mount just works.
 
@@ -29,10 +29,10 @@ Then mount:
 
 ```bash
 # Linux
-mount -t nfs4 -o vers=4.0,proto=tcp,port=2049 127.0.0.1:/ /mnt/nfs
+mount -t nfs4 -o vers=4.1,proto=tcp,port=2049 127.0.0.1:/ /mnt/nfs
 
 # macOS
-mount -t nfs -o vers=4,tcp,port=2049 127.0.0.1:/ /mnt/nfs
+mount -t nfs -o vers=4.1,tcp,port=2049 127.0.0.1:/ /mnt/nfs
 ```
 
 ## Implementing a Filesystem
@@ -61,14 +61,15 @@ The root directory must have `FileId = 1`. The server handles all protocol detai
 
 | Operation | Status |
 |-----------|--------|
-| EXCHANGE_ID / CREATE_SESSION | Supported (NFSv4.1) |
-| SETCLIENTID / SETCLIENTID_CONFIRM | Supported (NFSv4.0) |
+| EXCHANGE_ID / CREATE_SESSION | Supported |
+| SETCLIENTID / SETCLIENTID_CONFIRM | Not Supported (v4.0 only, returns NFS4ERR_NOTSUPP) |
 | SEQUENCE | Supported |
 | PUTROOTFH / PUTFH / GETFH | Supported |
 | LOOKUP / LOOKUPP | Supported |
 | GETATTR / SETATTR | Supported |
 | ACCESS | Supported |
-| OPEN / CLOSE / OPEN_CONFIRM | Supported |
+| OPEN / CLOSE | Supported |
+| OPEN_CONFIRM | Not Supported (v4.0 only, returns NFS4ERR_NOTSUPP) |
 | READ / WRITE / COMMIT | Supported |
 | CREATE (mkdir, symlink) | Supported |
 | READDIR | Supported |
@@ -81,6 +82,8 @@ The root directory must have `FileId = 1`. The server handles all protocol detai
 | RECLAIM_COMPLETE | Supported |
 | DESTROY_SESSION / DESTROY_CLIENTID | Supported |
 | DELEGRETURN / FREE_STATEID | Supported |
+| RENEW | Not Supported (v4.0 only, returns NFS4ERR_NOTSUPP) |
+| RELEASE_LOCKOWNER | Not Supported (v4.0 only, returns NFS4ERR_NOTSUPP) |
 
 ## Testing
 

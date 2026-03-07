@@ -58,9 +58,13 @@ async fn send_rpc(stream: &mut TcpStream, xid: u32, proc_num: u32, payload: &[u8
 }
 
 fn encode_compound(tag: &str, ops: &[&[u8]]) -> Vec<u8> {
+    encode_compound_v(tag, 1, ops)
+}
+
+fn encode_compound_v(tag: &str, minorversion: u32, ops: &[&[u8]]) -> Vec<u8> {
     let mut buf = BytesMut::with_capacity(512);
     tag.to_string().encode(&mut buf);
-    1u32.encode(&mut buf); // minorversion = 1
+    minorversion.encode(&mut buf);
     (ops.len() as u32).encode(&mut buf);
     for op in ops {
         buf.put_slice(op);
@@ -620,4 +624,114 @@ async fn test_reclaim_complete() {
     parse_rpc_reply(&mut resp);
     let status = u32::decode(&mut resp).unwrap();
     assert_eq!(status, 0, "RECLAIM_COMPLETE should succeed");
+}
+
+/// RFC 8881 §16.2.3: minorversion != 1 must return NFS4ERR_MINOR_VERS_MISMATCH
+/// with zero-length resarray.
+#[tokio::test]
+async fn test_minorversion_0_rejected() {
+    let port = start_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+
+    // Send a COMPOUND with minorversion=0 (NFSv4.0)
+    let rootfh_op = encode_putrootfh();
+    let compound = encode_compound_v("v40", 0, &[&rootfh_op]);
+    let mut resp = send_rpc(&mut stream, 1, 1, &compound).await;
+    let (_, accept_stat) = parse_rpc_reply(&mut resp);
+    assert_eq!(accept_stat, 0, "RPC should be accepted");
+
+    // Parse COMPOUND response
+    let status = u32::decode(&mut resp).unwrap();
+    assert_eq!(status, 10021, "Should return NFS4ERR_MINOR_VERS_MISMATCH (10021)");
+    let _tag = String::decode(&mut resp).unwrap();
+    let num_results = u32::decode(&mut resp).unwrap();
+    assert_eq!(num_results, 0, "resarray must be empty for minor version mismatch");
+}
+
+/// RFC 8881 §16.2.3: minorversion=2 must also be rejected.
+#[tokio::test]
+async fn test_minorversion_2_rejected() {
+    let port = start_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+
+    let rootfh_op = encode_putrootfh();
+    let compound = encode_compound_v("v42", 2, &[&rootfh_op]);
+    let mut resp = send_rpc(&mut stream, 1, 1, &compound).await;
+    let (_, accept_stat) = parse_rpc_reply(&mut resp);
+    assert_eq!(accept_stat, 0);
+
+    let status = u32::decode(&mut resp).unwrap();
+    assert_eq!(status, 10021, "Should return NFS4ERR_MINOR_VERS_MISMATCH (10021)");
+    let _tag = String::decode(&mut resp).unwrap();
+    let num_results = u32::decode(&mut resp).unwrap();
+    assert_eq!(num_results, 0, "resarray must be empty for minor version mismatch");
+}
+
+/// RFC 8881 §8.1: NFSv4.0-only operations must return NFS4ERR_NOTSUPP.
+#[tokio::test]
+async fn test_v4_0_ops_return_notsupp() {
+    let port = start_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+
+    // Establish a v4.1 session
+    let exchange_id_op = encode_exchange_id();
+    let compound = encode_compound("", &[&exchange_id_op]);
+    let mut resp = send_rpc(&mut stream, 1, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    u32::decode(&mut resp).unwrap();
+    String::decode(&mut resp).unwrap();
+    u32::decode(&mut resp).unwrap();
+    u32::decode(&mut resp).unwrap();
+    u32::decode(&mut resp).unwrap();
+    let clientid = u64::decode(&mut resp).unwrap();
+    let sequenceid = u32::decode(&mut resp).unwrap();
+
+    let cs_op = encode_create_session(clientid, sequenceid);
+    let compound = encode_compound("", &[&cs_op]);
+    let mut resp = send_rpc(&mut stream, 2, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    u32::decode(&mut resp).unwrap();
+    String::decode(&mut resp).unwrap();
+    u32::decode(&mut resp).unwrap();
+    u32::decode(&mut resp).unwrap();
+    u32::decode(&mut resp).unwrap();
+    let session_data = decode_fixed_opaque(&mut resp, 16).unwrap();
+    let mut sessionid = [0u8; 16];
+    sessionid.copy_from_slice(&session_data);
+
+    // Test SETCLIENTID (op 35) — v4.0 only, must return NOTSUPP
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let mut setclientid_buf = BytesMut::new();
+    OP_SETCLIENTID.encode(&mut setclientid_buf);
+    // client verifier (8 bytes)
+    setclientid_buf.put_slice(&[0u8; 8]);
+    // client id string
+    encode_opaque(&mut setclientid_buf, b"dummy");
+    // callback (cb_program + cb_location)
+    0u32.encode(&mut setclientid_buf); // cb_program
+    // netid + uaddr
+    "tcp".to_string().encode(&mut setclientid_buf);
+    "127.0.0.1.8.1".to_string().encode(&mut setclientid_buf);
+    // callback_ident
+    0u32.encode(&mut setclientid_buf);
+    let setclientid_op = setclientid_buf.to_vec();
+
+    let compound = encode_compound("", &[&seq_op, &setclientid_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    let (_, accept_stat) = parse_rpc_reply(&mut resp);
+    assert_eq!(accept_stat, 0);
+
+    let status = u32::decode(&mut resp).unwrap();
+    // COMPOUND status should be NOTSUPP (the SETCLIENTID failed)
+    assert_eq!(status, 10004, "COMPOUND should fail with NFS4ERR_NOTSUPP (10004)");
+    let _tag = String::decode(&mut resp).unwrap();
+    let num_results = u32::decode(&mut resp).unwrap();
+    // SEQUENCE succeeded, SETCLIENTID failed = 2 results
+    assert_eq!(num_results, 2);
+
+    // First result: SEQUENCE should be OK
+    let opnum = u32::decode(&mut resp).unwrap();
+    assert_eq!(opnum, OP_SEQUENCE);
+    let seq_status = u32::decode(&mut resp).unwrap();
+    assert_eq!(seq_status, 0, "SEQUENCE should succeed");
 }
