@@ -2,7 +2,7 @@
 
 A production-quality NFSv4.1 server library in Rust. Implement a filesystem trait; the library handles the wire protocol, state management, and serves it over TCP.
 
-The primary use case is embedding as a localhost NFS server — a FUSE replacement that needs no kernel modules. macOS and Linux ship NFSv4 clients in-kernel, so the mount just works.
+The primary use case is embedding as a localhost NFS server — a FUSE replacement that needs no kernel modules. macOS and Linux ship NFSv4.1 clients in-kernel, so the mount just works.
 
 ## Architecture
 
