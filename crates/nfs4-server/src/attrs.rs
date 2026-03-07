@@ -35,7 +35,8 @@ pub fn encode_fattr4(attr: &FileAttr, request: &Bitmap4, fh: &NfsFh4, fs_info: &
             FATTR4_RAWDEV,
             FATTR4_SPACE_AVAIL, FATTR4_SPACE_FREE,
             FATTR4_SPACE_TOTAL, FATTR4_SPACE_USED,
-            FATTR4_TIME_ACCESS, FATTR4_TIME_BACKUP,
+            FATTR4_TIME_ACCESS, FATTR4_TIME_ACCESS_SET,
+            FATTR4_TIME_BACKUP,
             FATTR4_TIME_CREATE, FATTR4_TIME_DELTA,
             FATTR4_TIME_METADATA, FATTR4_TIME_MODIFY,
             FATTR4_TIME_MODIFY_SET,
@@ -402,6 +403,20 @@ pub fn decode_setattr(fattr: &Fattr4) -> SetFileAttr {
                 }
                 _ => {}
             }
+        }
+    }
+
+    // TIME_BACKUP (49) - macOS sends this (same format as time_create)
+    if fattr.attrmask.is_set(FATTR4_TIME_BACKUP) {
+        if let Ok(t) = NfsTime4::decode(&mut src) {
+            result.crtime = Some(SetTime::ClientTime(t.seconds, t.nseconds));
+        }
+    }
+
+    // TIME_CREATE (50) - macOS sends this as birth/creation time
+    if fattr.attrmask.is_set(FATTR4_TIME_CREATE) {
+        if let Ok(t) = NfsTime4::decode(&mut src) {
+            result.crtime = Some(SetTime::ClientTime(t.seconds, t.nseconds));
         }
     }
 

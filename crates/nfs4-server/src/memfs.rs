@@ -145,6 +145,18 @@ impl NfsFileSystem for MemFs {
                 }
             }
         }
+        if let Some(crtime) = attrs.crtime {
+            match crtime {
+                SetTime::ServerTime => {
+                    inode.attr.crtime_sec = now_s;
+                    inode.attr.crtime_nsec = now_ns;
+                }
+                SetTime::ClientTime(s, ns) => {
+                    inode.attr.crtime_sec = s;
+                    inode.attr.crtime_nsec = ns;
+                }
+            }
+        }
 
         inode.attr.ctime_sec = now_s;
         inode.attr.ctime_nsec = now_ns;
@@ -253,6 +265,11 @@ impl NfsFileSystem for MemFs {
         let (now_s, now_ns) = Self::now();
         let mode = attrs.mode.unwrap_or(0o644);
 
+        let (cr_s, cr_ns) = match attrs.crtime {
+            Some(SetTime::ClientTime(s, ns)) => (s, ns),
+            _ => (now_s, now_ns),
+        };
+
         let file_attr = FileAttr {
             fileid: new_id,
             file_type: FileType::Regular,
@@ -270,8 +287,8 @@ impl NfsFileSystem for MemFs {
             mtime_nsec: now_ns,
             ctime_sec: now_s,
             ctime_nsec: now_ns,
-            crtime_sec: now_s,
-            crtime_nsec: now_ns,
+            crtime_sec: cr_s,
+            crtime_nsec: cr_ns,
             change_id: self.next_change(),
             rdev_major: 0,
             rdev_minor: 0,
