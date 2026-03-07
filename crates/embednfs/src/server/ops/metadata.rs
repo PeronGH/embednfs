@@ -30,7 +30,16 @@ impl<F: FileSystem> NfsServer<F> {
                     server_supported &= !ACCESS4_EXECUTE;
                 }
                 let supported = args.access & server_supported;
-                NfsResop4::Access(NfsStat4::Ok, supported, supported)
+
+                // Check actual permissions from metadata (RFC 8881 §18.1).
+                let mut granted = supported;
+                if attr.mode & 0o222 == 0 {
+                    granted &= !(ACCESS4_MODIFY | ACCESS4_EXTEND | ACCESS4_DELETE);
+                }
+                if attr.file_type != FileType::Directory && attr.mode & 0o111 == 0 {
+                    granted &= !ACCESS4_EXECUTE;
+                }
+                NfsResop4::Access(NfsStat4::Ok, supported, granted)
             }
             Err(e) => NfsResop4::Access(e.to_nfsstat4(), 0, 0),
         }
