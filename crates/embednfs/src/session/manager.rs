@@ -37,6 +37,7 @@ impl StateManager {
                 sessions: HashMap::new(),
                 open_files: HashMap::new(),
                 lock_files: HashMap::new(),
+                file_opens: HashMap::new(),
             })),
             next_clientid: AtomicU64::new(1),
             next_stateid: AtomicU32::new(1),

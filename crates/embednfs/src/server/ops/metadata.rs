@@ -87,6 +87,8 @@ impl<F: FileSystem> NfsServer<F> {
         &self,
         args: &SetattrArgs4,
         current_fh: &Option<NfsFh4>,
+        current_stateid: &Option<Stateid4>,
+        session_clientid: Option<Clientid4>,
     ) -> NfsResop4 {
         let path = match self.resolve_fh(current_fh) {
             Ok(path) => path,
@@ -101,6 +103,19 @@ impl<F: FileSystem> NfsServer<F> {
         let attrmask = &args.obj_attributes.attrmask;
 
         if attrmask.is_set(FATTR4_SIZE) {
+            // Validate stateid for size changes.
+            let stateid = if args.stateid.seqid == 1 && args.stateid.other == [0u8; 12] {
+                (*current_stateid).unwrap_or(args.stateid)
+            } else {
+                args.stateid
+            };
+            if let Err(status) = self
+                .state
+                .validate_stateid(&stateid, session_clientid)
+                .await
+            {
+                return NfsResop4::Setattr(status, Bitmap4::new());
+            }
             let Some(size) = set_attrs.size else {
                 return NfsResop4::Setattr(NfsStat4::BadXdr, Bitmap4::new());
             };

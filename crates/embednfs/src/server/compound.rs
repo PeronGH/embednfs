@@ -90,6 +90,7 @@ impl<F: FileSystem> NfsServer<F> {
 
         let mut current_fh: Option<NfsFh4> = None;
         let mut saved_fh: Option<NfsFh4> = None;
+        let mut current_stateid: Option<Stateid4> = None;
         let mut resarray = Vec::with_capacity(total_ops);
         let mut overall_status = NfsStat4::Ok;
         let mut cache_slot: Option<(Sessionid4, u32)> = None;
@@ -156,7 +157,14 @@ impl<F: FileSystem> NfsServer<F> {
                     Err(status) => NfsResop4::Sequence(status, None),
                 }
             } else {
-                self.handle_op(op, &mut current_fh, &mut saved_fh).await
+                self.handle_op(
+                    op,
+                    &mut current_fh,
+                    &mut saved_fh,
+                    &mut current_stateid,
+                    leading_sequence_clientid,
+                )
+                .await
             };
             let status = res_status(&res);
             trace!("  result: op={}, status={:?}", resop_name(&res), status);
@@ -186,10 +194,18 @@ impl<F: FileSystem> NfsServer<F> {
         op: NfsArgop4,
         current_fh: &mut Option<NfsFh4>,
         saved_fh: &mut Option<NfsFh4>,
+        current_stateid: &mut Option<Stateid4>,
+        session_clientid: Option<Clientid4>,
     ) -> NfsResop4 {
         match op {
             NfsArgop4::Access(args) => self.op_access(&args, current_fh).await,
-            NfsArgop4::Close(args) => self.op_close(&args, current_fh).await,
+            NfsArgop4::Close(args) => {
+                let res = self.op_close(&args, current_fh).await;
+                if let NfsResop4::Close(NfsStat4::Ok, ref sid) = res {
+                    *current_stateid = Some(*sid);
+                }
+                res
+            }
             NfsArgop4::Commit(args) => self.op_commit(&args, current_fh).await,
             NfsArgop4::Create(args) => self.op_create(&args, current_fh).await,
             NfsArgop4::Getattr(args) => self.op_getattr(&args, current_fh).await,
@@ -197,7 +213,15 @@ impl<F: FileSystem> NfsServer<F> {
             NfsArgop4::Link(args) => self.op_link(&args, current_fh, saved_fh).await,
             NfsArgop4::Lookup(args) => self.op_lookup(&args, current_fh).await,
             NfsArgop4::Lookupp => self.op_lookupp(current_fh).await,
-            NfsArgop4::Open(args) => self.op_open(&args, current_fh).await,
+            NfsArgop4::Open(args) => {
+                let res = self
+                    .op_open(&args, current_fh, session_clientid)
+                    .await;
+                if let NfsResop4::Open(NfsStat4::Ok, Some(ref open_res)) = res {
+                    *current_stateid = Some(open_res.stateid);
+                }
+                res
+            }
             NfsArgop4::Putfh(args) => {
                 *current_fh = Some(args.object);
                 NfsResop4::Putfh(NfsStat4::Ok)
@@ -210,7 +234,10 @@ impl<F: FileSystem> NfsServer<F> {
                 *current_fh = Some(self.handles.lock().unwrap().get_or_create("/"));
                 NfsResop4::Putrootfh(NfsStat4::Ok)
             }
-            NfsArgop4::Read(args) => self.op_read(&args, current_fh).await,
+            NfsArgop4::Read(args) => {
+                self.op_read(&args, current_fh, current_stateid, session_clientid)
+                    .await
+            }
             NfsArgop4::Readdir(args) => self.op_readdir(&args, current_fh).await,
             NfsArgop4::Readlink => self.op_readlink(current_fh).await,
             NfsArgop4::Remove(args) => self.op_remove(&args, current_fh).await,
@@ -235,8 +262,14 @@ impl<F: FileSystem> NfsServer<F> {
                 NfsStat4::Ok,
                 vec![SecinfoEntry4 { flavor: 1 }, SecinfoEntry4 { flavor: 0 }],
             ),
-            NfsArgop4::Setattr(args) => self.op_setattr(&args, current_fh).await,
-            NfsArgop4::Write(args) => self.op_write(&args, current_fh).await,
+            NfsArgop4::Setattr(args) => {
+                self.op_setattr(&args, current_fh, current_stateid, session_clientid)
+                    .await
+            }
+            NfsArgop4::Write(args) => {
+                self.op_write(&args, current_fh, current_stateid, session_clientid)
+                    .await
+            }
             NfsArgop4::ExchangeId(args) => {
                 let res = self.state.exchange_id(&args).await;
                 NfsResop4::ExchangeId(NfsStat4::Ok, Some(res))
@@ -275,7 +308,10 @@ impl<F: FileSystem> NfsServer<F> {
                 Err(status) => NfsResop4::FreeStateid(status),
             },
             NfsArgop4::TestStateid(args) => {
-                let results = vec![NfsStat4::Ok; args.stateids.len()];
+                let mut results = Vec::with_capacity(args.stateids.len());
+                for sid in &args.stateids {
+                    results.push(self.state.test_stateid(sid).await);
+                }
                 NfsResop4::TestStateid(NfsStat4::Ok, results)
             }
             NfsArgop4::DelegReturn(_) => NfsResop4::DelegReturn(NfsStat4::Ok),
@@ -288,9 +324,17 @@ impl<F: FileSystem> NfsServer<F> {
             NfsArgop4::Verify(vattr) => self.op_verify(&vattr, current_fh, false).await,
             NfsArgop4::Nverify(vattr) => self.op_verify(&vattr, current_fh, true).await,
             NfsArgop4::OpenDowngrade(args) => {
-                let mut stateid = args.open_stateid;
-                stateid.seqid = stateid.seqid.wrapping_add(1);
-                NfsResop4::OpenDowngrade(NfsStat4::Ok, Some(stateid))
+                match self
+                    .state
+                    .open_downgrade(&args.open_stateid, args.share_access, args.share_deny)
+                    .await
+                {
+                    Ok(stateid) => {
+                        *current_stateid = Some(stateid);
+                        NfsResop4::OpenDowngrade(NfsStat4::Ok, Some(stateid))
+                    }
+                    Err(status) => NfsResop4::OpenDowngrade(status, None),
+                }
             }
             NfsArgop4::LayoutGet => NfsResop4::LayoutGet(NfsStat4::Notsupp),
             NfsArgop4::LayoutReturn => NfsResop4::LayoutReturn(NfsStat4::Notsupp),

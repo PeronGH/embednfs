@@ -50,11 +50,15 @@ impl<F: FileSystem> NfsServer<F> {
         &self,
         args: &OpenArgs4,
         current_fh: &mut Option<NfsFh4>,
+        session_clientid: Option<Clientid4>,
     ) -> NfsResop4 {
         let dir_path = match self.resolve_fh(current_fh) {
             Ok(path) => path,
             Err(status) => return NfsResop4::Open(status, None),
         };
+
+        // Derive clientid from session (RFC 8881 §18.16.3).
+        let clientid = session_clientid.unwrap_or(args.owner.clientid);
 
         let (path, created) = match &args.claim {
             OpenClaim4::Null(name) => {
@@ -74,8 +78,15 @@ impl<F: FileSystem> NfsServer<F> {
                     Err(e) => return NfsResop4::Open(e.to_nfsstat4(), None),
                 }
             }
-            OpenClaim4::Fh
-            | OpenClaim4::Previous(_)
+            // CLAIM_FH: current_fh is the file itself, not a directory.
+            OpenClaim4::Fh => {
+                let path = dir_path.clone();
+                match self.fs.metadata(&path).await {
+                    Ok(_) => (path, false),
+                    Err(e) => return NfsResop4::Open(e.to_nfsstat4(), None),
+                }
+            }
+            OpenClaim4::Previous(_)
             | OpenClaim4::DelegCurFh(_)
             | OpenClaim4::DelegPrevFh => (dir_path.clone(), false),
             _ => return NfsResop4::Open(NfsStat4::Notsupp, None),
@@ -87,15 +98,35 @@ impl<F: FileSystem> NfsServer<F> {
         };
         let fh = self.handles.lock().unwrap().get_or_create(&path);
         let fileid = self.fileid_for_fh(&fh);
-        let stateid = self
+
+        // Check for existing open by same owner (open-owner dedup / upgrade).
+        let stateid = if let Some((other, _seq, _access, _deny)) = self
             .state
-            .create_open_state(
-                fileid,
-                args.owner.clientid,
-                args.share_access,
-                args.share_deny,
-            )
-            .await;
+            .find_open_by_owner(fileid, clientid, &args.owner.owner)
+            .await
+        {
+            self.state
+                .upgrade_open_state(&other, args.share_access, args.share_deny)
+                .await
+        } else {
+            // Check for share conflicts with existing opens.
+            if let Err(status) = self
+                .state
+                .check_share_conflict(fileid, args.share_access, args.share_deny)
+                .await
+            {
+                return NfsResop4::Open(status, None);
+            }
+            self.state
+                .create_open_state(
+                    fileid,
+                    clientid,
+                    &args.owner.owner,
+                    args.share_access,
+                    args.share_deny,
+                )
+                .await
+        };
 
         *current_fh = Some(fh);
 
@@ -121,7 +152,20 @@ impl<F: FileSystem> NfsServer<F> {
         &self,
         args: &ReadArgs4,
         current_fh: &Option<NfsFh4>,
+        current_stateid: &Option<Stateid4>,
+        session_clientid: Option<Clientid4>,
     ) -> NfsResop4 {
+        // Resolve current stateid if used.
+        let stateid = Self::resolve_stateid(&args.stateid, current_stateid);
+        match self.state.validate_stateid(&stateid, session_clientid).await {
+            Ok(vs) => {
+                if vs.share_access & OPEN4_SHARE_ACCESS_READ == 0 {
+                    return NfsResop4::Read(NfsStat4::Openmode, None);
+                }
+            }
+            Err(status) => return NfsResop4::Read(status, None),
+        }
+
         let path = match self.resolve_fh(current_fh) {
             Ok(path) => path,
             Err(status) => return NfsResop4::Read(status, None),
@@ -174,7 +218,19 @@ impl<F: FileSystem> NfsServer<F> {
         &self,
         args: &WriteArgs4,
         current_fh: &Option<NfsFh4>,
+        current_stateid: &Option<Stateid4>,
+        session_clientid: Option<Clientid4>,
     ) -> NfsResop4 {
+        let stateid = Self::resolve_stateid(&args.stateid, current_stateid);
+        match self.state.validate_stateid(&stateid, session_clientid).await {
+            Ok(vs) => {
+                if vs.share_access & OPEN4_SHARE_ACCESS_WRITE == 0 {
+                    return NfsResop4::Write(NfsStat4::Openmode, None);
+                }
+            }
+            Err(status) => return NfsResop4::Write(status, None),
+        }
+
         let path = match self.resolve_fh(current_fh) {
             Ok(path) => path,
             Err(status) => return NfsResop4::Write(status, None),
@@ -221,5 +277,15 @@ impl<F: FileSystem> NfsServer<F> {
             }
             Err(e) => NfsResop4::Write(e.to_nfsstat4(), None),
         }
+    }
+
+    /// Resolve a stateid, substituting the current stateid for the
+    /// special "current" value (seqid=1, other=all-zero).
+    fn resolve_stateid(stateid: &Stateid4, current: &Option<Stateid4>) -> Stateid4 {
+        if stateid.seqid == 1 && stateid.other == [0u8; 12]
+            && let Some(cur) = current {
+                return *cur;
+            }
+        *stateid
     }
 }

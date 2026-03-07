@@ -15,6 +15,8 @@ pub(super) struct StateInner {
     pub sessions: HashMap<Sessionid4, SessionState>,
     pub open_files: HashMap<[u8; 12], OpenFileState>,
     pub lock_files: HashMap<[u8; 12], LockFileState>,
+    /// Reverse index: file_id → list of open stateid `other` values.
+    pub file_opens: HashMap<FileId, Vec<[u8; 12]>>,
 }
 
 #[derive(Debug)]
@@ -39,11 +41,16 @@ pub(super) struct SlotState {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)] // Fields used in upcoming Phase F (stateid enforcement).
 pub(super) struct OpenFileState {
     pub file_id: FileId,
     pub clientid: Clientid4,
+    pub owner: Vec<u8>,
     pub stateid_seq: u32,
     pub share_access: u32,
     pub share_deny: u32,
+}
+
+/// Result of stateid validation.
+pub struct ValidatedState {
+    pub share_access: u32,
 }

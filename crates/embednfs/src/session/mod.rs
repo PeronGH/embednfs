@@ -7,3 +7,4 @@ mod state;
 
 pub use clients::SequenceResult;
 pub use manager::StateManager;
+pub use state::ValidatedState;
