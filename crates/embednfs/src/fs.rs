@@ -193,7 +193,10 @@ pub trait NfsFileSystem: Send + Sync + 'static {
     /// Look up the parent of a directory.
     async fn lookup_parent(&self, id: FileId) -> NfsResult<FileId>;
 
-    /// Read directory entries. Returns all entries (. and .. are added by the server).
+    /// Read actual directory entries.
+    ///
+    /// Do not synthesize `"."` or `".."`; the server handles cookie and reply
+    /// formatting for the entries returned here.
     async fn readdir(&self, dir_id: FileId) -> NfsResult<Vec<DirEntry>>;
 
     /// Read file data.

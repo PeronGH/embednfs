@@ -725,59 +725,58 @@ impl<F: NfsFileSystem> NfsServer<F> {
             Err(status) => return NfsResop4::Readdir(status, None),
         };
 
+        let dir_attr = match self.fs.getattr(dir_id).await {
+            Ok(attr) => attr,
+            Err(e) => return NfsResop4::Readdir(e.to_nfsstat4(), None),
+        };
+        let cookieverf = dir_attr.change_id.to_be_bytes();
+
+        debug!(
+            "READDIR request: dir_id={dir_id}, cookie={}, cookieverf={:02x?}, dircount={}, maxcount={}, attr_request={:?}",
+            args.cookie,
+            args.cookieverf,
+            args.dircount,
+            args.maxcount,
+            args.attr_request.0
+        );
+
+        if args.cookie != 0 && args.cookieverf != cookieverf {
+            debug!(
+                "READDIR verifier mismatch: dir_id={dir_id}, cookie={}, request={:02x?}, current={:02x?}",
+                args.cookie,
+                args.cookieverf,
+                cookieverf
+            );
+            return NfsResop4::Readdir(NfsStat4::NotSame, None);
+        }
+
         match self.fs.readdir(dir_id).await {
             Ok(entries) => {
-                // Build entry list with . and ..
-                let mut all_entries = Vec::with_capacity(entries.len() + 2);
-
-                // Add "." entry
-                if let Ok(self_attr) = self.fs.getattr(dir_id).await {
-                    all_entries.push(DirEntry {
-                        fileid: dir_id,
-                        name: ".".to_string(),
-                        attr: self_attr,
-                    });
-                }
-
-                // Add ".." entry
-                if let Ok(parent_id) = self.fs.lookup_parent(dir_id).await {
-                    if let Ok(parent_attr) = self.fs.getattr(parent_id).await {
-                        all_entries.push(DirEntry {
-                            fileid: parent_id,
-                            name: "..".to_string(),
-                            attr: parent_attr,
-                        });
-                    }
-                }
-
-                all_entries.extend(entries);
-
                 // Apply cookie-based pagination
                 let cookie_start = args.cookie as usize;
-                let available = if cookie_start > 0 {
-                    &all_entries[cookie_start.min(all_entries.len())..]
+                let available = &entries[cookie_start.min(entries.len())..];
+
+                let maxcount_limit = args.maxcount as usize;
+                let dircount_limit = if args.dircount == 0 {
+                    usize::MAX
                 } else {
-                    &all_entries[..]
+                    args.dircount as usize
                 };
 
-                // Track response size to respect dircount and maxcount
-                // dircount = max bytes for directory info (name + cookie, ~24 bytes + name per entry)
-                // maxcount = max total response bytes (including attributes and XDR overhead)
-                let dircount_limit = args.dircount.max(512) as usize;
-                let maxcount_limit = args.maxcount.max(1024) as usize;
-                // Reserve ~32 bytes for readdir response header (cookieverf + eof)
-                let maxcount_limit = maxcount_limit.saturating_sub(32);
+                let base_resok_len = readdir_resok_len(&[], false);
+                if base_resok_len > maxcount_limit {
+                    debug!(
+                        "READDIR maxcount too small for reply header: dir_id={dir_id}, maxcount={}, header_bytes={base_resok_len}",
+                        args.maxcount
+                    );
+                    return NfsResop4::Readdir(NfsStat4::Toosmall, None);
+                }
 
                 let mut result_entries = Vec::with_capacity(available.len().min(64));
                 let mut dir_bytes: usize = 0;
-                let mut total_bytes: usize = 0;
+                let mut total_resok_bytes = base_resok_len;
 
                 for (i, entry) in available.iter().enumerate() {
-                    // Estimate dir info size: cookie(8) + name_len(4) + name + padding
-                    let name_bytes = entry.name.len();
-                    let name_padded = (name_bytes + 3) & !3;
-                    let dir_entry_size = 8 + 4 + name_padded;
-
                     let entry_fh = self.state.file_id_to_fh(entry.fileid).await;
                     let entry_fattr = attrs::encode_fattr4(
                         &entry.attr,
@@ -785,34 +784,50 @@ impl<F: NfsFileSystem> NfsServer<F> {
                         &entry_fh,
                         &self.fs.fs_info(),
                     );
-
-                    // Total entry size: dir info + attrs bitmap(~12) + attr_vals + next_entry bool(4)
-                    let attr_size = 12 + entry_fattr.attr_vals.len();
-                    let entry_total = dir_entry_size + attr_size + 4;
-
-                    if !result_entries.is_empty()
-                        && (dir_bytes + dir_entry_size > dircount_limit
-                            || total_bytes + entry_total > maxcount_limit)
-                    {
-                        break;
-                    }
-
-                    dir_bytes += dir_entry_size;
-                    total_bytes += entry_total;
-
-                    result_entries.push(Entry4 {
+                    let result_entry = Entry4 {
                         cookie: (cookie_start + i + 1) as u64,
                         name: entry.name.clone(),
                         attrs: entry_fattr,
-                    });
+                    };
+                    let dir_entry_size = readdir_dir_info_len(&result_entry);
+                    let entry_total = readdir_entry_list_item_len(&result_entry);
+
+                    let exceeds_dircount = dir_bytes + dir_entry_size > dircount_limit;
+                    let exceeds_maxcount = total_resok_bytes + entry_total > maxcount_limit;
+                    if !result_entries.is_empty() && (exceeds_dircount || exceeds_maxcount) {
+                        break;
+                    }
+
+                    if result_entries.is_empty() && exceeds_maxcount {
+                        debug!(
+                            "READDIR maxcount too small for a single entry: dir_id={dir_id}, name={}, maxcount={}, entry_bytes={entry_total}, base_bytes={base_resok_len}",
+                            result_entry.name,
+                            args.maxcount
+                        );
+                        return NfsResop4::Readdir(NfsStat4::Toosmall, None);
+                    }
+
+                    dir_bytes += dir_entry_size;
+                    total_resok_bytes += entry_total;
+                    result_entries.push(result_entry);
                 }
 
-                let eof = result_entries.len() >= available.len();
+                let eof = result_entries.len() == available.len();
+
+                debug!(
+                    "READDIR response: dir_id={dir_id}, cookie={}, entries={}, eof={}, dir_bytes={}, resok_bytes={}, cookieverf={:02x?}",
+                    args.cookie,
+                    result_entries.len(),
+                    eof,
+                    dir_bytes,
+                    total_resok_bytes,
+                    cookieverf
+                );
 
                 NfsResop4::Readdir(
                     NfsStat4::Ok,
                     Some(ReaddirRes4 {
-                        cookieverf: args.cookieverf,
+                        cookieverf,
                         entries: result_entries,
                         eof,
                     }),
@@ -1049,6 +1064,34 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 }
 
+fn xdr_opaque_len(len: usize) -> usize {
+    4 + len + xdr_pad(len)
+}
+
+fn xdr_bitmap4_len(bitmap: &Bitmap4) -> usize {
+    4 + (bitmap.0.len() * 4)
+}
+
+fn xdr_fattr4_len(fattr: &Fattr4) -> usize {
+    xdr_bitmap4_len(&fattr.attrmask) + xdr_opaque_len(fattr.attr_vals.len())
+}
+
+fn readdir_dir_info_len(entry: &Entry4) -> usize {
+    8 + xdr_opaque_len(entry.name.len())
+}
+
+fn readdir_entry_len(entry: &Entry4) -> usize {
+    8 + xdr_opaque_len(entry.name.len()) + xdr_fattr4_len(&entry.attrs)
+}
+
+fn readdir_entry_list_item_len(entry: &Entry4) -> usize {
+    4 + readdir_entry_len(entry)
+}
+
+fn readdir_resok_len(entries: &[Entry4], _eof: bool) -> usize {
+    8 + entries.iter().map(readdir_entry_list_item_len).sum::<usize>() + 4 + 4
+}
+
 fn allows_compound_without_sequence(op: &NfsArgop4) -> bool {
     matches!(
         op,
@@ -1174,5 +1217,58 @@ fn res_status(res: &NfsResop4) -> NfsStat4 {
         NfsResop4::GetDeviceList(s) => *s,
         NfsResop4::SetSsv(s) => *s,
         NfsResop4::Illegal(s) => *s,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_entry(name: &str, fileid: u64) -> Entry4 {
+        let mut bitmap = Bitmap4::new();
+        bitmap.set(FATTR4_FILEID);
+        bitmap.set(FATTR4_TYPE);
+
+        let mut attr_vals = BytesMut::new();
+        NfsFtype4::Reg.encode(&mut attr_vals);
+        fileid.encode(&mut attr_vals);
+
+        Entry4 {
+            cookie: fileid,
+            name: name.to_string(),
+            attrs: Fattr4 {
+                attrmask: bitmap,
+                attr_vals: attr_vals.to_vec(),
+            },
+        }
+    }
+
+    #[test]
+    fn test_readdir_entry_len_matches_encoded_form() {
+        let entry = sample_entry("hello.txt", 42);
+        let mut encoded = BytesMut::new();
+        entry.cookie.encode(&mut encoded);
+        entry.name.encode(&mut encoded);
+        entry.attrs.encode(&mut encoded);
+
+        assert_eq!(readdir_entry_len(&entry), encoded.len());
+        assert_eq!(readdir_entry_list_item_len(&entry), encoded.len() + 4);
+        assert_eq!(readdir_dir_info_len(&entry), 8 + xdr_opaque_len(entry.name.len()));
+    }
+
+    #[test]
+    fn test_readdir_resok_len_matches_readop_encoding() {
+        let entries = vec![sample_entry("a.txt", 1), sample_entry("b.txt", 2)];
+        let result = ReaddirRes4 {
+            cookieverf: [1, 2, 3, 4, 5, 6, 7, 8],
+            entries,
+            eof: true,
+        };
+
+        let mut encoded = BytesMut::new();
+        NfsResop4::Readdir(NfsStat4::Ok, Some(result)).encode(&mut encoded);
+
+        let expected_entries = vec![sample_entry("a.txt", 1), sample_entry("b.txt", 2)];
+        assert_eq!(readdir_resok_len(&expected_entries, true), encoded.len() - 8);
     }
 }
