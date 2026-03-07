@@ -33,12 +33,8 @@ impl StateManager {
         };
 
         let client = inner.clients.get(&clientid).expect("client inserted above");
-        let client_pnfs = args.flags & EXCHGID4_FLAG_MASK_PNFS;
-        let pnfs_role = if client_pnfs & EXCHGID4_FLAG_USE_NON_PNFS != 0 || client_pnfs == 0 {
-            EXCHGID4_FLAG_USE_NON_PNFS
-        } else {
-            EXCHGID4_FLAG_USE_NON_PNFS
-        };
+        let _client_pnfs = args.flags & EXCHGID4_FLAG_MASK_PNFS;
+        let pnfs_role = EXCHGID4_FLAG_USE_NON_PNFS;
         let confirmed_flag = if client.confirmed {
             EXCHGID4_FLAG_CONFIRMED_R
         } else {

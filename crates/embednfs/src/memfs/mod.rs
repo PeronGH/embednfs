@@ -42,7 +42,7 @@ impl MemFs {
         let mut inodes = HashMap::new();
         let now_sec = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .expect("system clock must be after UNIX_EPOCH")
             .as_secs() as i64;
 
         inodes.insert(
@@ -92,7 +92,7 @@ impl MemFs {
     fn now() -> (i64, u32) {
         let dur = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default();
+            .expect("system clock must be after UNIX_EPOCH");
         (dur.as_secs() as i64, dur.subsec_nanos())
     }
 

@@ -22,7 +22,7 @@ impl StateManager {
     pub fn new() -> Self {
         let boot_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default();
+            .expect("system clock must be after UNIX_EPOCH");
         let mut write_verifier = [0u8; 8];
         write_verifier[..8].copy_from_slice(&boot_time.as_nanos().to_be_bytes()[..8]);
 

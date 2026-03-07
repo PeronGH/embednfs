@@ -98,7 +98,10 @@ impl<F: FileSystem> NfsServer<F> {
 
             if frag_len > 2 * 1024 * 1024 {
                 warn!("Fragment too large: {frag_len}");
-                return Ok(());
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("fragment too large: {frag_len}"),
+                ));
             }
 
             if read_buf.len() < frag_len {
@@ -106,7 +109,9 @@ impl<F: FileSystem> NfsServer<F> {
             }
             reader.read_exact(&mut read_buf[..frag_len]).await?;
 
-            let response = self.process_rpc_message(&read_buf[..frag_len]).await;
+            let Some(response) = self.process_rpc_message(&read_buf[..frag_len]).await else {
+                return Ok(());
+            };
             let resp_len = (response.len() as u32) | 0x8000_0000;
             writer.write_all(&resp_len.to_be_bytes()).await?;
             writer.write_all(&response).await?;
@@ -114,7 +119,7 @@ impl<F: FileSystem> NfsServer<F> {
         }
     }
 
-    async fn process_rpc_message(&self, data: &[u8]) -> Bytes {
+    async fn process_rpc_message(&self, data: &[u8]) -> Option<Bytes> {
         trace!("RPC request bytes={} hex={}", data.len(), hex_bytes(data));
         let mut src = Bytes::copy_from_slice(data);
 
@@ -122,7 +127,7 @@ impl<F: FileSystem> NfsServer<F> {
             Ok(call) => call,
             Err(e) => {
                 warn!("Failed to decode RPC header: {e}");
-                return Bytes::new();
+                return None;
             }
         };
 
@@ -130,17 +135,17 @@ impl<F: FileSystem> NfsServer<F> {
 
         if call.rpcvers != RPC_VERSION {
             encode_rpc_reply_prog_mismatch(&mut response, call.xid, RPC_VERSION, RPC_VERSION);
-            return response.freeze();
+            return Some(response.freeze());
         }
 
         if call.prog != NFS_PROGRAM {
             encode_rpc_reply_prog_mismatch(&mut response, call.xid, NFS_PROGRAM, NFS_PROGRAM);
-            return response.freeze();
+            return Some(response.freeze());
         }
 
         if call.vers != NFS_V4 {
             encode_rpc_reply_prog_mismatch(&mut response, call.xid, NFS_V4, NFS_V4);
-            return response.freeze();
+            return Some(response.freeze());
         }
 
         match call.proc_num {
@@ -176,6 +181,6 @@ impl<F: FileSystem> NfsServer<F> {
             response.len(),
             hex_bytes(&response)
         );
-        response
+        Some(response)
     }
 }

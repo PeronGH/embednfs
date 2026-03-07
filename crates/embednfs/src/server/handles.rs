@@ -8,7 +8,7 @@ use super::NfsServer;
 impl<F: FileSystem> NfsServer<F> {
     pub(super) fn resolve_fh(&self, fh: &Option<NfsFh4>) -> Result<String, NfsStat4> {
         let fh = fh.as_ref().ok_or(NfsStat4::Nofilehandle)?;
-        fh_to_path(fh).ok_or(NfsStat4::Stale)
+        fh_to_path(fh)
     }
 
     pub(super) async fn attr_for_path(&self, path: &str) -> Result<FileAttr, FsError> {
@@ -25,12 +25,12 @@ pub(super) fn path_to_fh(path: &str) -> NfsFh4 {
     NfsFh4(path.as_bytes().to_vec())
 }
 
-fn fh_to_path(fh: &NfsFh4) -> Option<String> {
-    let path = String::from_utf8(fh.0.clone()).ok()?;
+fn fh_to_path(fh: &NfsFh4) -> Result<String, NfsStat4> {
+    let path = String::from_utf8(fh.0.clone()).map_err(|_| NfsStat4::Badhandle)?;
     if !path.starts_with('/') {
-        return None;
+        return Err(NfsStat4::Badhandle);
     }
-    Some(path)
+    Ok(path)
 }
 
 pub(super) fn parent_path(path: &str) -> String {

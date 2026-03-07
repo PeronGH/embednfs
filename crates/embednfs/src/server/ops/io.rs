@@ -81,7 +81,10 @@ impl<F: FileSystem> NfsServer<F> {
             _ => return NfsResop4::Open(NfsStat4::Notsupp, None),
         };
 
-        let dir_attr = self.attr_for_path(&dir_path).await.unwrap_or_default();
+        let dir_attr = match self.attr_for_path(&dir_path).await {
+            Ok(attr) => attr,
+            Err(e) => return NfsResop4::Open(e.to_nfsstat4(), None),
+        };
         let stateid = self
             .state
             .create_open_state(
@@ -133,7 +136,10 @@ impl<F: FileSystem> NfsServer<F> {
             FileType::Regular => {}
         }
 
-        let stage_len = self.stage_len(&path).await;
+        let stage_len = match self.stage_len(&path).await {
+            Ok(stage_len) => stage_len,
+            Err(e) => return NfsResop4::Read(e.to_nfsstat4(), None),
+        };
         let read_result = if stage_len.is_some() {
             self.read_from_stage(&path, args.offset, args.count).await
         } else {

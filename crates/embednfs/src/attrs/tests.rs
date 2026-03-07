@@ -17,7 +17,8 @@ fn test_decode_setattr_masks_file_type_bits_from_mode() {
     let attrs = decode_setattr(&Fattr4 {
         attrmask: bitmap,
         attr_vals: vals.to_vec(),
-    });
+    })
+    .unwrap();
 
     assert_eq!(attrs.mode, Some(0o644));
 }

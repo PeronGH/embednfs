@@ -84,10 +84,17 @@ impl<F: FileSystem> NfsServer<F> {
             Err(status) => return NfsResop4::Setattr(status, Bitmap4::new()),
         };
 
-        let set_attrs = attrs::decode_setattr(&args.obj_attributes);
+        let set_attrs = match attrs::decode_setattr(&args.obj_attributes) {
+            Ok(attrs) => attrs,
+            Err(_) => return NfsResop4::Setattr(NfsStat4::BadXdr, Bitmap4::new()),
+        };
         let mut applied = Bitmap4::new();
+        let attrmask = &args.obj_attributes.attrmask;
 
-        if let Some(size) = set_attrs.size {
+        if attrmask.is_set(FATTR4_SIZE) {
+            let Some(size) = set_attrs.size else {
+                return NfsResop4::Setattr(NfsStat4::BadXdr, Bitmap4::new());
+            };
             let result = if self.fs.capabilities().write_capability == WriteCapability::ReplaceOnly {
                 self.stage_set_len(&path, size).await
             } else {
@@ -102,12 +109,16 @@ impl<F: FileSystem> NfsServer<F> {
             }
         }
 
-        if set_attrs.mode.is_some()
-            || set_attrs.uid.is_some()
-            || set_attrs.gid.is_some()
-            || set_attrs.atime.is_some()
-            || set_attrs.mtime.is_some()
-            || set_attrs.crtime.is_some()
+        if attrmask.is_set(FATTR4_MODE)
+            || attrmask.is_set(FATTR4_OWNER)
+            || attrmask.is_set(FATTR4_OWNER_GROUP)
+            || attrmask.is_set(FATTR4_TIME_ACCESS_SET)
+            || attrmask.is_set(FATTR4_TIME_MODIFY_SET)
+            || attrmask.is_set(FATTR4_TIME_CREATE)
+            || attrmask.is_set(FATTR4_TIME_BACKUP)
+            || attrmask.is_set(FATTR4_ARCHIVE)
+            || attrmask.is_set(FATTR4_HIDDEN)
+            || attrmask.is_set(FATTR4_SYSTEM)
         {
             return NfsResop4::Setattr(NfsStat4::AttrNotsupp, applied);
         }

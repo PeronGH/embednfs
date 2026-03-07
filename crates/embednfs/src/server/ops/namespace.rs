@@ -38,7 +38,10 @@ impl<F: FileSystem> NfsServer<F> {
 
         match result {
             Ok(()) => {
-                let dir_attr_after = self.attr_for_path(&dir_path).await.unwrap_or(dir_attr_before.clone());
+                let dir_attr_after = match self.attr_for_path(&dir_path).await {
+                    Ok(attr) => attr,
+                    Err(e) => return NfsResop4::Create(e.to_nfsstat4(), None, Bitmap4::new()),
+                };
                 *current_fh = Some(path_to_fh(&path));
                 let cinfo = ChangeInfo4 {
                     atomic: true,
@@ -53,7 +56,7 @@ impl<F: FileSystem> NfsServer<F> {
 
     pub(crate) async fn op_link(
         &self,
-        args: &LinkArgs4,
+        _args: &LinkArgs4,
         current_fh: &Option<NfsFh4>,
         saved_fh: &Option<NfsFh4>,
     ) -> NfsResop4 {
@@ -65,7 +68,6 @@ impl<F: FileSystem> NfsServer<F> {
             Ok(path) => path,
             Err(status) => return NfsResop4::Link(status, None),
         };
-        let _ = args;
         NfsResop4::Link(NfsStat4::Notsupp, None)
     }
 
@@ -273,7 +275,10 @@ impl<F: FileSystem> NfsServer<F> {
         match self.fs.remove(&target_path, None).await {
             Ok(()) => {
                 self.drop_stage(&target_path).await;
-                let dir_attr_after = self.attr_for_path(&dir_path).await.unwrap_or(dir_attr_before.clone());
+                let dir_attr_after = match self.attr_for_path(&dir_path).await {
+                    Ok(attr) => attr,
+                    Err(e) => return NfsResop4::Remove(e.to_nfsstat4(), None),
+                };
                 let cinfo = ChangeInfo4 {
                     atomic: true,
                     before: dir_attr_before.change_id,
@@ -321,8 +326,14 @@ impl<F: FileSystem> NfsServer<F> {
         match self.fs.rename(&from_path, &to_path, None).await {
             Ok(()) => {
                 self.rename_stage(&from_path, &to_path).await;
-                let src_attr_after = self.attr_for_path(&src_dir_path).await.unwrap_or(src_attr_before.clone());
-                let tgt_attr_after = self.attr_for_path(&tgt_dir_path).await.unwrap_or(tgt_attr_before.clone());
+                let src_attr_after = match self.attr_for_path(&src_dir_path).await {
+                    Ok(attr) => attr,
+                    Err(e) => return NfsResop4::Rename(e.to_nfsstat4(), None, None),
+                };
+                let tgt_attr_after = match self.attr_for_path(&tgt_dir_path).await {
+                    Ok(attr) => attr,
+                    Err(e) => return NfsResop4::Rename(e.to_nfsstat4(), None, None),
+                };
                 let src_cinfo = ChangeInfo4 {
                     atomic: true,
                     before: src_attr_before.change_id,

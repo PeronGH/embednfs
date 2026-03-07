@@ -86,10 +86,14 @@ impl<F: FileSystem> NfsServer<F> {
         Ok(buf)
     }
 
-    pub(super) async fn stage_len(&self, path: &str) -> Option<u64> {
-        let entry = self.stage_entry(path).await?;
-        let metadata = fs::metadata(&entry.local_path).await.ok()?;
-        Some(metadata.len())
+    pub(super) async fn stage_len(&self, path: &str) -> Result<Option<u64>, FsError> {
+        let Some(entry) = self.stage_entry(path).await else {
+            return Ok(None);
+        };
+        let metadata = fs::metadata(&entry.local_path)
+            .await
+            .map_err(|_| FsError::Io)?;
+        Ok(Some(metadata.len()))
     }
 
     pub(super) async fn mark_stage_dirty(&self, path: &str, dirty: bool) -> Result<(), FsError> {
