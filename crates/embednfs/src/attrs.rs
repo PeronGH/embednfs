@@ -17,7 +17,6 @@ pub(crate) fn synthesize_file_attr(
         FileType::Regular => defaults.file_mode,
         FileType::Directory => defaults.dir_mode,
         FileType::Symlink => defaults.symlink_mode,
-        _ => defaults.file_mode,
     };
 
     let mode = if metadata.file_type == FileType::Symlink {
@@ -196,10 +195,6 @@ pub(crate) fn encode_fattr4(
             FileType::Regular => NfsFtype4::Reg,
             FileType::Directory => NfsFtype4::Dir,
             FileType::Symlink => NfsFtype4::Lnk,
-            FileType::BlockDevice => NfsFtype4::Blk,
-            FileType::CharDevice => NfsFtype4::Chr,
-            FileType::Socket => NfsFtype4::Sock,
-            FileType::Fifo => NfsFtype4::Fifo,
         };
         nfs_type.encode(&mut vals);
     }
