@@ -23,11 +23,11 @@ pub fn encode_fattr4(attr: &FileAttr, request: &Bitmap4, fh: &NfsFh4, fs_info: &
             FATTR4_CHANGE, FATTR4_SIZE, FATTR4_LINK_SUPPORT, FATTR4_SYMLINK_SUPPORT,
             FATTR4_NAMED_ATTR, FATTR4_FSID, FATTR4_UNIQUE_HANDLES, FATTR4_LEASE_TIME,
             FATTR4_RDATTR_ERROR, FATTR4_FILEHANDLE,
-            FATTR4_ACLSUPPORT, FATTR4_CANSETTIME,
+            FATTR4_ACLSUPPORT, FATTR4_ARCHIVE, FATTR4_CANSETTIME,
             FATTR4_CASE_INSENSITIVE, FATTR4_CASE_PRESERVING,
             FATTR4_CHOWN_RESTRICTED, FATTR4_FILEID,
             FATTR4_FILES_AVAIL, FATTR4_FILES_FREE, FATTR4_FILES_TOTAL,
-            FATTR4_HOMOGENEOUS,
+            FATTR4_HIDDEN, FATTR4_HOMOGENEOUS,
             FATTR4_MAXFILESIZE, FATTR4_MAXLINK, FATTR4_MAXNAME,
             FATTR4_MAXREAD, FATTR4_MAXWRITE,
             FATTR4_MODE, FATTR4_NO_TRUNC, FATTR4_NUMLINKS,
@@ -35,6 +35,7 @@ pub fn encode_fattr4(attr: &FileAttr, request: &Bitmap4, fh: &NfsFh4, fs_info: &
             FATTR4_RAWDEV,
             FATTR4_SPACE_AVAIL, FATTR4_SPACE_FREE,
             FATTR4_SPACE_TOTAL, FATTR4_SPACE_USED,
+            FATTR4_SYSTEM,
             FATTR4_TIME_ACCESS, FATTR4_TIME_ACCESS_SET,
             FATTR4_TIME_BACKUP,
             FATTR4_TIME_CREATE, FATTR4_TIME_DELTA,
@@ -133,6 +134,12 @@ pub fn encode_fattr4(attr: &FileAttr, request: &Bitmap4, fh: &NfsFh4, fs_info: &
         0u32.encode(&mut vals); // no ACL support
     }
 
+    // FATTR4_ARCHIVE (14) - macOS SF_ARCHIVED flag
+    if request.is_set(FATTR4_ARCHIVE) {
+        result_bitmap.set(FATTR4_ARCHIVE);
+        attr.archive.encode(&mut vals);
+    }
+
     // FATTR4_CANSETTIME (15)
     if request.is_set(FATTR4_CANSETTIME) {
         result_bitmap.set(FATTR4_CANSETTIME);
@@ -185,6 +192,12 @@ pub fn encode_fattr4(attr: &FileAttr, request: &Bitmap4, fh: &NfsFh4, fs_info: &
     if request.is_set(FATTR4_FILES_TOTAL) {
         result_bitmap.set(FATTR4_FILES_TOTAL);
         fs_info.total_files.encode(&mut vals);
+    }
+
+    // FATTR4_HIDDEN (25) - macOS UF_HIDDEN flag
+    if request.is_set(FATTR4_HIDDEN) {
+        result_bitmap.set(FATTR4_HIDDEN);
+        attr.hidden.encode(&mut vals);
     }
 
     // FATTR4_HOMOGENEOUS (26)
@@ -289,6 +302,12 @@ pub fn encode_fattr4(attr: &FileAttr, request: &Bitmap4, fh: &NfsFh4, fs_info: &
         attr.used.encode(&mut vals);
     }
 
+    // FATTR4_SYSTEM (46) - macOS system flag
+    if request.is_set(FATTR4_SYSTEM) {
+        result_bitmap.set(FATTR4_SYSTEM);
+        attr.system.encode(&mut vals);
+    }
+
     // FATTR4_TIME_ACCESS (47)
     if request.is_set(FATTR4_TIME_ACCESS) {
         result_bitmap.set(FATTR4_TIME_ACCESS);
@@ -367,6 +386,16 @@ pub fn decode_setattr(fattr: &Fattr4) -> SetFileAttr {
         }
     }
 
+    // ARCHIVE (14) - macOS sends this; consume but store as flag
+    if fattr.attrmask.is_set(FATTR4_ARCHIVE) {
+        let _ = bool::decode(&mut src);
+    }
+
+    // HIDDEN (25) - macOS sends this
+    if fattr.attrmask.is_set(FATTR4_HIDDEN) {
+        let _ = bool::decode(&mut src);
+    }
+
     if fattr.attrmask.is_set(FATTR4_MODE) {
         if let Ok(mode) = u32::decode(&mut src) {
             result.mode = Some(mode);
@@ -390,6 +419,11 @@ pub fn decode_setattr(fattr: &Fattr4) -> SetFileAttr {
                 result.gid = Some(gid);
             }
         }
+    }
+
+    // SYSTEM (46) - macOS sends this
+    if fattr.attrmask.is_set(FATTR4_SYSTEM) {
+        let _ = bool::decode(&mut src);
     }
 
     if fattr.attrmask.is_set(FATTR4_TIME_ACCESS_SET) {
