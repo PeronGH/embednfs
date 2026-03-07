@@ -376,7 +376,7 @@ pub struct Bitmap4(pub Vec<u32>);
 
 impl Bitmap4 {
     pub fn new() -> Self {
-        Bitmap4(vec![0, 0, 0])
+        Bitmap4(vec![])
     }
 
     pub fn is_set(&self, bit: u32) -> bool {
@@ -397,8 +397,13 @@ impl Bitmap4 {
 
 impl XdrEncode for Bitmap4 {
     fn encode(&self, dst: &mut BytesMut) {
-        (self.0.len() as u32).encode(dst);
-        for w in &self.0 {
+        let trimmed_len = self
+            .0
+            .iter()
+            .rposition(|word| *word != 0)
+            .map_or(0, |idx| idx + 1);
+        (trimmed_len as u32).encode(dst);
+        for w in &self.0[..trimmed_len] {
             w.encode(dst);
         }
     }

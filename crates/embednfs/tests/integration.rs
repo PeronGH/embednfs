@@ -568,6 +568,7 @@ async fn test_readdir_reply_stays_within_maxcount_and_skips_dot_entries() {
     assert!(body_len <= 1536, "readdir body exceeded maxcount: {body_len}");
     assert!(!entries.is_empty());
     assert!(entries.iter().all(|(_, name, _)| name != "." && name != ".."));
+    assert!(entries.iter().all(|(cookie, _, _)| *cookie >= 3));
 }
 
 #[tokio::test]
