@@ -1,14 +1,15 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+/// NFSv4.1 server library.
+///
+/// Provides a complete NFSv4.1 server implementation. Users implement the
+/// [`NfsFileSystem`] trait; the library handles the wire protocol, session
+/// management, and serves it over TCP.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub mod fs;
+pub mod server;
+pub mod session;
+pub mod attrs;
+pub mod memfs;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use fs::{NfsFileSystem, FileAttr, FileType, DirEntry};
+pub use server::NfsServer;
+pub use memfs::MemFs;
