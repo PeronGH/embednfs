@@ -4,6 +4,16 @@
 //! Adapted from pynfs NFSv4.1 `st_putfh`, `st_lookup`, `st_lookupp`,
 //! older pynfs servertests for GETFH/PUTROOTFH/PUTPUBFH/SAVEFH/RESTOREFH,
 //! and RFC 8881.
+//!
+//! Pynfs provenance:
+//! - `PUTFH*` labels map to `pynfs/nfs4.1/server41tests/st_putfh.py`.
+//! - `LOOK*` labels map to `pynfs/nfs4.1/server41tests/st_lookup.py`.
+//! - `LKPP*` labels map to `pynfs/nfs4.1/server41tests/st_lookupp.py`.
+//! - `ROOT*`, `PUB*`, `GF*`, `SVFH*`, and `RSFH*` coverage comes from the
+//!   older pynfs servertests `st_putrootfh.py`, `st_putpubfh.py`,
+//!   `st_getfh.py`, `st_savefh.py`, and `st_restorefh.py` under
+//!   `pynfs/nfs4.0/lib/nfs4/servertests/`.
+//! - Tests without a pynfs label are RFC- or implementation-driven checks.
 
 mod common;
 

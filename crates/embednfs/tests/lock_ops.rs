@@ -1,7 +1,14 @@
 //! Tests for lock operations: LOCK, LOCKT, LOCKU.
 //!
-//! Adapted from pynfs st41 (LOCK, LOCKT, LOCKU tests) and RFC 8881
-//! section 18.10-18.12 lock semantics.
+//! Adapted from pynfs-derived locking coverage and RFC 8881 section
+//! 18.10-18.12 lock semantics.
+//!
+//! Pynfs provenance:
+//! - `LOCK*` labels map to `pynfs/nfs4.0/lib/nfs4/servertests/st_lock.py`.
+//! - `LOCKU*` labels map to `pynfs/nfs4.0/lib/nfs4/servertests/st_locku.py`.
+//! - `LOCKT*` labels map to `pynfs/nfs4.0/lib/nfs4/servertests/st_lockt.py`.
+//! - The lock-cycle and non-overlapping-range checks are RFC- and
+//!   implementation-driven extensions around those pynfs cases.
 
 mod common;
 

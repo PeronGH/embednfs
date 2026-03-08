@@ -2,8 +2,27 @@
 //! SETATTR, GETATTR, LINK, ACCESS, COMMIT, VERIFY, NVERIFY, TEST_STATEID,
 //! FREE_STATEID, OPEN_DOWNGRADE.
 //!
-//! Adapted from pynfs st41 (OPEN, CLOSE, RD, WRT, RM, RNM, SATT, GATT,
-//! LNK, ACC, FREESTATEID, TESTSTATEID tests) and Linux kernel NFS tests.
+//! Adapted from pynfs-derived core file-operation coverage, RFC 8881,
+//! and Linux kernel NFS tests.
+//!
+//! Pynfs provenance:
+//! - `OPEN*` labels map to `pynfs/nfs4.0/lib/nfs4/servertests/st_open.py`.
+//! - `CLOSE*` labels map to `pynfs/nfs4.0/lib/nfs4/servertests/st_close.py`.
+//! - `RD*` labels map to `pynfs/nfs4.0/lib/nfs4/servertests/st_read.py`.
+//! - `WRT*` labels map to `pynfs/nfs4.0/lib/nfs4/servertests/st_write.py`.
+//! - `RM*` labels map to `pynfs/nfs4.0/lib/nfs4/servertests/st_remove.py`.
+//! - `RNM*` labels map to `pynfs/nfs4.0/lib/nfs4/servertests/st_rename.py`.
+//! - `OPDG*` labels map to
+//!   `pynfs/nfs4.0/lib/nfs4/servertests/st_opendowngrade.py`.
+//! - `SATT*` labels map to `pynfs/nfs4.0/lib/nfs4/servertests/st_setattr.py`.
+//! - `GATT*` labels map to `pynfs/nfs4.0/lib/nfs4/servertests/st_getattr.py`.
+//! - `ACC*` labels map to `pynfs/nfs4.0/lib/nfs4/servertests/st_access.py`.
+//! - `VF*` and `NVF*` labels map to
+//!   `pynfs/nfs4.0/lib/nfs4/servertests/st_verify.py` and `st_nverify.py`.
+//! - `SINN*` labels map to `pynfs/nfs4.1/server41tests/st_secinfo_no_name.py`.
+//! - `TEST_STATEID`, `FREE_STATEID`, replay-cache, synthetic change-info, and
+//!   delegation-stub tests are RFC- or implementation-driven rather than
+//!   direct pynfs ports.
 
 mod common;
 

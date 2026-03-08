@@ -3,6 +3,16 @@
 //!
 //! Adapted from pynfs NFSv4.1 server41tests (EXID, CSESS, SEQ, DSESS, DCID)
 //! and Linux kernel NFS test infrastructure.
+//!
+//! Pynfs provenance:
+//! - `COMP*` labels map to `pynfs/nfs4.1/server41tests/st_compound.py`.
+//! - `EXID*` labels map to `pynfs/nfs4.1/server41tests/st_exchange_id.py`.
+//! - `CSESS*` labels map to `pynfs/nfs4.1/server41tests/st_create_session.py`.
+//! - `SEQ*` labels map to `pynfs/nfs4.1/server41tests/st_sequence.py`.
+//! - `DSESS*` labels map to `pynfs/nfs4.1/server41tests/st_destroy_session.py`.
+//! - `RECC*` coverage is derived from `pynfs/nfs4.1/server41tests/st_reboot.py`.
+//! - `DCID*`, `BCTOS*`, malformed-RPC coverage, and some concurrency cases are
+//!   RFC- or implementation-driven rather than direct pynfs ports.
 
 mod common;
 

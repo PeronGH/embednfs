@@ -2,6 +2,15 @@
 //!
 //! Adapted from RFC 8881 plus older pynfs servertests for CREATE/LINK/
 //! READLINK/COMMIT behavior that remains relevant to NFSv4.1.
+//!
+//! Pynfs provenance:
+//! - `MKDIR` and `SLINK` labels map to
+//!   `pynfs/nfs4.0/lib/nfs4/servertests/st_create.py`.
+//! - `RDLNK*` labels map to
+//!   `pynfs/nfs4.0/lib/nfs4/servertests/st_readlink.py`.
+//! - `LNK*` labels map to `pynfs/nfs4.0/lib/nfs4/servertests/st_link.py`.
+//! - `CMT*` labels map to `pynfs/nfs4.0/lib/nfs4/servertests/st_commit.py`.
+//! - Tests without a pynfs label are RFC- or implementation-driven checks.
 
 mod common;
 

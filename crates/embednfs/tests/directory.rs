@@ -1,8 +1,17 @@
 //! Tests for directory operations: READDIR, CREATE (mkdir), OPENATTR,
 //! and named-attribute workflows.
 //!
-//! Adapted from pynfs st41 (RDDR, MKDIR, OAT tests) and Linux/FreeBSD
-//! NFS test patterns.
+//! Adapted from pynfs READDIR/OPENATTR-style coverage, RFC 8881, and
+//! Linux/FreeBSD NFS test patterns.
+//!
+//! Pynfs provenance:
+//! - `RDDR*` labels map to `pynfs/nfs4.0/lib/nfs4/servertests/st_readdir.py`.
+//! - The OPENATTR and named-attribute cases are RFC- and macOS-client-driven;
+//!   pynfs provides protocol context here, but these are not direct one-for-one
+//!   ports from a dedicated OPENATTR test file.
+//! - The Apple readdirplus, cookieverf, cache, and named-attribute lifecycle
+//!   tests are RFC-, client-, or implementation-driven rather than direct
+//!   one-for-one pynfs ports.
 
 mod common;
 
@@ -351,9 +360,9 @@ async fn test_readdir_cookieverf_rejects_stale_continuation_after_mutation() {
     assert_eq!(op_status, NfsStat4::NotSame as u32);
 }
 
-// ===== OPENATTR (pynfs OAT) =====
+// ===== OPENATTR =====
 
-/// pynfs OAT1 / RFC 8881 §18.17: OPENATTR on a file with xattrs sets current FH to attr directory.
+/// RFC 8881 §18.17: OPENATTR on a file with xattrs sets current FH to attr directory.
 #[tokio::test]
 async fn test_openattr_on_file_returns_attrdir() {
     let fs = fs_with_xattr("notes.txt", "user.demo", b"value").await;
@@ -401,7 +410,7 @@ async fn test_openattr_on_file_returns_attrdir() {
     assert_eq!(file_type, NfsFtype4::AttrDir as u32);
 }
 
-/// pynfs OAT2 / RFC 8881 §18.17: OPENATTR + READDIR lists named attributes.
+/// RFC 8881 §18.17: OPENATTR + READDIR lists named attributes.
 #[tokio::test]
 async fn test_openattr_readdir_lists_named_attrs() {
     let fs = fs_with_xattr("notes.txt", "user.demo", b"value").await;
