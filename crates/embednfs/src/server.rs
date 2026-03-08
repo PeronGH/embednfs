@@ -104,10 +104,13 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
             let response = self.process_rpc_message(&read_buf[..frag_len]).await;
 
-            let resp_len = u32::try_from(response.len())
+            let Some(resp_len) = u32::try_from(response.len())
                 .ok()
                 .filter(|len| *len <= RPC_FRAG_LEN_MASK)
-                .expect("response exceeds RPC fragment limit");
+            else {
+                warn!("RPC response exceeds fragment limit: {}", response.len());
+                return Ok(());
+            };
             let resp_len = resp_len | RPC_LAST_FRAGMENT;
             writer.write_all(&resp_len.to_be_bytes()).await?;
             writer.write_all(&response).await?;

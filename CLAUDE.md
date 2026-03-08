@@ -78,3 +78,9 @@ If an abstraction is wrong, rewrite it. Large-scale rewrites are encouraged. Lay
 ### Documentation
 
 Doc comments on every public item. `cargo doc` should produce useful, navigable documentation. The README should cover what the library is, how to use it, and a minimal example.
+
+### Panic and Unsafe Policy
+
+Avoid `unwrap()`/`expect()` in non-test code when a real error can be returned instead. If a panic is genuinely required because an internal invariant has already been established, the panic site must have an immediately preceding comment that explains the invariant and why panicking is acceptable there.
+
+Every `unsafe` block, `unsafe fn`, and `unsafe impl` must have an immediately preceding `// SAFETY:` comment that explains the required invariants and why they hold.

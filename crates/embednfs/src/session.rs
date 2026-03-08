@@ -386,14 +386,14 @@ impl StateManager {
     pub async fn exchange_id(&self, args: &ExchangeIdArgs4) -> ExchangeIdRes4 {
         let mut inner = self.inner.write().await;
 
-        let clientid = if let Some(existing) = inner
+        let (clientid, seq, confirmed) = if let Some(existing) = inner
             .clients
             .values()
-            .find(|client| client.owner.ownerid == args.clientowner.ownerid)
-            .and_then(|client| {
-                (client.owner.verifier == args.clientowner.verifier).then_some(client.clientid)
+            .find(|client| {
+                client.owner.ownerid == args.clientowner.ownerid
+                    && client.owner.verifier == args.clientowner.verifier
             }) {
-            existing
+            (existing.clientid, existing.sequence_id, existing.confirmed)
         } else {
             let old_clientid = inner
                 .clients
@@ -430,12 +430,8 @@ impl StateManager {
                     replaced_clientid: old_clientid,
                 },
             );
-            id
+            (id, 1, false)
         };
-
-        let client = inner.clients.get(&clientid).unwrap();
-        let seq = client.sequence_id;
-        let confirmed = client.confirmed;
         let pnfs_role = EXCHGID4_FLAG_USE_NON_PNFS;
         let confirmed_flag = if confirmed {
             EXCHGID4_FLAG_CONFIRMED_R
@@ -486,11 +482,15 @@ impl StateManager {
             Self::drop_client_state(&mut inner, old_clientid);
         }
 
-        let client = inner.clients.get(&args.clientid).unwrap();
+        let client_sequence_id = inner
+            .clients
+            .get(&args.clientid)
+            .map(|client| client.sequence_id)
+            .ok_or(NfsStat4::StaleClientid)?;
 
         let mut sessionid = [0u8; 16];
         sessionid[..8].copy_from_slice(&args.clientid.to_be_bytes());
-        sessionid[8..16].copy_from_slice(&(client.sequence_id as u64).to_be_bytes());
+        sessionid[8..16].copy_from_slice(&(client_sequence_id as u64).to_be_bytes());
 
         let max_slots = args.fore_chan_attrs.maxrequests.min(MAX_FORE_CHAN_SLOTS) as usize;
         let slots = vec![

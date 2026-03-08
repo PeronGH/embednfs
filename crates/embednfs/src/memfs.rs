@@ -243,7 +243,7 @@ impl NfsFileSystem for MemFs {
             return Err(NfsError::Notempty);
         }
 
-        let dir = inner.inodes.get_mut(&dir_id).unwrap();
+        let dir = inner.inodes.get_mut(&dir_id).ok_or(NfsError::Stale)?;
         if let InodeData::Directory(entries) = &mut dir.data {
             entries.remove(name);
         }
