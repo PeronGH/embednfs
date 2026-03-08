@@ -752,3 +752,147 @@ async fn test_multiple_sessions_same_client() {
     let (status, _, _) = parse_compound_header(&mut resp);
     assert_eq!(status, NfsStat4::Ok as u32);
 }
+
+// ===== BIND_CONN_TO_SESSION (pynfs BCTOS) =====
+
+/// pynfs BCTOS1: BIND_CONN_TO_SESSION with a valid session succeeds.
+#[tokio::test]
+async fn test_bind_conn_to_session_basic() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let bind_op = encode_bind_conn_to_session(&sessionid, 0); // fore channel
+    let compound = encode_compound("bind-conn", &[&bind_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 1);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_BIND_CONN_TO_SESSION);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+}
+
+/// pynfs BCTOS2: BIND_CONN_TO_SESSION with bad session returns NFS4ERR_BADSESSION.
+#[tokio::test]
+async fn test_bind_conn_to_session_bad_session() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+
+    let fake_session = [0xBBu8; 16];
+    let bind_op = encode_bind_conn_to_session(&fake_session, 0);
+    let compound = encode_compound("bind-bad", &[&bind_op]);
+    let mut resp = send_rpc(&mut stream, 1, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, _) = parse_compound_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_BIND_CONN_TO_SESSION);
+    assert_eq!(status, op_status);
+    assert_eq!(op_status, NfsStat4::BadSession as u32);
+}
+
+// ===== Multi-slot concurrent usage (pynfs SEQ) =====
+
+/// Multiple slots can be used concurrently on the same session.
+#[tokio::test]
+async fn test_multiple_slots_concurrent() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    // Use slot 0
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let compound = encode_compound("slot0", &[&seq_op, &rootfh_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+
+    // Use slot 1
+    let seq_op = encode_sequence(&sessionid, 1, 1);
+    let compound = encode_compound("slot1", &[&seq_op, &rootfh_op]);
+    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+
+    // Advance slot 0 again
+    let seq_op = encode_sequence(&sessionid, 2, 0);
+    let compound = encode_compound("slot0-again", &[&seq_op, &rootfh_op]);
+    let mut resp = send_rpc(&mut stream, 5, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+}
+
+/// EXCHANGE_ID with different client names creates distinct clients.
+#[tokio::test]
+async fn test_exchange_id_different_names_different_clients() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+
+    let exid1 = encode_exchange_id_with_name(b"client-alpha");
+    let compound = encode_compound("exid1", &[&exid1]);
+    let mut resp = send_rpc(&mut stream, 1, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    let (clientid1, _) = skip_exchange_id_res(&mut resp);
+
+    let exid2 = encode_exchange_id_with_name(b"client-beta");
+    let compound = encode_compound("exid2", &[&exid2]);
+    let mut resp = send_rpc(&mut stream, 2, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    let (clientid2, _) = skip_exchange_id_res(&mut resp);
+
+    assert_ne!(clientid1, clientid2);
+}
+
+/// COMPOUND with long tag (up to 1024 chars per spec) echoes correctly.
+#[tokio::test]
+async fn test_compound_long_tag() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+
+    let long_tag: String = "x".repeat(256);
+    let compound = encode_compound(&long_tag, &[]);
+    let mut resp = send_rpc(&mut stream, 1, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (_status, tag, _) = parse_compound_header(&mut resp);
+    assert_eq!(tag, long_tag);
+}
+
+/// DESTROY_CLIENTID after destroying all sessions succeeds.
+#[tokio::test]
+async fn test_destroy_clientid_after_destroy_session() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let (sessionid, clientid) = setup_session_full(&mut stream).await;
+
+    // Destroy the session
+    let destroy_sess = encode_destroy_session(&sessionid);
+    let compound = encode_compound("dsess", &[&destroy_sess]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+
+    // Now destroy the client
+    let destroy_client = encode_destroy_clientid(clientid);
+    let compound = encode_compound("dcid", &[&destroy_client]);
+    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_DESTROY_CLIENTID);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+}

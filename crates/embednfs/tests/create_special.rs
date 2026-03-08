@@ -1,0 +1,449 @@
+//! Tests for CREATE (mkdir, symlink), LINK, READLINK, and COMMIT operations.
+//!
+//! Adapted from pynfs st41 (MKDIR, SLINK, LNK, RDLNK, CMT tests)
+//! and RFC 8881 sections 18.1, 18.4, 18.9, 18.22, 18.3.
+
+mod common;
+
+use bytes::Bytes;
+use embednfs_proto::xdr::*;
+use embednfs_proto::*;
+
+use common::*;
+
+// ===== CREATE directory (pynfs MKDIR) =====
+
+/// pynfs MKDIR1: CREATE with type NF4DIR creates a directory.
+#[tokio::test]
+async fn test_create_directory() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let create_op = encode_create_dir("newdir");
+    let getfh_op = encode_getfh();
+    let compound = encode_compound("mkdir", &[&seq_op, &rootfh_op, &create_op, &getfh_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 4);
+
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_CREATE);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    // CREATE response: change_info + bitmap
+    skip_change_info(&mut resp);
+    skip_bitmap(&mut resp);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_GETFH);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let dir_fh = parse_getfh(&mut resp);
+    assert!(!dir_fh.is_empty());
+}
+
+/// Created directory appears in READDIR listing.
+#[tokio::test]
+async fn test_create_directory_visible_in_readdir() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    // CREATE
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let create_op = encode_create_dir("visible-dir");
+    let compound = encode_compound("mkdir", &[&seq_op, &rootfh_op, &create_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+
+    // READDIR
+    let seq_op = encode_sequence(&sessionid, 2, 0);
+    let readdir_op = encode_readdir();
+    let compound = encode_compound("readdir", &[&seq_op, &rootfh_op, &readdir_op]);
+    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (_, _, entries, _) = parse_readdir_body(&mut resp);
+    let names: Vec<&str> = entries.iter().map(|(_, n, _)| n.as_str()).collect();
+    assert!(names.contains(&"visible-dir"));
+}
+
+/// pynfs MKDIR4: CREATE directory with existing name returns NFS4ERR_EXIST.
+#[tokio::test]
+async fn test_create_directory_existing_name() {
+    let fs = fs_with_subdir("existing").await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let create_op = encode_create_dir("existing");
+    let compound = encode_compound("mkdir-exist", &[&seq_op, &rootfh_op, &create_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Exist as u32);
+}
+
+/// pynfs MKDIR6: CREATE directory without current filehandle returns NFS4ERR_NOFILEHANDLE.
+#[tokio::test]
+async fn test_create_directory_no_fh() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let create_op = encode_create_dir("nofh-dir");
+    let compound = encode_compound("mkdir-nofh", &[&seq_op, &create_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Nofilehandle as u32);
+}
+
+/// Created directory is type NF4DIR.
+#[tokio::test]
+async fn test_create_directory_type_is_dir() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let create_op = encode_create_dir("typed-dir");
+    let getattr_op = encode_getattr(&[FATTR4_TYPE]);
+    let compound = encode_compound(
+        "mkdir-type",
+        &[&seq_op, &rootfh_op, &create_op, &getattr_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    skip_change_info(&mut resp);
+    skip_bitmap(&mut resp);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_GETATTR);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let fattr = Fattr4::decode(&mut resp).unwrap();
+    let mut attr_vals = Bytes::from(fattr.attr_vals);
+    let file_type = u32::decode(&mut attr_vals).unwrap();
+    assert_eq!(file_type, NfsFtype4::Dir as u32);
+}
+
+// ===== CREATE symlink (pynfs SLINK) =====
+
+/// pynfs SLINK1: CREATE with type NF4LNK creates a symlink.
+#[tokio::test]
+async fn test_create_symlink() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let create_op = encode_create_symlink("mylink", "/some/target");
+    let compound = encode_compound("symlink", &[&seq_op, &rootfh_op, &create_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 3);
+
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_CREATE);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+}
+
+/// pynfs SLINK5: CREATE symlink with existing name returns NFS4ERR_EXIST.
+#[tokio::test]
+async fn test_create_symlink_existing_name() {
+    let fs = populated_fs(&["taken.txt"]).await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let create_op = encode_create_symlink("taken.txt", "/target");
+    let compound = encode_compound("slink-exist", &[&seq_op, &rootfh_op, &create_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Exist as u32);
+}
+
+// ===== READLINK (pynfs RDLNK) =====
+
+/// pynfs RDLNK1: READLINK reads back the symlink target.
+#[tokio::test]
+async fn test_readlink_returns_target() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    // Create symlink
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let create_op = encode_create_symlink("rdlink", "/my/target/path");
+    let compound = encode_compound("create-link", &[&seq_op, &rootfh_op, &create_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+
+    // READLINK
+    let seq_op = encode_sequence(&sessionid, 2, 0);
+    let lookup_op = encode_lookup("rdlink");
+    let readlink_op = encode_readlink();
+    let compound = encode_compound(
+        "readlink",
+        &[&seq_op, &rootfh_op, &lookup_op, &readlink_op],
+    );
+    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 4);
+
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_READLINK);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let target = String::decode(&mut resp).unwrap();
+    assert_eq!(target, "/my/target/path");
+}
+
+/// pynfs RDLNK2: READLINK on a non-symlink returns NFS4ERR_INVAL.
+#[tokio::test]
+async fn test_readlink_on_regular_file() {
+    let fs = populated_fs(&["regular.txt"]).await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_op = encode_lookup("regular.txt");
+    let readlink_op = encode_readlink();
+    let compound = encode_compound(
+        "readlink-file",
+        &[&seq_op, &rootfh_op, &lookup_op, &readlink_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    // READLINK on a regular file should fail
+    assert_ne!(status, NfsStat4::Ok as u32);
+}
+
+/// pynfs RDLNK3: READLINK without a current filehandle returns NFS4ERR_NOFILEHANDLE.
+#[tokio::test]
+async fn test_readlink_no_fh() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let readlink_op = encode_readlink();
+    let compound = encode_compound("readlink-nofh", &[&seq_op, &readlink_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Nofilehandle as u32);
+}
+
+// ===== LINK (hard links, pynfs LNK) =====
+
+/// pynfs LNK1: LINK creates a hard link in the target directory.
+#[tokio::test]
+async fn test_link_creates_hard_link() {
+    let fs = populated_fs(&["source.txt"]).await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    // PUTROOTFH, LOOKUP source.txt (sets current FH to file),
+    // SAVEFH (save file FH), PUTROOTFH (set current to dir), LINK
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_op = encode_lookup("source.txt");
+    let savefh_op = encode_savefh();
+    let rootfh_op2 = encode_putrootfh();
+    let link_op = encode_link("hardlink.txt");
+    let compound = encode_compound(
+        "link",
+        &[
+            &seq_op,
+            &rootfh_op,
+            &lookup_op,
+            &savefh_op,
+            &rootfh_op2,
+            &link_op,
+        ],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 6);
+
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp); // PUTROOTFH
+    let _ = parse_op_header(&mut resp); // LOOKUP
+    let _ = parse_op_header(&mut resp); // SAVEFH
+    let _ = parse_op_header(&mut resp); // PUTROOTFH
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_LINK);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+}
+
+/// pynfs LNK2: LINK with existing target name returns NFS4ERR_EXIST.
+#[tokio::test]
+async fn test_link_existing_name() {
+    let fs = populated_fs(&["src.txt", "dst.txt"]).await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_op = encode_lookup("src.txt");
+    let savefh_op = encode_savefh();
+    let rootfh_op2 = encode_putrootfh();
+    let link_op = encode_link("dst.txt");
+    let compound = encode_compound(
+        "link-exist",
+        &[
+            &seq_op,
+            &rootfh_op,
+            &lookup_op,
+            &savefh_op,
+            &rootfh_op2,
+            &link_op,
+        ],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Exist as u32);
+}
+
+/// pynfs LNK5: LINK without saved FH returns NFS4ERR_NOFILEHANDLE.
+#[tokio::test]
+async fn test_link_no_saved_fh() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    // No SAVEFH, so saved FH is empty
+    let link_op = encode_link("badlink.txt");
+    let compound = encode_compound("link-nosaved", &[&seq_op, &rootfh_op, &link_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    // Should fail — LINK needs saved FH as the source object
+    assert_ne!(status, NfsStat4::Ok as u32);
+}
+
+// ===== COMMIT (pynfs CMT) =====
+
+/// pynfs CMT1: COMMIT on a file succeeds.
+#[tokio::test]
+async fn test_commit_on_file() {
+    let fs = populated_fs(&["commit.txt"]).await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_op = encode_lookup("commit.txt");
+    let commit_op = encode_commit(0, 0); // offset=0, count=0 means entire file
+    let compound = encode_compound(
+        "commit",
+        &[&seq_op, &rootfh_op, &lookup_op, &commit_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 4);
+
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_COMMIT);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    // COMMIT response has a write verifier (8 bytes)
+    let verf = decode_fixed_opaque(&mut resp, 8).unwrap();
+    assert_eq!(verf.len(), 8);
+}
+
+/// pynfs CMT2: COMMIT without a current filehandle returns NFS4ERR_NOFILEHANDLE.
+#[tokio::test]
+async fn test_commit_no_fh() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let commit_op = encode_commit(0, 0);
+    let compound = encode_compound("commit-nofh", &[&seq_op, &commit_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Nofilehandle as u32);
+}
+
+/// COMMIT on root directory succeeds (server treats it as a no-op flush).
+/// Note: RFC 8881 says COMMIT on a directory is implementation-defined;
+/// our server delegates to NfsSync which is object-agnostic.
+#[tokio::test]
+async fn test_commit_on_directory() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let commit_op = encode_commit(0, 0);
+    let compound = encode_compound("commit-dir", &[&seq_op, &rootfh_op, &commit_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+}

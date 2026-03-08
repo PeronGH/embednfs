@@ -1120,3 +1120,408 @@ async fn test_nverify_mismatching_attrs_succeeds() {
     let (status, _, _) = parse_compound_header(&mut resp);
     assert_eq!(status, NfsStat4::Ok as u32);
 }
+
+// ===== SETATTR truncate (pynfs SATT) =====
+
+/// pynfs SATT4: SETATTR size truncates file and GETATTR reflects new size.
+#[tokio::test]
+async fn test_setattr_truncate_file() {
+    let fs = fs_with_data("trunc.txt", b"hello world!").await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_op = encode_lookup("trunc.txt");
+    let setattr_op = encode_setattr_size(&Stateid4::default(), 5);
+    let getattr_op = encode_getattr(&[FATTR4_SIZE]);
+    let compound = encode_compound(
+        "setattr-trunc",
+        &[&seq_op, &rootfh_op, &lookup_op, &setattr_op, &getattr_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 5);
+
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_SETATTR);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    skip_bitmap(&mut resp); // attrsset
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_GETATTR);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let fattr = Fattr4::decode(&mut resp).unwrap();
+    let mut vals = Bytes::from(fattr.attr_vals);
+    let size = u64::decode(&mut vals).unwrap();
+    assert_eq!(size, 5);
+}
+
+/// SETATTR size=0 empties the file, then READ returns empty.
+#[tokio::test]
+async fn test_setattr_truncate_to_zero_then_read() {
+    let fs = fs_with_data("zero.txt", b"content").await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_op = encode_lookup("zero.txt");
+    let setattr_op = encode_setattr_size(&Stateid4::default(), 0);
+    let read_op = encode_read(0, 4096);
+    let compound = encode_compound(
+        "trunc-read",
+        &[&seq_op, &rootfh_op, &lookup_op, &setattr_op, &read_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    skip_bitmap(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_READ);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let eof = bool::decode(&mut resp).unwrap();
+    let data = decode_opaque(&mut resp).unwrap();
+    assert!(eof);
+    assert!(data.is_empty());
+}
+
+// ===== OPEN share modes (pynfs OPEN) =====
+
+/// pynfs OPEN9: OPEN with SHARE_ACCESS_READ only, then READ succeeds.
+#[tokio::test]
+async fn test_open_read_only_then_read() {
+    let fs = fs_with_data("ro.txt", b"readonly data").await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    // OPEN with read-only access (NOCREATE)
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let open_op = encode_open_nocreate("ro.txt");
+    let read_op = encode_read(0, 4096);
+    let compound = encode_compound("open-read", &[&seq_op, &rootfh_op, &open_op, &read_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_OPEN);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let _stateid = skip_open_res(&mut resp);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_READ);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let _eof = bool::decode(&mut resp).unwrap();
+    let data = decode_opaque(&mut resp).unwrap();
+    assert_eq!(data, b"readonly data");
+}
+
+/// OPEN + CLOSE + FREE_STATEID cycle.
+#[tokio::test]
+async fn test_open_close_free_stateid() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    // OPEN
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let open_op = encode_open_create("free-me.txt");
+    let compound = encode_compound("open", &[&seq_op, &rootfh_op, &open_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let open_stateid = skip_open_res(&mut resp);
+
+    // CLOSE
+    let seq_op = encode_sequence(&sessionid, 2, 0);
+    let close_op = encode_close(&open_stateid);
+    let compound = encode_compound("close", &[&seq_op, &close_op]);
+    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let closed_stateid = parse_stateid(&mut resp);
+
+    // FREE_STATEID
+    let seq_op = encode_sequence(&sessionid, 3, 0);
+    let free_op = encode_free_stateid(&closed_stateid);
+    let compound = encode_compound("free", &[&seq_op, &free_op]);
+    let mut resp = send_rpc(&mut stream, 5, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 2);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_FREE_STATEID);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+}
+
+// ===== GETATTR edge cases =====
+
+/// GETATTR with multiple attribute classes returns all requested.
+#[tokio::test]
+async fn test_getattr_multiple_attrs() {
+    let fs = fs_with_data("multi.txt", b"hello").await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_op = encode_lookup("multi.txt");
+    let getattr_op = encode_getattr(&[FATTR4_TYPE, FATTR4_SIZE]);
+    let compound = encode_compound(
+        "getattr-multi",
+        &[&seq_op, &rootfh_op, &lookup_op, &getattr_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_GETATTR);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let fattr = Fattr4::decode(&mut resp).unwrap();
+    // Verify the bitmap indicates the attrs we asked for
+    assert!(fattr.attrmask.is_set(FATTR4_TYPE));
+    assert!(fattr.attrmask.is_set(FATTR4_SIZE));
+    // Decode values in bitmap order: type (u32), size (u64)
+    let mut vals = Bytes::from(fattr.attr_vals);
+    let file_type = u32::decode(&mut vals).unwrap();
+    assert_eq!(file_type, NfsFtype4::Reg as u32);
+    let size = u64::decode(&mut vals).unwrap();
+    assert_eq!(size, 5);
+}
+
+/// GETATTR without current filehandle returns NFS4ERR_NOFILEHANDLE.
+#[tokio::test]
+async fn test_getattr_no_fh() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let getattr_op = encode_getattr(&[FATTR4_TYPE]);
+    let compound = encode_compound("getattr-nofh", &[&seq_op, &getattr_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Nofilehandle as u32);
+}
+
+/// GETATTR for fs-level attributes on root (fsid, space, etc).
+#[tokio::test]
+async fn test_getattr_fs_level_attrs() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let getattr_op = encode_getattr(&[
+        FATTR4_FSID,
+        FATTR4_MAXREAD,
+        FATTR4_MAXWRITE,
+        FATTR4_LEASE_TIME,
+    ]);
+    let compound = encode_compound("getattr-fs", &[&seq_op, &rootfh_op, &getattr_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_GETATTR);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let fattr = Fattr4::decode(&mut resp).unwrap();
+    // Should have returned the requested attributes
+    assert!(!fattr.attr_vals.is_empty());
+}
+
+// ===== WRITE edge cases =====
+
+/// WRITE to a new file, then GETATTR confirms the size.
+#[tokio::test]
+async fn test_write_then_getattr_confirms_size() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    // OPEN + CREATE
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let open_op = encode_open_create("sized.txt");
+    let compound = encode_compound("open", &[&seq_op, &rootfh_op, &open_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let stateid = skip_open_res(&mut resp);
+
+    // WRITE 100 bytes
+    let data = vec![0xABu8; 100];
+    let seq_op = encode_sequence(&sessionid, 2, 0);
+    let lookup_op = encode_lookup("sized.txt");
+    let write_op = encode_write(&stateid, 0, &data);
+    let getattr_op = encode_getattr(&[FATTR4_SIZE]);
+    let compound = encode_compound(
+        "write-size",
+        &[&seq_op, &rootfh_op, &lookup_op, &write_op, &getattr_op],
+    );
+    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_write_res(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_GETATTR);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let fattr = Fattr4::decode(&mut resp).unwrap();
+    let mut vals = Bytes::from(fattr.attr_vals);
+    let size = u64::decode(&mut vals).unwrap();
+    assert_eq!(size, 100);
+}
+
+/// ACCESS without current filehandle returns NFS4ERR_NOFILEHANDLE.
+#[tokio::test]
+async fn test_access_no_fh() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let access_op = encode_access(ACCESS4_READ);
+    let compound = encode_compound("access-nofh", &[&seq_op, &access_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Nofilehandle as u32);
+}
+
+/// RENAME within same directory.
+#[tokio::test]
+async fn test_rename_same_directory() {
+    let fs = populated_fs(&["before.txt"]).await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let savefh_op = encode_savefh();
+    let rename_op = encode_rename("before.txt", "after.txt");
+    let compound = encode_compound(
+        "rename-same-dir",
+        &[&seq_op, &rootfh_op, &savefh_op, &rename_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+
+    // Verify old name gone, new name exists
+    let seq_op = encode_sequence(&sessionid, 2, 0);
+    let lookup_old = encode_lookup("before.txt");
+    let compound = encode_compound("lookup-old", &[&seq_op, &rootfh_op, &lookup_old]);
+    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Noent as u32);
+
+    let seq_op = encode_sequence(&sessionid, 3, 0);
+    let lookup_new = encode_lookup("after.txt");
+    let compound = encode_compound("lookup-new", &[&seq_op, &rootfh_op, &lookup_new]);
+    let mut resp = send_rpc(&mut stream, 5, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+}
+
+/// DELEGRETURN with a dummy stateid succeeds (our server stubs it as OK).
+#[tokio::test]
+async fn test_delegreturn_stub_succeeds() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let deleg_op = encode_delegreturn(&Stateid4::default());
+    let compound = encode_compound("delegreturn", &[&seq_op, &deleg_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_DELEGRETURN);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+}
+
+/// DELEGPURGE stub succeeds.
+#[tokio::test]
+async fn test_delegpurge_stub_succeeds() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let deleg_op = encode_delegpurge();
+    let compound = encode_compound("delegpurge", &[&seq_op, &deleg_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_DELEGPURGE);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+}

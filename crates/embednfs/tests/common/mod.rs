@@ -557,6 +557,90 @@ pub fn encode_delegpurge() -> Vec<u8> {
     buf.to_vec()
 }
 
+pub fn encode_lock_new(
+    locktype: u32,
+    reclaim: bool,
+    offset: u64,
+    length: u64,
+    open_stateid: &Stateid4,
+    lock_owner: &[u8],
+    clientid: u64,
+) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_LOCK.encode(&mut buf);
+    locktype.encode(&mut buf);
+    reclaim.encode(&mut buf);
+    offset.encode(&mut buf);
+    length.encode(&mut buf);
+    // new_lock_owner = true
+    true.encode(&mut buf);
+    0u32.encode(&mut buf); // open_seqid
+    open_stateid.encode(&mut buf);
+    0u32.encode(&mut buf); // lock_seqid
+    clientid.encode(&mut buf);
+    encode_opaque(&mut buf, lock_owner);
+    buf.to_vec()
+}
+
+pub fn encode_lock_existing(
+    locktype: u32,
+    reclaim: bool,
+    offset: u64,
+    length: u64,
+    lock_stateid: &Stateid4,
+) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_LOCK.encode(&mut buf);
+    locktype.encode(&mut buf);
+    reclaim.encode(&mut buf);
+    offset.encode(&mut buf);
+    length.encode(&mut buf);
+    // new_lock_owner = false
+    false.encode(&mut buf);
+    lock_stateid.encode(&mut buf);
+    0u32.encode(&mut buf); // lock_seqid
+    buf.to_vec()
+}
+
+pub fn encode_lockt(locktype: u32, offset: u64, length: u64, clientid: u64, owner: &[u8]) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_LOCKT.encode(&mut buf);
+    locktype.encode(&mut buf);
+    offset.encode(&mut buf);
+    length.encode(&mut buf);
+    clientid.encode(&mut buf);
+    encode_opaque(&mut buf, owner);
+    buf.to_vec()
+}
+
+pub fn encode_locku(locktype: u32, lock_stateid: &Stateid4, offset: u64, length: u64) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_LOCKU.encode(&mut buf);
+    locktype.encode(&mut buf);
+    0u32.encode(&mut buf); // seqid
+    lock_stateid.encode(&mut buf);
+    offset.encode(&mut buf);
+    length.encode(&mut buf);
+    buf.to_vec()
+}
+
+pub fn encode_bind_conn_to_session(sessionid: &[u8; 16], dir: u32) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_BIND_CONN_TO_SESSION.encode(&mut buf);
+    buf.put_slice(sessionid);
+    dir.encode(&mut buf); // direction (0 = fore, 1 = back, 2 = both)
+    false.encode(&mut buf); // rdma
+    buf.to_vec()
+}
+
+pub fn parse_lock_res(resp: &mut Bytes) -> Stateid4 {
+    Stateid4::decode(resp).unwrap()
+}
+
+pub fn parse_locku_res(resp: &mut Bytes) -> Stateid4 {
+    Stateid4::decode(resp).unwrap()
+}
+
 // ===== Response parsers =====
 
 pub fn parse_rpc_reply(resp: &mut Bytes) -> (u32, u32) {
