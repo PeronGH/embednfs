@@ -512,6 +512,11 @@ struct FailPostMutationRootStatFs {
     root_stat_calls: AtomicUsize,
 }
 
+struct FailFirstRootStatFs {
+    inner: MemFs,
+    root_stat_calls: AtomicUsize,
+}
+
 #[async_trait::async_trait]
 impl NfsFileSystem for BlockingRemoveFs {
     fn root(&self) -> FileId {
@@ -672,6 +677,66 @@ impl NfsFileSystem for FailPostMutationRootStatFs {
             if call >= self.root_stat_limit {
                 return Err(embednfs::NfsError::Io);
             }
+        }
+        self.inner.stat(id).await
+    }
+
+    async fn lookup(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
+        self.inner.lookup(dir_id, name).await
+    }
+
+    async fn lookup_parent(&self, id: FileId) -> NfsResult<FileId> {
+        self.inner.lookup_parent(id).await
+    }
+
+    async fn readdir(&self, dir_id: FileId) -> NfsResult<Vec<DirEntry>> {
+        self.inner.readdir(dir_id).await
+    }
+
+    async fn read(&self, id: FileId, offset: u64, count: u32) -> NfsResult<(Vec<u8>, bool)> {
+        self.inner.read(id, offset, count).await
+    }
+
+    async fn write(&self, id: FileId, offset: u64, data: &[u8]) -> NfsResult<u32> {
+        self.inner.write(id, offset, data).await
+    }
+
+    async fn truncate(&self, id: FileId, size: u64) -> NfsResult<()> {
+        self.inner.truncate(id, size).await
+    }
+
+    async fn create_file(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
+        self.inner.create_file(dir_id, name).await
+    }
+
+    async fn create_dir(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
+        self.inner.create_dir(dir_id, name).await
+    }
+
+    async fn remove(&self, dir_id: FileId, name: &str) -> NfsResult<()> {
+        self.inner.remove(dir_id, name).await
+    }
+
+    async fn rename(
+        &self,
+        from_dir: FileId,
+        from_name: &str,
+        to_dir: FileId,
+        to_name: &str,
+    ) -> NfsResult<()> {
+        self.inner.rename(from_dir, from_name, to_dir, to_name).await
+    }
+}
+
+#[async_trait::async_trait]
+impl NfsFileSystem for FailFirstRootStatFs {
+    fn root(&self) -> FileId {
+        self.inner.root()
+    }
+
+    async fn stat(&self, id: FileId) -> NfsResult<NodeInfo> {
+        if id == self.inner.root() && self.root_stat_calls.fetch_add(1, Ordering::Relaxed) == 0 {
+            return Err(embednfs::NfsError::Io);
         }
         self.inner.stat(id).await
     }
@@ -1070,6 +1135,57 @@ async fn test_open_create_synthesizes_non_atomic_change_info_when_after_attr_fai
     let (_stateid, cinfo) = parse_open_res(&mut resp);
     assert!(!cinfo.0);
     assert_eq!(cinfo.2, cinfo.1.wrapping_add(1));
+}
+
+#[tokio::test]
+async fn test_open_existing_fails_when_directory_change_info_is_unavailable() {
+    let inner = populated_fs(&["existing.txt"]).await;
+    let fs = FailFirstRootStatFs {
+        inner,
+        root_stat_calls: AtomicUsize::new(0),
+    };
+    let port = start_server_with_fs(fs).await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let open_op = encode_open_create("existing.txt");
+    let compound = encode_compound("open-existing-missing-cinfo", &[&seq_op, &rootfh_op, &open_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Io as u32);
+    assert_eq!(num_results, 3);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_OPEN);
+    assert_eq!(op_status, NfsStat4::Io as u32);
+}
+
+#[tokio::test]
+async fn test_malformed_rpc_header_closes_connection() {
+    let port = start_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+
+    stream
+        .write_all(&0x8000_0000u32.to_be_bytes())
+        .await
+        .unwrap();
+    stream.flush().await.unwrap();
+
+    let mut buf = [0u8; 1];
+    let bytes_read = tokio::time::timeout(Duration::from_millis(250), stream.read(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(bytes_read, 0);
 }
 
 #[tokio::test]

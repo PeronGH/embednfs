@@ -102,7 +102,9 @@ impl<F: NfsFileSystem> NfsServer<F> {
             }
             reader.read_exact(&mut read_buf[..frag_len]).await?;
 
-            let response = self.process_rpc_message(&read_buf[..frag_len]).await;
+            let Some(response) = self.process_rpc_message(&read_buf[..frag_len]).await else {
+                return Ok(());
+            };
 
             // The server fully materializes one RPC reply at a time, so exceeding the
             // fragment limit here indicates an internal sizing bug rather than a
@@ -118,7 +120,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
         }
     }
 
-    async fn process_rpc_message(&self, data: &[u8]) -> Bytes {
+    async fn process_rpc_message(&self, data: &[u8]) -> Option<Bytes> {
         trace!("RPC request bytes={} hex={}", data.len(), hex_bytes(data));
         let mut src = Bytes::copy_from_slice(data);
 
@@ -126,7 +128,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
             Ok(c) => c,
             Err(e) => {
                 warn!("Failed to decode RPC header: {e}");
-                return Bytes::new();
+                return None;
             }
         };
 
@@ -134,17 +136,17 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
         if call.rpcvers != RPC_VERSION {
             encode_rpc_reply_prog_mismatch(&mut response, call.xid, RPC_VERSION, RPC_VERSION);
-            return response.freeze();
+            return Some(response.freeze());
         }
 
         if call.prog != NFS_PROGRAM {
             encode_rpc_reply_prog_mismatch(&mut response, call.xid, NFS_PROGRAM, NFS_PROGRAM);
-            return response.freeze();
+            return Some(response.freeze());
         }
 
         if call.vers != NFS_V4 {
             encode_rpc_reply_prog_mismatch(&mut response, call.xid, NFS_V4, NFS_V4);
-            return response.freeze();
+            return Some(response.freeze());
         }
 
         match call.proc_num {
@@ -166,13 +168,13 @@ impl<F: NfsFileSystem> NfsServer<F> {
                                     SequenceReplay::Replay(cached) => {
                                         encode_rpc_reply_accepted(&mut response, call.xid);
                                         response.extend_from_slice(&cached);
-                                        return response.freeze();
+                                        return Some(response.freeze());
                                     }
                                     SequenceReplay::Error(status) => {
                                         let result = sequence_error_compound(&args.tag, status);
                                         encode_rpc_reply_accepted(&mut response, call.xid);
                                         result.encode(&mut response);
-                                        return response.freeze();
+                                        return Some(response.freeze());
                                     }
                                 }
                             }
@@ -215,7 +217,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
             response.len(),
             hex_bytes(&response)
         );
-        response
+        Some(response)
     }
 
     async fn handle_compound(
@@ -593,12 +595,17 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn parent_change_after_xattr_mutation(&self, parent: FileId) {
-        if let Ok(info) = self.fs.stat(parent).await {
-            let file_type = Self::object_from_info(info);
-            self.state
-                .touch_metadata(&ServerObject::Fs(parent), file_type)
-                .await;
-        }
+        // Successful named-attribute mutation means the parent object must still be
+        // statable so the server can keep synthetic directory change metadata coherent.
+        let info = self
+            .fs
+            .stat(parent)
+            .await
+            .expect("named-attribute parent disappeared before metadata refresh");
+        let file_type = Self::object_from_info(info);
+        self.state
+            .touch_metadata(&ServerObject::Fs(parent), file_type)
+            .await;
     }
 
     fn create_mode_requires_nonexistence(how: &Createhow4) -> bool {
@@ -1114,6 +1121,10 @@ impl<F: NfsFileSystem> NfsServer<F> {
             return NfsResop4::Open(NfsStat4::Isdir, None);
         }
 
+        if !created && let Err(e) = &before_attr {
+            return NfsResop4::Open(e.to_nfsstat4(), None);
+        }
+
         let stateid = match self
             .state
             .create_open_state(
@@ -1131,12 +1142,19 @@ impl<F: NfsFileSystem> NfsServer<F> {
         *current_fh = Some(self.state.object_to_fh(&object).await);
 
         let cinfo = if created {
-            self.mutation_change_info(&container, created_before_change.unwrap_or(0))
-                .await
+            // The create path records the pre-mutation directory change id before
+            // issuing the mutation, so it must be present here.
+            let before_change = created_before_change.expect("created OPEN missing pre-mutation change info");
+            self.mutation_change_info(&container, before_change).await
         } else {
-            let change = before_attr.as_ref().map(|attr| attr.change_id).unwrap_or(0);
+            // Non-creating OPENs require pre-operation directory attrs so the unchanged
+            // change_info4 can be reported without sentinel values.
+            let change = before_attr
+                .as_ref()
+                .expect("non-creating OPEN missing directory attrs")
+                .change_id;
             ChangeInfo4 {
-                atomic: before_attr.is_ok(),
+                atomic: true,
                 before: change,
                 after: change,
             }
@@ -1496,6 +1514,21 @@ impl<F: NfsFileSystem> NfsServer<F> {
             Err(status) => return NfsResop4::Write(status, None),
         };
 
+        let file_type = match &object {
+            ServerObject::Fs(id) => match self.fs.stat(*id).await {
+                Ok(info) => {
+                    let file_type = Self::object_from_info(info);
+                    if file_type == ServerFileType::Directory {
+                        return NfsResop4::Write(NfsStat4::Isdir, None);
+                    }
+                    file_type
+                }
+                Err(e) => return NfsResop4::Write(e.to_nfsstat4(), None),
+            },
+            ServerObject::NamedAttrFile { .. } => ServerFileType::NamedAttr,
+            ServerObject::NamedAttrDir(_) => return NfsResop4::Write(NfsStat4::Isdir, None),
+        };
+
         let result = match object.clone() {
             ServerObject::Fs(id) => self.fs.write(id, args.offset, &args.data).await,
             ServerObject::NamedAttrFile { parent, name } => {
@@ -1506,14 +1539,6 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
         match result {
             Ok(count) => {
-                let file_type = match object {
-                    ServerObject::Fs(id) => match self.fs.stat(id).await {
-                        Ok(info) => Self::object_from_info(info),
-                        Err(_) => ServerFileType::Regular,
-                    },
-                    ServerObject::NamedAttrFile { .. } => ServerFileType::NamedAttr,
-                    ServerObject::NamedAttrDir(_) => ServerFileType::NamedAttrDir,
-                };
                 self.state.touch_data(&object, file_type).await;
                 NfsResop4::Write(
                     NfsStat4::Ok,
