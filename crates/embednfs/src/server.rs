@@ -739,7 +739,10 @@ impl<F: NfsFileSystem> NfsServer<F> {
             Err(e) => return NfsResop4::Create(e.to_nfsstat4(), None, Bitmap4::new()),
         };
 
-        let set_attrs = attrs::decode_setattr(&args.createattrs);
+        let set_attrs = match attrs::decode_setattr(&args.createattrs) {
+            Ok(attrs) => attrs,
+            Err(status) => return NfsResop4::Create(status, None, Bitmap4::new()),
+        };
 
         let (new_object, new_type) = match &args.objtype {
             Createtype4::Dir => match self.fs.create_dir(dir_id, &args.objname).await {
@@ -953,10 +956,16 @@ impl<F: NfsFileSystem> NfsServer<F> {
                                 let object = ServerObject::Fs(id);
                                 let set_attrs = match how {
                                     Createhow4::Unchecked(fa) | Createhow4::Guarded(fa) => {
-                                        attrs::decode_setattr(fa)
+                                        match attrs::decode_setattr(fa) {
+                                            Ok(attrs) => attrs,
+                                            Err(status) => return NfsResop4::Open(status, None),
+                                        }
                                     }
                                     Createhow4::Exclusive4_1 { attrs: fa, .. } => {
-                                        attrs::decode_setattr(fa)
+                                        match attrs::decode_setattr(fa) {
+                                            Ok(attrs) => attrs,
+                                            Err(status) => return NfsResop4::Open(status, None),
+                                        }
                                     }
                                     Createhow4::Exclusive(_) => Default::default(),
                                 };
@@ -1008,10 +1017,16 @@ impl<F: NfsFileSystem> NfsServer<F> {
                             };
                             let set_attrs = match how {
                                 Createhow4::Unchecked(fa) | Createhow4::Guarded(fa) => {
-                                    attrs::decode_setattr(fa)
+                                    match attrs::decode_setattr(fa) {
+                                        Ok(attrs) => attrs,
+                                        Err(status) => return NfsResop4::Open(status, None),
+                                    }
                                 }
                                 Createhow4::Exclusive4_1 { attrs: fa, .. } => {
-                                    attrs::decode_setattr(fa)
+                                    match attrs::decode_setattr(fa) {
+                                        Ok(attrs) => attrs,
+                                        Err(status) => return NfsResop4::Open(status, None),
+                                    }
                                 }
                                 Createhow4::Exclusive(_) => Default::default(),
                             };
@@ -1397,7 +1412,10 @@ impl<F: NfsFileSystem> NfsServer<F> {
             Err(status) => return NfsResop4::Setattr(status, Bitmap4::new()),
         };
 
-        let set_attrs = attrs::decode_setattr(&args.obj_attributes);
+        let set_attrs = match attrs::decode_setattr(&args.obj_attributes) {
+            Ok(attrs) => attrs,
+            Err(status) => return NfsResop4::Setattr(status, Bitmap4::new()),
+        };
 
         let status = match object.clone() {
             ServerObject::Fs(id) => {

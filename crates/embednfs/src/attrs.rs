@@ -426,40 +426,35 @@ pub(crate) fn encode_fattr4(
 }
 
 /// Decode setattr attributes from an Fattr4.
-pub(crate) fn decode_setattr(fattr: &Fattr4) -> SetAttrRequest {
+pub(crate) fn decode_setattr(fattr: &Fattr4) -> Result<SetAttrRequest, NfsStat4> {
     let mut result = SetAttrRequest::default();
     let mut src = bytes::Bytes::from(fattr.attr_vals.clone());
 
     // Attributes must be decoded in bitmap order
-    if fattr.attrmask.is_set(FATTR4_SIZE)
-        && let Ok(size) = u64::decode(&mut src)
-    {
+    if fattr.attrmask.is_set(FATTR4_SIZE) {
+        let size = u64::decode(&mut src).map_err(|_| NfsStat4::BadXdr)?;
         result.size = Some(size);
     }
 
     // ARCHIVE (14) - macOS sends this; consume but store as flag
-    if fattr.attrmask.is_set(FATTR4_ARCHIVE)
-        && let Ok(archive) = bool::decode(&mut src)
-    {
+    if fattr.attrmask.is_set(FATTR4_ARCHIVE) {
+        let archive = bool::decode(&mut src).map_err(|_| NfsStat4::BadXdr)?;
         result.archive = Some(archive);
     }
 
     // HIDDEN (25) - macOS sends this
-    if fattr.attrmask.is_set(FATTR4_HIDDEN)
-        && let Ok(hidden) = bool::decode(&mut src)
-    {
+    if fattr.attrmask.is_set(FATTR4_HIDDEN) {
+        let hidden = bool::decode(&mut src).map_err(|_| NfsStat4::BadXdr)?;
         result.hidden = Some(hidden);
     }
 
-    if fattr.attrmask.is_set(FATTR4_MODE)
-        && let Ok(mode) = u32::decode(&mut src)
-    {
+    if fattr.attrmask.is_set(FATTR4_MODE) {
+        let mode = u32::decode(&mut src).map_err(|_| NfsStat4::BadXdr)?;
         result.mode = Some(mode & 0o7777);
     }
 
-    if fattr.attrmask.is_set(FATTR4_OWNER)
-        && let Ok(owner_str) = String::decode(&mut src)
-    {
+    if fattr.attrmask.is_set(FATTR4_OWNER) {
+        let owner_str = String::decode(&mut src).map_err(|_| NfsStat4::BadXdr)?;
         // Parse numeric uid or "uid@domain" format
         let uid_str = owner_str.split('@').next().unwrap_or(&owner_str);
         if let Ok(uid) = uid_str.parse::<u32>() {
@@ -467,9 +462,8 @@ pub(crate) fn decode_setattr(fattr: &Fattr4) -> SetAttrRequest {
         }
     }
 
-    if fattr.attrmask.is_set(FATTR4_OWNER_GROUP)
-        && let Ok(group_str) = String::decode(&mut src)
-    {
+    if fattr.attrmask.is_set(FATTR4_OWNER_GROUP) {
+        let group_str = String::decode(&mut src).map_err(|_| NfsStat4::BadXdr)?;
         let gid_str = group_str.split('@').next().unwrap_or(&group_str);
         if let Ok(gid) = gid_str.parse::<u32>() {
             result.gid = Some(gid);
@@ -477,55 +471,48 @@ pub(crate) fn decode_setattr(fattr: &Fattr4) -> SetAttrRequest {
     }
 
     // SYSTEM (46) - macOS sends this
-    if fattr.attrmask.is_set(FATTR4_SYSTEM)
-        && let Ok(system) = bool::decode(&mut src)
-    {
+    if fattr.attrmask.is_set(FATTR4_SYSTEM) {
+        let system = bool::decode(&mut src).map_err(|_| NfsStat4::BadXdr)?;
         result.system = Some(system);
     }
 
-    if fattr.attrmask.is_set(FATTR4_TIME_ACCESS_SET)
-        && let Ok(how) = u32::decode(&mut src)
-    {
+    if fattr.attrmask.is_set(FATTR4_TIME_ACCESS_SET) {
+        let how = u32::decode(&mut src).map_err(|_| NfsStat4::BadXdr)?;
         match how {
             0 => result.atime = Some(SetTime::ServerTime),
             1 => {
-                if let Ok(t) = NfsTime4::decode(&mut src) {
-                    result.atime = Some(SetTime::ClientTime(t.seconds, t.nseconds));
-                }
+                let t = NfsTime4::decode(&mut src).map_err(|_| NfsStat4::BadXdr)?;
+                result.atime = Some(SetTime::ClientTime(t.seconds, t.nseconds));
             }
             _ => {}
         }
     }
 
     // TIME_BACKUP (49) - macOS sends this (same format as time_create)
-    if fattr.attrmask.is_set(FATTR4_TIME_BACKUP)
-        && let Ok(t) = NfsTime4::decode(&mut src)
-    {
+    if fattr.attrmask.is_set(FATTR4_TIME_BACKUP) {
+        let t = NfsTime4::decode(&mut src).map_err(|_| NfsStat4::BadXdr)?;
         result.crtime = Some(SetTime::ClientTime(t.seconds, t.nseconds));
     }
 
     // TIME_CREATE (50) - macOS sends this as birth/creation time
-    if fattr.attrmask.is_set(FATTR4_TIME_CREATE)
-        && let Ok(t) = NfsTime4::decode(&mut src)
-    {
+    if fattr.attrmask.is_set(FATTR4_TIME_CREATE) {
+        let t = NfsTime4::decode(&mut src).map_err(|_| NfsStat4::BadXdr)?;
         result.crtime = Some(SetTime::ClientTime(t.seconds, t.nseconds));
     }
 
-    if fattr.attrmask.is_set(FATTR4_TIME_MODIFY_SET)
-        && let Ok(how) = u32::decode(&mut src)
-    {
+    if fattr.attrmask.is_set(FATTR4_TIME_MODIFY_SET) {
+        let how = u32::decode(&mut src).map_err(|_| NfsStat4::BadXdr)?;
         match how {
             0 => result.mtime = Some(SetTime::ServerTime),
             1 => {
-                if let Ok(t) = NfsTime4::decode(&mut src) {
-                    result.mtime = Some(SetTime::ClientTime(t.seconds, t.nseconds));
-                }
+                let t = NfsTime4::decode(&mut src).map_err(|_| NfsStat4::BadXdr)?;
+                result.mtime = Some(SetTime::ClientTime(t.seconds, t.nseconds));
             }
             _ => {}
         }
     }
 
-    result
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -543,9 +530,28 @@ mod tests {
         let attrs = decode_setattr(&Fattr4 {
             attrmask: bitmap,
             attr_vals: vals.to_vec(),
-        });
+        })
+        .unwrap();
 
         assert_eq!(attrs.mode, Some(0o644));
+    }
+
+    #[test]
+    fn test_decode_setattr_rejects_truncated_client_time() {
+        let mut bitmap = Bitmap4::new();
+        bitmap.set(FATTR4_TIME_MODIFY_SET);
+
+        let mut vals = BytesMut::new();
+        1u32.encode(&mut vals);
+        123i64.encode(&mut vals);
+
+        let err = decode_setattr(&Fattr4 {
+            attrmask: bitmap,
+            attr_vals: vals.to_vec(),
+        })
+        .unwrap_err();
+
+        assert_eq!(err, NfsStat4::BadXdr);
     }
 
     #[test]

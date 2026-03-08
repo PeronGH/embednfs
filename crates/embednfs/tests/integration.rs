@@ -284,6 +284,22 @@ fn encode_setattr_flags(archive: bool, hidden: bool, system: bool) -> Vec<u8> {
     buf.to_vec()
 }
 
+fn encode_setattr_truncated_client_mtime() -> Vec<u8> {
+    let mut bitmap = Bitmap4::new();
+    bitmap.set(FATTR4_TIME_MODIFY_SET);
+
+    let mut vals = BytesMut::new();
+    1u32.encode(&mut vals);
+    123i64.encode(&mut vals);
+
+    let mut buf = BytesMut::new();
+    OP_SETATTR.encode(&mut buf);
+    Stateid4::default().encode(&mut buf);
+    bitmap.encode(&mut buf);
+    encode_opaque(&mut buf, &vals);
+    buf.to_vec()
+}
+
 fn encode_test_stateid(stateids: &[Stateid4]) -> Vec<u8> {
     let mut buf = BytesMut::new();
     OP_TEST_STATEID.encode(&mut buf);
@@ -1073,6 +1089,38 @@ async fn test_setattr_flags_round_trip() {
     assert!(bool::decode(&mut vals).unwrap());
     assert!(bool::decode(&mut vals).unwrap());
     assert!(bool::decode(&mut vals).unwrap());
+}
+
+#[tokio::test]
+async fn test_setattr_badxdr_for_truncated_client_time() {
+    let fs = populated_fs(&["badxdr.txt"]).await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_op = encode_lookup("badxdr.txt");
+    let setattr_op = encode_setattr_truncated_client_mtime();
+    let compound = encode_compound(
+        "setattr-badxdr",
+        &[&seq_op, &rootfh_op, &lookup_op, &setattr_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::BadXdr as u32);
+    assert_eq!(num_results, 4);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_SETATTR);
+    assert_eq!(op_status, NfsStat4::BadXdr as u32);
 }
 
 #[tokio::test]
