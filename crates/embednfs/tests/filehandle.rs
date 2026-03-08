@@ -1,19 +1,10 @@
 //! Tests for filehandle operations: PUTFH, PUTROOTFH, PUTPUBFH, GETFH,
 //! SAVEFH, RESTOREFH, LOOKUP, LOOKUPP.
 //!
-//! Adapted from pynfs NFSv4.1 `st_putfh`, `st_lookup`, `st_lookupp`,
-//! older pynfs servertests for GETFH/PUTROOTFH/PUTPUBFH/SAVEFH/RESTOREFH,
-//! and RFC 8881.
-//!
-//! Pynfs provenance:
-//! - `PUTFH*` labels map to `pynfs/nfs4.1/server41tests/st_putfh.py`.
-//! - `LOOK*` labels map to `pynfs/nfs4.1/server41tests/st_lookup.py`.
-//! - `LKPP*` labels map to `pynfs/nfs4.1/server41tests/st_lookupp.py`.
-//! - `ROOT*`, `PUB*`, `GF*`, `SVFH*`, and `RSFH*` coverage comes from the
-//!   older pynfs servertests `st_putrootfh.py`, `st_putpubfh.py`,
-//!   `st_getfh.py`, `st_savefh.py`, and `st_restorefh.py` under
-//!   `pynfs/nfs4.0/lib/nfs4/servertests/`.
-//! - Tests without a pynfs label are RFC- or implementation-driven checks.
+//! This module mixes direct pynfs ports, adaptations from older pynfs
+//! servertests, and RFC-driven filehandle semantics checks.
+//! The per-test `Origin:` and `RFC:` lines below are the authoritative
+//! provenance.
 
 mod common;
 
@@ -23,7 +14,9 @@ use common::*;
 
 // ===== PUTROOTFH (pynfs ROOT) =====
 
-/// pynfs ROOT1 / RFC 8881 §18.21: PUTROOTFH sets the current FH to the root.
+/// PUTROOTFH sets the current FH to the root.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_putrootfh.py` (CODE `ROOT1`).
+/// RFC: RFC 8881 §18.21.
 #[tokio::test]
 async fn test_putrootfh_sets_current_fh() {
     let port = start_server().await;
@@ -51,7 +44,9 @@ async fn test_putrootfh_sets_current_fh() {
     assert!(!fh.is_empty());
 }
 
-/// RFC 8881 §18.21: PUTROOTFH always returns the same filehandle for the root.
+/// PUTROOTFH always returns the same filehandle for the root.
+/// Origin: RFC 8881 §18.21; no direct pynfs one-to-one case.
+/// RFC: RFC 8881 §18.21.
 #[tokio::test]
 async fn test_putrootfh_consistent() {
     let port = start_server().await;
@@ -79,7 +74,9 @@ async fn test_putrootfh_consistent() {
 
 // ===== PUTPUBFH =====
 
-/// RFC 8881 §18.20: PUTPUBFH sets a valid filehandle (maps to root in our implementation).
+/// PUTPUBFH sets a valid filehandle.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_putpubfh.py` (CODE `PUB1`).
+/// RFC: RFC 8881 §18.20.
 #[tokio::test]
 async fn test_putpubfh_sets_current_fh() {
     let port = start_server().await;
@@ -111,7 +108,9 @@ async fn test_putpubfh_sets_current_fh() {
 
 // ===== PUTFH (pynfs PUTFH) =====
 
-/// pynfs PUTFH1 / RFC 8881 §18.19: PUTFH with a valid filehandle succeeds.
+/// PUTFH with a valid filehandle succeeds.
+/// Origin: derived from `pynfs/nfs4.1/server41tests/st_putfh.py` (CODE `PUTFH1*` family).
+/// RFC: RFC 8881 §18.19.3.
 #[tokio::test]
 async fn test_putfh_valid() {
     let port = start_server().await;
@@ -152,7 +151,9 @@ async fn test_putfh_valid() {
     assert_eq!(echoed_fh, root_fh);
 }
 
-/// pynfs PUTFH2 / RFC 8881 §18.19.3: PUTFH with an invalid/bogus filehandle returns NFS4ERR_BADHANDLE.
+/// PUTFH with an invalid filehandle returns `NFS4ERR_BADHANDLE`.
+/// Origin: `pynfs/nfs4.1/server41tests/st_putfh.py` (CODE `PUTFH2`).
+/// RFC: RFC 8881 §18.19.3.
 #[tokio::test]
 async fn test_putfh_bad_handle() {
     let port = start_server().await;
@@ -179,7 +180,9 @@ async fn test_putfh_bad_handle() {
 
 // ===== GETFH (pynfs GFH) =====
 
-/// pynfs GFH1 / RFC 8881 §18.8.3: GETFH without a current filehandle returns NFS4ERR_NOFILEHANDLE.
+/// GETFH without a current filehandle returns `NFS4ERR_NOFILEHANDLE`.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_getfh.py` (CODE `GF9`).
+/// RFC: RFC 8881 §18.8.3.
 #[tokio::test]
 async fn test_getfh_no_current_fh() {
     let port = start_server().await;
@@ -206,7 +209,9 @@ async fn test_getfh_no_current_fh() {
 
 // ===== SAVEFH / RESTOREFH (pynfs SVFH, RSFH) =====
 
-/// RFC 8881 §18.27.3 + §18.28.3: SAVEFH + RESTOREFH round-trip preserves the filehandle.
+/// SAVEFH + RESTOREFH round-trip preserves the filehandle.
+/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_restorefh.py` (CODE `SVFH2*` family).
+/// RFC: RFC 8881 §18.27.3, §18.28.3.
 #[tokio::test]
 async fn test_savefh_restorefh_roundtrip() {
     let port = start_server().await;
@@ -278,7 +283,9 @@ async fn test_savefh_restorefh_roundtrip() {
     assert!(!restored_fh.is_empty());
 }
 
-/// pynfs RSFH2 (v4.0 lineage) / RFC 8881 §18.27.3: RESTOREFH without a prior SAVEFH returns NFS4ERR_NOFILEHANDLE.
+/// RESTOREFH without a prior SAVEFH returns `NFS4ERR_NOFILEHANDLE`.
+/// Origin: adapted from `pynfs/nfs4.0/lib/nfs4/servertests/st_restorefh.py` (CODE `RSFH2`) to RFC 8881 §18.27.3 semantics.
+/// RFC: RFC 8881 §18.27.3.
 #[tokio::test]
 async fn test_restorefh_without_save_fails() {
     let port = start_server().await;
@@ -303,7 +310,9 @@ async fn test_restorefh_without_save_fails() {
     assert_eq!(op_status, NfsStat4::Nofilehandle as u32);
 }
 
-/// pynfs SVFH2 (v4.0 lineage) / RFC 8881 §18.28.3: SAVEFH without a current FH returns NFS4ERR_NOFILEHANDLE.
+/// SAVEFH without a current FH returns `NFS4ERR_NOFILEHANDLE`.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_savefh.py` (CODE `SVFH1`).
+/// RFC: RFC 8881 §18.28.3.
 #[tokio::test]
 async fn test_savefh_no_current_fh() {
     let port = start_server().await;
@@ -330,7 +339,9 @@ async fn test_savefh_no_current_fh() {
 
 // ===== LOOKUP (pynfs LOOK) =====
 
-/// RFC 8881 §18.13.3: LOOKUP of an existing file succeeds and changes current FH.
+/// LOOKUP of an existing file succeeds and changes current FH.
+/// Origin: derived from `pynfs/nfs4.1/server41tests/st_lookup.py` (CODE `LOOKFILE` family).
+/// RFC: RFC 8881 §18.13.3.
 #[tokio::test]
 async fn test_lookup_existing_file() {
     let fs = populated_fs(&["hello.txt"]).await;
@@ -365,7 +376,9 @@ async fn test_lookup_existing_file() {
     assert_ne!(root_fh, file_fh);
 }
 
-/// RFC 8881 §18.13.3: LOOKUP of a nonexistent name returns NFS4ERR_NOENT.
+/// LOOKUP of a nonexistent name returns `NFS4ERR_NOENT`.
+/// Origin: `pynfs/nfs4.1/server41tests/st_lookup.py` (CODE `LOOK2`).
+/// RFC: RFC 8881 §18.13.3.
 #[tokio::test]
 async fn test_lookup_nonexistent() {
     let port = start_server().await;
@@ -392,7 +405,9 @@ async fn test_lookup_nonexistent() {
     assert_eq!(op_status, NfsStat4::Noent as u32);
 }
 
-/// RFC 8881 §18.13.3: LOOKUP on a non-directory (file) returns NFS4ERR_NOTDIR.
+/// LOOKUP on a non-directory current filehandle returns `NFS4ERR_NOTDIR`.
+/// Origin: `pynfs/nfs4.1/server41tests/st_lookup.py` (CODE `LOOK5r`).
+/// RFC: RFC 8881 §18.13.3.
 #[tokio::test]
 async fn test_lookup_on_file_returns_notdir() {
     let fs = populated_fs(&["regular.txt"]).await;
@@ -422,7 +437,9 @@ async fn test_lookup_on_file_returns_notdir() {
     assert_eq!(op_status, NfsStat4::Notdir as u32);
 }
 
-/// RFC 8881 §18.13.3: LOOKUP without a current FH returns NFS4ERR_NOFILEHANDLE.
+/// LOOKUP without a current FH returns `NFS4ERR_NOFILEHANDLE`.
+/// Origin: `pynfs/nfs4.1/server41tests/st_lookup.py` (CODE `LOOK1`).
+/// RFC: RFC 8881 §18.13.3.
 #[tokio::test]
 async fn test_lookup_no_fh() {
     let port = start_server().await;
@@ -441,7 +458,9 @@ async fn test_lookup_no_fh() {
 
 // ===== LOOKUPP (pynfs LOOKP) =====
 
-/// pynfs LKPP2 / RFC 8881 §18.14.3: LOOKUPP from root returns NFS4ERR_NOENT.
+/// LOOKUPP from root returns `NFS4ERR_NOENT`.
+/// Origin: `pynfs/nfs4.1/server41tests/st_lookupp.py` (CODE `LKPP2`).
+/// RFC: RFC 8881 §18.14.3.
 #[tokio::test]
 async fn test_lookupp_at_root() {
     let port = start_server().await;
@@ -473,7 +492,9 @@ async fn test_lookupp_at_root() {
     assert_eq!(op_status, NfsStat4::Noent as u32);
 }
 
-/// pynfs LKPP1d / RFC 8881 §18.14.3: LOOKUPP from a subdirectory returns the parent.
+/// LOOKUPP from a subdirectory returns the parent.
+/// Origin: `pynfs/nfs4.1/server41tests/st_lookupp.py` (CODE `LKPP1d`).
+/// RFC: RFC 8881 §18.14.3.
 #[tokio::test]
 async fn test_lookupp_from_subdir() {
     let fs = fs_with_subdir("subdir").await;

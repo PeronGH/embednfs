@@ -1,16 +1,9 @@
 //! Tests for CREATE (mkdir, symlink), LINK, READLINK, and COMMIT operations.
 //!
-//! Adapted from RFC 8881 plus older pynfs servertests for CREATE/LINK/
-//! READLINK/COMMIT behavior that remains relevant to NFSv4.1.
-//!
-//! Pynfs provenance:
-//! - `MKDIR` and `SLINK` labels map to
-//!   `pynfs/nfs4.0/lib/nfs4/servertests/st_create.py`.
-//! - `RDLNK*` labels map to
-//!   `pynfs/nfs4.0/lib/nfs4/servertests/st_readlink.py`.
-//! - `LNK*` labels map to `pynfs/nfs4.0/lib/nfs4/servertests/st_link.py`.
-//! - `CMT*` labels map to `pynfs/nfs4.0/lib/nfs4/servertests/st_commit.py`.
-//! - Tests without a pynfs label are RFC- or implementation-driven checks.
+//! This module covers non-regular-object creation plus link, readlink, and
+//! commit behavior using a mix of pynfs-derived and RFC-driven cases.
+//! The per-test `Origin:` and `RFC:` lines below are the authoritative
+//! provenance.
 
 mod common;
 
@@ -22,7 +15,9 @@ use common::*;
 
 // ===== CREATE directory (pynfs MKDIR) =====
 
-/// RFC 8881 §18.4.3: CREATE with type NF4DIR creates a directory.
+/// CREATE with type `NF4DIR` creates a directory.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_create.py` (CODE `MKDIR`).
+/// RFC: RFC 8881 §18.4.3.
 #[tokio::test]
 async fn test_create_directory() {
     let port = start_server().await;
@@ -58,7 +53,9 @@ async fn test_create_directory() {
     assert!(!dir_fh.is_empty());
 }
 
-/// RFC 8881 §18.23.3: Created directory appears in READDIR listing.
+/// A newly created directory appears in READDIR results.
+/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_create.py` (CODE `MKDIR`) plus `st_readdir.py` (CODE `RDDR2`).
+/// RFC: RFC 8881 §18.4.3, §18.23.3.
 #[tokio::test]
 async fn test_create_directory_visible_in_readdir() {
     let port = start_server().await;
@@ -92,7 +89,9 @@ async fn test_create_directory_visible_in_readdir() {
     assert!(names.contains(&"visible-dir"));
 }
 
-/// RFC 8881 §18.4.3: CREATE directory with existing name returns NFS4ERR_EXIST.
+/// CREATE directory with an existing name returns `NFS4ERR_EXIST`.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_create.py` (CODE `MKDIR`, second-create EXIST behavior).
+/// RFC: RFC 8881 §18.4.3.
 #[tokio::test]
 async fn test_create_directory_existing_name() {
     let fs = fs_with_subdir("existing").await;
@@ -110,7 +109,9 @@ async fn test_create_directory_existing_name() {
     assert_eq!(status, NfsStat4::Exist as u32);
 }
 
-/// RFC 8881 §18.4.3: CREATE directory without current filehandle returns NFS4ERR_NOFILEHANDLE.
+/// CREATE directory without a current filehandle returns `NFS4ERR_NOFILEHANDLE`.
+/// Origin: RFC 8881 §18.4.3; no direct one-to-one pynfs case.
+/// RFC: RFC 8881 §18.4.3.
 #[tokio::test]
 async fn test_create_directory_no_fh() {
     let port = start_server().await;
@@ -126,7 +127,9 @@ async fn test_create_directory_no_fh() {
     assert_eq!(status, NfsStat4::Nofilehandle as u32);
 }
 
-/// RFC 8881 §18.4.3 + §5.8.1.2: Created directory is type NF4DIR.
+/// A created directory reports type `NF4DIR`.
+/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_create.py` (CODE `MKDIR`) plus GETATTR verification.
+/// RFC: RFC 8881 §18.4.3.
 #[tokio::test]
 async fn test_create_directory_type_is_dir() {
     let port = start_server().await;
@@ -163,7 +166,9 @@ async fn test_create_directory_type_is_dir() {
 
 // ===== CREATE symlink (pynfs SLINK) =====
 
-/// RFC 8881 §18.4.3: CREATE with type NF4LNK creates a symlink.
+/// CREATE with type `NF4LNK` creates a symlink.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_create.py` (CODE `MKLINK`).
+/// RFC: RFC 8881 §18.4.3.
 #[tokio::test]
 async fn test_create_symlink() {
     let port = start_server().await;
@@ -189,7 +194,9 @@ async fn test_create_symlink() {
     assert_eq!(op_status, NfsStat4::Ok as u32);
 }
 
-/// RFC 8881 §18.4.3: CREATE symlink with existing name returns NFS4ERR_EXIST.
+/// CREATE symlink with an existing name returns `NFS4ERR_EXIST`.
+/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_create.py` (CODE `MKLINK`, second-create EXIST behavior).
+/// RFC: RFC 8881 §18.4.3.
 #[tokio::test]
 async fn test_create_symlink_existing_name() {
     let fs = populated_fs(&["taken.txt"]).await;
@@ -209,7 +216,9 @@ async fn test_create_symlink_existing_name() {
 
 // ===== READLINK (pynfs RDLNK) =====
 
-/// RFC 8881 §18.24.3: READLINK reads back the symlink target.
+/// READLINK returns the symlink target.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_readlink.py` (CODE `RDLK1`).
+/// RFC: RFC 8881 §18.24.3.
 #[tokio::test]
 async fn test_readlink_returns_target() {
     let port = start_server().await;
@@ -251,7 +260,9 @@ async fn test_readlink_returns_target() {
     assert_eq!(target, "/my/target/path");
 }
 
-/// RFC 8881 §18.24.3: READLINK on a non-symlink returns NFS4ERR_INVAL.
+/// READLINK on a non-symlink returns `NFS4ERR_INVAL`.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_readlink.py` (CODE `RDLK2r`).
+/// RFC: RFC 8881 §18.24.3.
 #[tokio::test]
 async fn test_readlink_on_regular_file() {
     let fs = populated_fs(&["regular.txt"]).await;
@@ -274,7 +285,9 @@ async fn test_readlink_on_regular_file() {
     assert_ne!(status, NfsStat4::Ok as u32);
 }
 
-/// RFC 8881 §18.24.3: READLINK without a current filehandle returns NFS4ERR_NOFILEHANDLE.
+/// READLINK without a current filehandle returns `NFS4ERR_NOFILEHANDLE`.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_readlink.py` (CODE `RDLK3`).
+/// RFC: RFC 8881 §18.24.3.
 #[tokio::test]
 async fn test_readlink_no_fh() {
     let port = start_server().await;
@@ -292,7 +305,9 @@ async fn test_readlink_no_fh() {
 
 // ===== LINK (hard links, pynfs LNK) =====
 
-/// RFC 8881 §18.9.3: LINK creates a hard link in the target directory.
+/// LINK creates a hard link in the target directory.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_link.py` (CODE `LINK1r`).
+/// RFC: RFC 8881 §18.9.3.
 #[tokio::test]
 async fn test_link_creates_hard_link() {
     let fs = populated_fs(&["source.txt"]).await;
@@ -336,7 +351,9 @@ async fn test_link_creates_hard_link() {
     assert_eq!(op_status, NfsStat4::Ok as u32);
 }
 
-/// RFC 8881 §18.9.3: LINK with existing target name returns NFS4ERR_EXIST.
+/// LINK with an existing target name returns `NFS4ERR_EXIST`.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_link.py` (CODE `LINK5`).
+/// RFC: RFC 8881 §18.9.3.
 #[tokio::test]
 async fn test_link_existing_name() {
     let fs = populated_fs(&["src.txt", "dst.txt"]).await;
@@ -367,7 +384,9 @@ async fn test_link_existing_name() {
     assert_eq!(status, NfsStat4::Exist as u32);
 }
 
-/// RFC 8881 §18.9.3: LINK without saved FH returns NFS4ERR_NOFILEHANDLE.
+/// LINK without a saved filehandle returns `NFS4ERR_NOFILEHANDLE`.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_link.py` (CODE `LINK2`).
+/// RFC: RFC 8881 §18.9.3.
 #[tokio::test]
 async fn test_link_no_saved_fh() {
     let port = start_server().await;
@@ -388,7 +407,9 @@ async fn test_link_no_saved_fh() {
 
 // ===== COMMIT (pynfs CMT) =====
 
-/// RFC 8881 §18.3.3: COMMIT on a file succeeds.
+/// COMMIT on a file succeeds.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_commit.py` (CODE `CMT1a`).
+/// RFC: RFC 8881 §18.3.3.
 #[tokio::test]
 async fn test_commit_on_file() {
     let fs = populated_fs(&["commit.txt"]).await;
@@ -422,7 +443,9 @@ async fn test_commit_on_file() {
     assert_eq!(verf.len(), 8);
 }
 
-/// RFC 8881 §18.3.3: COMMIT without a current filehandle returns NFS4ERR_NOFILEHANDLE.
+/// COMMIT without a current filehandle returns `NFS4ERR_NOFILEHANDLE`.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_commit.py` (CODE `CMT3`).
+/// RFC: RFC 8881 §18.3.3.
 #[tokio::test]
 async fn test_commit_no_fh() {
     let port = start_server().await;
@@ -438,7 +461,9 @@ async fn test_commit_no_fh() {
     assert_eq!(status, NfsStat4::Nofilehandle as u32);
 }
 
-/// COMMIT on a directory returns NFS4ERR_INVAL (RFC 8881 §18.3.3).
+/// COMMIT on a directory returns an error.
+/// Origin: adapted from `pynfs/nfs4.0/lib/nfs4/servertests/st_commit.py` (CODE `CMT2d`) to our RFC 8881-targeted expectation.
+/// RFC: RFC 8881 §18.3.3.
 #[tokio::test]
 async fn test_commit_on_directory() {
     let port = start_server().await;

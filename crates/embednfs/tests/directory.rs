@@ -1,17 +1,10 @@
 //! Tests for directory operations: READDIR, CREATE (mkdir), OPENATTR,
 //! and named-attribute workflows.
 //!
-//! Adapted from pynfs READDIR/OPENATTR-style coverage, RFC 8881, and
-//! Linux/FreeBSD NFS test patterns.
-//!
-//! Pynfs provenance:
-//! - `RDDR*` labels map to `pynfs/nfs4.0/lib/nfs4/servertests/st_readdir.py`.
-//! - The OPENATTR and named-attribute cases are RFC- and macOS-client-driven;
-//!   pynfs provides protocol context here, but these are not direct one-for-one
-//!   ports from a dedicated OPENATTR test file.
-//! - The Apple readdirplus, cookieverf, cache, and named-attribute lifecycle
-//!   tests are RFC-, client-, or implementation-driven rather than direct
-//!   one-for-one pynfs ports.
+//! This module mixes pynfs-derived READDIR coverage with macOS-client-driven
+//! OPENATTR/named-attribute flows and implementation-specific cache checks.
+//! The per-test `Origin:` and `RFC:` lines below are the authoritative
+//! provenance.
 
 mod common;
 
@@ -26,7 +19,9 @@ use common::*;
 
 // ===== READDIR (pynfs RDDR) =====
 
-/// pynfs RDDR1 / RFC 8881 §18.23.3: READDIR on an empty directory returns eof with no entries.
+/// READDIR on an empty directory returns EOF with no entries.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_readdir.py` (CODE `RDDR1`).
+/// RFC: RFC 8881 §18.23.3.
 #[tokio::test]
 async fn test_readdir_empty_directory() {
     let port = start_server().await;
@@ -53,7 +48,9 @@ async fn test_readdir_empty_directory() {
     assert!(entries.is_empty());
 }
 
-/// pynfs RDDR2 / RFC 8881 §18.23.3: READDIR on a populated directory lists all entries.
+/// READDIR on a populated directory lists all entries.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_readdir.py` (CODE `RDDR2`).
+/// RFC: RFC 8881 §18.23.3.
 #[tokio::test]
 async fn test_readdir_lists_all_entries() {
     let fs = populated_fs(&["alpha.txt", "beta.txt", "gamma.txt"]).await;
@@ -85,8 +82,9 @@ async fn test_readdir_lists_all_entries() {
     assert!(names.contains(&"gamma.txt"));
 }
 
-/// pynfs RDDR3 / RFC 8881 §18.23.3: READDIR must NOT include "." or ".." entries.
-/// (Also adapted from Linux kernel nfsd tests)
+/// READDIR must not include `.` or `..` entries.
+/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_readdir.py` (`RDDR1`, `RDDR2`) plus Linux kernel nfsd expectations.
+/// RFC: RFC 8881 §18.23.3.
 #[tokio::test]
 async fn test_readdir_excludes_dot_entries() {
     let fs = populated_fs(&["file.txt"]).await;
@@ -114,8 +112,9 @@ async fn test_readdir_excludes_dot_entries() {
     }
 }
 
-/// pynfs RDDR5 / RFC 8881 §18.23.3: READDIR cookies must be >= 3 (0 = start, 1-2 = reserved for . and ..).
-/// (Also adapted from Linux kernel nfsd)
+/// READDIR cookies start at 3 because 0 is the initial cookie and 1-2 are reserved for `.` and `..`.
+/// Origin: Linux kernel nfsd and client-behavior-derived check; no direct one-to-one pynfs case.
+/// RFC: RFC 8881 §18.23.3.
 #[tokio::test]
 async fn test_readdir_cookies_start_at_3() {
     let fs = populated_fs(&["one.txt", "two.txt"]).await;
@@ -142,8 +141,9 @@ async fn test_readdir_cookies_start_at_3() {
     }
 }
 
-/// RFC 8881 §18.23.3: READDIR reply stays within maxcount.
-/// (Adapted from Apple/macOS NFS client readdirplus pattern)
+/// READDIR reply stays within `maxcount` for an Apple-style readdirplus probe.
+/// Origin: Apple/macOS client behavior; not a direct pynfs case.
+/// RFC: RFC 8881 §18.23.3.
 #[tokio::test]
 async fn test_readdir_reply_stays_within_maxcount_and_skips_dot_entries() {
     let fs = populated_fs(&["alpha.txt", "beta.txt", "gamma.txt", "delta.txt"]).await;
@@ -192,7 +192,9 @@ async fn test_readdir_reply_stays_within_maxcount_and_skips_dot_entries() {
     assert!(entries.iter().all(|(cookie, _, _)| *cookie >= 3));
 }
 
-/// pynfs RDDR8 / RFC 8881 §18.23.3: READDIR with maxcount too small returns NFS4ERR_TOOSMALL.
+/// READDIR returns `NFS4ERR_TOOSMALL` when an entry cannot fit within `maxcount`.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_readdir.py` (CODE `RDDR8`).
+/// RFC: RFC 8881 §18.23.3.
 #[tokio::test]
 async fn test_readdir_returns_toosmall_when_entry_cannot_fit() {
     let fs = populated_fs(&["oversized.txt"]).await;
@@ -231,8 +233,9 @@ async fn test_readdir_returns_toosmall_when_entry_cannot_fit() {
     assert_eq!(op_status, NfsStat4::Toosmall as u32);
 }
 
-/// RFC 8881 §18.23.3: READDIR cookieverf is stable for unchanged directory.
-/// (Also adapted from Linux kernel nfsd pattern)
+/// READDIR cookie verifier is stable while the directory is unchanged.
+/// Origin: Linux kernel nfsd pattern; not a direct one-to-one pynfs case.
+/// RFC: RFC 8881 §18.23.3.
 #[tokio::test]
 async fn test_readdir_cookieverf_stable_for_unchanged_dir() {
     let fs = populated_fs(&["alpha.txt", "beta.txt"]).await;
@@ -282,8 +285,9 @@ async fn test_readdir_cookieverf_stable_for_unchanged_dir() {
     assert!(!continued_entries.is_empty());
 }
 
-/// RFC 8881 §18.23.3: READDIR cookieverf rejects stale continuation after mutation.
-/// (Also adapted from Linux kernel nfsd pattern)
+/// READDIR continuation rejects a stale cookie verifier after directory mutation.
+/// Origin: Linux kernel nfsd pattern; not a direct one-to-one pynfs case.
+/// RFC: RFC 8881 §18.23.3.
 #[tokio::test]
 async fn test_readdir_cookieverf_rejects_stale_continuation_after_mutation() {
     let fs = populated_fs(&["alpha.txt", "beta.txt", "gamma.txt"]).await;
@@ -362,7 +366,9 @@ async fn test_readdir_cookieverf_rejects_stale_continuation_after_mutation() {
 
 // ===== OPENATTR =====
 
-/// RFC 8881 §18.17: OPENATTR on a file with xattrs sets current FH to attr directory.
+/// OPENATTR on a file with xattrs sets the current filehandle to the attribute directory.
+/// Origin: RFC- and macOS-client-driven; not a direct pynfs one-to-one case.
+/// RFC: RFC 8881 §18.17.
 #[tokio::test]
 async fn test_openattr_on_file_returns_attrdir() {
     let fs = fs_with_xattr("notes.txt", "user.demo", b"value").await;
@@ -410,7 +416,9 @@ async fn test_openattr_on_file_returns_attrdir() {
     assert_eq!(file_type, NfsFtype4::AttrDir as u32);
 }
 
-/// RFC 8881 §18.17: OPENATTR + READDIR lists named attributes.
+/// OPENATTR followed by READDIR lists named attributes.
+/// Origin: RFC- and macOS-client-driven; not a direct pynfs one-to-one case.
+/// RFC: RFC 8881 §18.17.
 #[tokio::test]
 async fn test_openattr_readdir_lists_named_attrs() {
     let fs = fs_with_xattr("notes.txt", "user.demo", b"value").await;
@@ -456,7 +464,9 @@ async fn test_openattr_readdir_lists_named_attrs() {
     assert_eq!(entries[0].1, "user.demo");
 }
 
-/// RFC 8881 §5.3: Named attribute lookup and read.
+/// Named attribute lookup and read works through the synthetic attribute directory.
+/// Origin: RFC- and macOS-client-driven named-attribute workflow.
+/// RFC: RFC 8881 §5.3.
 #[tokio::test]
 async fn test_named_attr_lookup_and_read() {
     let fs = fs_with_xattr("notes.txt", "user.demo", b"value").await;
@@ -504,7 +514,9 @@ async fn test_named_attr_lookup_and_read() {
     assert_eq!(data, b"value");
 }
 
-/// RFC 8881 §5.3: Full named-attr lifecycle: OPEN+CREATE, WRITE, CLOSE, read-back, REMOVE.
+/// Named attributes support open-create, write, close, read-back, and remove.
+/// Origin: RFC- and macOS-client-driven named-attribute workflow.
+/// RFC: RFC 8881 §5.3.
 #[tokio::test]
 async fn test_named_attr_open_create_write_close_and_remove() {
     let fs = MemFs::new();
@@ -637,6 +649,9 @@ async fn test_named_attr_open_create_write_close_and_remove() {
 
 // ===== Named-attr caching =====
 
+/// GETATTR on a file caches its named-attribute summary.
+/// Origin: implementation-specific cache behavior.
+/// RFC: RFC 8881 §5.3, §18.7.3.
 #[tokio::test]
 async fn test_getattr_file_named_attr_summary_is_cached() {
     let inner = fs_with_xattr("cached.txt", "user.demo", b"value").await;
@@ -667,6 +682,9 @@ async fn test_getattr_file_named_attr_summary_is_cached() {
     assert_eq!(list_count.load(Ordering::Relaxed), 1);
 }
 
+/// GETATTR on a named-attribute directory caches its summary metadata.
+/// Origin: implementation-specific cache behavior.
+/// RFC: RFC 8881 §5.3, §18.7.3.
 #[tokio::test]
 async fn test_getattr_named_attr_dir_summary_is_cached() {
     let inner = fs_with_xattr("cached.txt", "user.demo", b"value").await;
@@ -704,7 +722,9 @@ async fn test_getattr_named_attr_dir_summary_is_cached() {
     assert_eq!(list_count.load(Ordering::Relaxed), 1);
 }
 
-/// RFC 8881 §18.23.3: READDIR on a sub-directory works the same as on root.
+/// READDIR on a subdirectory works the same as READDIR on the root directory.
+/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_readdir.py` (CODE `RDDR2`).
+/// RFC: RFC 8881 §18.23.3.
 #[tokio::test]
 async fn test_readdir_subdirectory() {
     let fs = MemFs::new();
@@ -740,8 +760,9 @@ async fn test_readdir_subdirectory() {
     assert_eq!(entries[0].1, "inner.txt");
 }
 
-/// RFC 8881 §18.25.3: REMOVE of a non-empty directory returns NFS4ERR_NOTEMPTY.
-/// (Also adapted from Linux kernel nfsd pattern)
+/// REMOVE of a non-empty directory returns `NFS4ERR_NOTEMPTY`.
+/// Origin: Linux kernel nfsd pattern; not a direct one-to-one pynfs case.
+/// RFC: RFC 8881 §18.25.3.
 #[tokio::test]
 async fn test_remove_nonempty_directory() {
     let fs = MemFs::new();
@@ -762,7 +783,9 @@ async fn test_remove_nonempty_directory() {
     assert_eq!(status, NfsStat4::Notempty as u32);
 }
 
-/// RFC 8881 §18.25.3: REMOVE an empty directory succeeds.
+/// REMOVE of an empty directory succeeds.
+/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_remove.py` (CODE `RM1d`).
+/// RFC: RFC 8881 §18.25.3.
 #[tokio::test]
 async fn test_remove_empty_directory() {
     let fs = fs_with_subdir("empty-dir").await;

@@ -1,14 +1,9 @@
 //! Tests for lock operations: LOCK, LOCKT, LOCKU.
 //!
-//! Adapted from pynfs-derived locking coverage and RFC 8881 section
-//! 18.10-18.12 lock semantics.
-//!
-//! Pynfs provenance:
-//! - `LOCK*` labels map to `pynfs/nfs4.0/lib/nfs4/servertests/st_lock.py`.
-//! - `LOCKU*` labels map to `pynfs/nfs4.0/lib/nfs4/servertests/st_locku.py`.
-//! - `LOCKT*` labels map to `pynfs/nfs4.0/lib/nfs4/servertests/st_lockt.py`.
-//! - The lock-cycle and non-overlapping-range checks are RFC- and
-//!   implementation-driven extensions around those pynfs cases.
+//! This module mixes pynfs-derived locking coverage with a few RFC- and
+//! implementation-driven range-management checks.
+//! The per-test `Origin:` and `RFC:` lines below are the authoritative
+//! provenance.
 
 mod common;
 
@@ -24,7 +19,9 @@ const WRITE_LT: u32 = 2;
 
 // ===== LOCK (pynfs LOCK) =====
 
-/// pynfs LOCK1 / RFC 8881 §18.10.3: Acquire a write lock on a newly opened file.
+/// Acquire a write lock on a newly opened file.
+/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_lock.py` (CODE `LOCK1`).
+/// RFC: RFC 8881 §18.10.3.
 #[tokio::test]
 async fn test_lock_write_new_file() {
     let port = start_server().await;
@@ -81,7 +78,9 @@ async fn test_lock_write_new_file() {
     assert_ne!(lock_stateid.other, [0u8; 12]);
 }
 
-/// pynfs LOCK2 / RFC 8881 §18.10.3: Acquire a read lock on a file.
+/// Acquire a read lock on a file.
+/// Origin: RFC 8881 §18.10.3; no direct one-to-one pynfs case.
+/// RFC: RFC 8881 §18.10.3.
 #[tokio::test]
 async fn test_lock_read_new_file() {
     let port = start_server().await;
@@ -123,7 +122,9 @@ async fn test_lock_read_new_file() {
     assert_eq!(op_status, NfsStat4::Ok as u32);
 }
 
-/// pynfs LOCK8 / RFC 8881 §18.10.3: LOCK without a current filehandle returns NFS4ERR_NOFILEHANDLE.
+/// LOCK without a current filehandle returns `NFS4ERR_NOFILEHANDLE`.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_lock.py` (CODE `LOCK7`).
+/// RFC: RFC 8881 §18.10.3.
 #[tokio::test]
 async fn test_lock_no_filehandle() {
     let port = start_server().await;
@@ -150,7 +151,9 @@ async fn test_lock_no_filehandle() {
 
 // ===== LOCKU (pynfs LOCKU) =====
 
-/// pynfs LOCKU1 / RFC 8881 §18.12.3: Unlock a previously locked region.
+/// Unlock a previously locked region.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_locku.py` (CODE `LKU1`).
+/// RFC: RFC 8881 §18.12.3.
 #[tokio::test]
 async fn test_locku_after_lock() {
     let port = start_server().await;
@@ -218,7 +221,9 @@ async fn test_locku_after_lock() {
     let _unlock_stateid = parse_locku_res(&mut resp);
 }
 
-/// pynfs LOCKU6 / RFC 8881 §18.12.3: LOCKU with a bad stateid returns an error.
+/// LOCKU with a bad stateid returns an error.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_locku.py` (CODE `LKU8`).
+/// RFC: RFC 8881 §18.12.3.
 #[tokio::test]
 async fn test_locku_bad_stateid() {
     let fs = populated_fs(&["locku-bad.txt"]).await;
@@ -247,7 +252,9 @@ async fn test_locku_bad_stateid() {
 
 // ===== LOCKT (pynfs LOCKT) =====
 
-/// pynfs LOCKT1 / RFC 8881 §18.11.3: LOCKT on an unlocked file succeeds (no conflict).
+/// LOCKT on an unlocked file succeeds with no conflict.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_lockt.py` (CODE `LKT1`).
+/// RFC: RFC 8881 §18.11.3.
 #[tokio::test]
 async fn test_lockt_no_conflict() {
     let fs = populated_fs(&["lockt-test.txt"]).await;
@@ -278,7 +285,9 @@ async fn test_lockt_no_conflict() {
     assert_eq!(op_status, NfsStat4::Ok as u32);
 }
 
-/// pynfs LOCKT2 / RFC 8881 §18.11.3: LOCKT detects a conflicting lock.
+/// LOCKT detects a conflicting lock.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_lockt.py` (CODE `LKT4`).
+/// RFC: RFC 8881 §18.11.3.
 #[tokio::test]
 async fn test_lockt_detects_conflict() {
     let port = start_server().await;
@@ -338,7 +347,9 @@ async fn test_lockt_detects_conflict() {
     assert_eq!(op_status, NfsStat4::Denied as u32);
 }
 
-/// pynfs LOCKT4 / RFC 8881 §18.11.3: LOCKT without a current filehandle returns NFS4ERR_NOFILEHANDLE.
+/// LOCKT without a current filehandle returns `NFS4ERR_NOFILEHANDLE`.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_lockt.py` (CODE `LKT8`).
+/// RFC: RFC 8881 §18.11.3.
 #[tokio::test]
 async fn test_lockt_no_filehandle() {
     let port = start_server().await;
@@ -356,7 +367,9 @@ async fn test_lockt_no_filehandle() {
 
 // ===== Lock + unlock + relock cycle =====
 
-/// RFC 8881 §18.10-18.12: Full cycle: LOCK → LOCKU → LOCK again succeeds.
+/// Full cycle: LOCK, LOCKU, then LOCK again succeeds.
+/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_lock.py` (CODE `LOCK1`) and `st_locku.py` (CODE `LKU1`).
+/// RFC: RFC 8881 §18.10.3, §18.12.3.
 #[tokio::test]
 async fn test_lock_unlock_relock_cycle() {
     let port = start_server().await;
@@ -437,7 +450,9 @@ async fn test_lock_unlock_relock_cycle() {
     assert_eq!(op_status, NfsStat4::Ok as u32);
 }
 
-/// RFC 8881 §18.11.3: Lock a byte range, then test that a non-overlapping range has no conflict.
+/// A non-overlapping byte range reports no conflict after an earlier lock.
+/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_lockt.py` (CODE `LKT3`).
+/// RFC: RFC 8881 §18.11.3.
 #[tokio::test]
 async fn test_lockt_non_overlapping_range_no_conflict() {
     let port = start_server().await;
