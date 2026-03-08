@@ -42,7 +42,6 @@ pub(crate) fn encode_fattr4(
             FATTR4_FILES_AVAIL,
             FATTR4_FILES_FREE,
             FATTR4_FILES_TOTAL,
-            FATTR4_HIDDEN,
             FATTR4_HOMOGENEOUS,
             FATTR4_MAXFILESIZE,
             FATTR4_MAXLINK,
