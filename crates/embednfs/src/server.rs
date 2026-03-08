@@ -70,6 +70,10 @@ impl<F: NfsFileSystem> NfsServer<F> {
         self.fs.named_attrs().is_some()
     }
 
+    fn fh_has_valid_format(fh: &NfsFh4) -> bool {
+        fh.0.len() == std::mem::size_of::<u64>()
+    }
+
     async fn handle_connection(self: &Arc<Self>, stream: TcpStream) -> std::io::Result<()> {
         let (mut reader, writer) = stream.into_split();
         let mut writer = BufWriter::with_capacity(CONN_BUF_SIZE, writer);
@@ -376,6 +380,9 @@ impl<F: NfsFileSystem> NfsServer<F> {
             NfsArgop4::Lookupp => self.op_lookupp(current_fh).await,
             NfsArgop4::Open(args) => self.op_open(&args, current_fh).await,
             NfsArgop4::Putfh(args) => {
+                if !Self::fh_has_valid_format(&args.object) {
+                    return NfsResop4::Putfh(NfsStat4::Badhandle);
+                }
                 *current_fh = Some(args.object);
                 NfsResop4::Putfh(NfsStat4::Ok)
             }
@@ -399,7 +406,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
                     *current_fh = Some(fh);
                     NfsResop4::Restorefh(NfsStat4::Ok)
                 } else {
-                    NfsResop4::Restorefh(NfsStat4::Restorefh)
+                    NfsResop4::Restorefh(NfsStat4::Nofilehandle)
                 }
             }
             NfsArgop4::Savefh => {
@@ -947,6 +954,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
         };
 
         let parent = match object {
+            ServerObject::Fs(id) if id == self.fs.root() => Err(NfsError::Noent),
             ServerObject::Fs(id) => match self.fs.lookup_parent(id).await {
                 Ok(parent_id) => Ok(ServerObject::Fs(parent_id)),
                 Err(e) => Err(e),

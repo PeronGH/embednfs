@@ -1,7 +1,7 @@
 //! Tests for CREATE (mkdir, symlink), LINK, READLINK, and COMMIT operations.
 //!
-//! Adapted from pynfs st41 (MKDIR, SLINK, LNK, RDLNK, CMT tests)
-//! and RFC 8881 sections 18.1, 18.4, 18.9, 18.22, 18.3.
+//! Adapted from RFC 8881 plus older pynfs servertests for CREATE/LINK/
+//! READLINK/COMMIT behavior that remains relevant to NFSv4.1.
 
 mod common;
 
@@ -13,7 +13,7 @@ use common::*;
 
 // ===== CREATE directory (pynfs MKDIR) =====
 
-/// pynfs MKDIR1 / RFC 8881 §18.4.3: CREATE with type NF4DIR creates a directory.
+/// RFC 8881 §18.4.3: CREATE with type NF4DIR creates a directory.
 #[tokio::test]
 async fn test_create_directory() {
     let port = start_server().await;
@@ -83,7 +83,7 @@ async fn test_create_directory_visible_in_readdir() {
     assert!(names.contains(&"visible-dir"));
 }
 
-/// pynfs MKDIR4 / RFC 8881 §18.4.3: CREATE directory with existing name returns NFS4ERR_EXIST.
+/// RFC 8881 §18.4.3: CREATE directory with existing name returns NFS4ERR_EXIST.
 #[tokio::test]
 async fn test_create_directory_existing_name() {
     let fs = fs_with_subdir("existing").await;
@@ -101,7 +101,7 @@ async fn test_create_directory_existing_name() {
     assert_eq!(status, NfsStat4::Exist as u32);
 }
 
-/// pynfs MKDIR6 / RFC 8881 §18.4.3: CREATE directory without current filehandle returns NFS4ERR_NOFILEHANDLE.
+/// RFC 8881 §18.4.3: CREATE directory without current filehandle returns NFS4ERR_NOFILEHANDLE.
 #[tokio::test]
 async fn test_create_directory_no_fh() {
     let port = start_server().await;
@@ -154,7 +154,7 @@ async fn test_create_directory_type_is_dir() {
 
 // ===== CREATE symlink (pynfs SLINK) =====
 
-/// pynfs SLINK1 / RFC 8881 §18.4.3: CREATE with type NF4LNK creates a symlink.
+/// RFC 8881 §18.4.3: CREATE with type NF4LNK creates a symlink.
 #[tokio::test]
 async fn test_create_symlink() {
     let port = start_server().await;
@@ -180,7 +180,7 @@ async fn test_create_symlink() {
     assert_eq!(op_status, NfsStat4::Ok as u32);
 }
 
-/// pynfs SLINK5 / RFC 8881 §18.4.3: CREATE symlink with existing name returns NFS4ERR_EXIST.
+/// RFC 8881 §18.4.3: CREATE symlink with existing name returns NFS4ERR_EXIST.
 #[tokio::test]
 async fn test_create_symlink_existing_name() {
     let fs = populated_fs(&["taken.txt"]).await;
@@ -200,7 +200,7 @@ async fn test_create_symlink_existing_name() {
 
 // ===== READLINK (pynfs RDLNK) =====
 
-/// pynfs RDLNK1 / RFC 8881 §18.24.3: READLINK reads back the symlink target.
+/// RFC 8881 §18.24.3: READLINK reads back the symlink target.
 #[tokio::test]
 async fn test_readlink_returns_target() {
     let port = start_server().await;
@@ -242,7 +242,7 @@ async fn test_readlink_returns_target() {
     assert_eq!(target, "/my/target/path");
 }
 
-/// pynfs RDLNK2 / RFC 8881 §18.24.3: READLINK on a non-symlink returns NFS4ERR_INVAL.
+/// RFC 8881 §18.24.3: READLINK on a non-symlink returns NFS4ERR_INVAL.
 #[tokio::test]
 async fn test_readlink_on_regular_file() {
     let fs = populated_fs(&["regular.txt"]).await;
@@ -265,7 +265,7 @@ async fn test_readlink_on_regular_file() {
     assert_ne!(status, NfsStat4::Ok as u32);
 }
 
-/// pynfs RDLNK3 / RFC 8881 §18.24.3: READLINK without a current filehandle returns NFS4ERR_NOFILEHANDLE.
+/// RFC 8881 §18.24.3: READLINK without a current filehandle returns NFS4ERR_NOFILEHANDLE.
 #[tokio::test]
 async fn test_readlink_no_fh() {
     let port = start_server().await;
@@ -283,7 +283,7 @@ async fn test_readlink_no_fh() {
 
 // ===== LINK (hard links, pynfs LNK) =====
 
-/// pynfs LNK1 / RFC 8881 §18.9.3: LINK creates a hard link in the target directory.
+/// RFC 8881 §18.9.3: LINK creates a hard link in the target directory.
 #[tokio::test]
 async fn test_link_creates_hard_link() {
     let fs = populated_fs(&["source.txt"]).await;
@@ -327,7 +327,7 @@ async fn test_link_creates_hard_link() {
     assert_eq!(op_status, NfsStat4::Ok as u32);
 }
 
-/// pynfs LNK2 / RFC 8881 §18.9.3: LINK with existing target name returns NFS4ERR_EXIST.
+/// RFC 8881 §18.9.3: LINK with existing target name returns NFS4ERR_EXIST.
 #[tokio::test]
 async fn test_link_existing_name() {
     let fs = populated_fs(&["src.txt", "dst.txt"]).await;
@@ -358,7 +358,7 @@ async fn test_link_existing_name() {
     assert_eq!(status, NfsStat4::Exist as u32);
 }
 
-/// pynfs LNK5 / RFC 8881 §18.9.3: LINK without saved FH returns NFS4ERR_NOFILEHANDLE.
+/// RFC 8881 §18.9.3: LINK without saved FH returns NFS4ERR_NOFILEHANDLE.
 #[tokio::test]
 async fn test_link_no_saved_fh() {
     let port = start_server().await;
@@ -379,7 +379,7 @@ async fn test_link_no_saved_fh() {
 
 // ===== COMMIT (pynfs CMT) =====
 
-/// pynfs CMT1 / RFC 8881 §18.3.3: COMMIT on a file succeeds.
+/// RFC 8881 §18.3.3: COMMIT on a file succeeds.
 #[tokio::test]
 async fn test_commit_on_file() {
     let fs = populated_fs(&["commit.txt"]).await;
@@ -413,7 +413,7 @@ async fn test_commit_on_file() {
     assert_eq!(verf.len(), 8);
 }
 
-/// pynfs CMT2 / RFC 8881 §18.3.3: COMMIT without a current filehandle returns NFS4ERR_NOFILEHANDLE.
+/// RFC 8881 §18.3.3: COMMIT without a current filehandle returns NFS4ERR_NOFILEHANDLE.
 #[tokio::test]
 async fn test_commit_no_fh() {
     let port = start_server().await;

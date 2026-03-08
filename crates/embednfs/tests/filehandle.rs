@@ -1,8 +1,9 @@
 //! Tests for filehandle operations: PUTFH, PUTROOTFH, PUTPUBFH, GETFH,
 //! SAVEFH, RESTOREFH, LOOKUP, LOOKUPP.
 //!
-//! Adapted from pynfs st41 (PUTFH, GFH, LOOK, LOOKP, RSFH, SVFH tests)
-//! and Linux NFS test patterns.
+//! Adapted from pynfs NFSv4.1 `st_putfh`, `st_lookup`, `st_lookupp`,
+//! older pynfs servertests for GETFH/PUTROOTFH/PUTPUBFH/SAVEFH/RESTOREFH,
+//! and RFC 8881.
 
 mod common;
 
@@ -141,7 +142,7 @@ async fn test_putfh_valid() {
     assert_eq!(echoed_fh, root_fh);
 }
 
-/// pynfs PUTFH3 / RFC 8881 §18.19.3: PUTFH with an invalid/bogus filehandle returns NFS4ERR_BADHANDLE.
+/// pynfs PUTFH2 / RFC 8881 §18.19.3: PUTFH with an invalid/bogus filehandle returns NFS4ERR_BADHANDLE.
 #[tokio::test]
 async fn test_putfh_bad_handle() {
     let port = start_server().await;
@@ -155,16 +156,15 @@ async fn test_putfh_bad_handle() {
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
 
-    let (_status, _, num_results) = parse_compound_header(&mut resp);
-    assert_eq!(num_results, 3);
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Badhandle as u32);
+    assert_eq!(num_results, 2);
     let _ = parse_op_header(&mut resp);
     skip_sequence_res(&mut resp);
 
-    // PUTFH itself succeeds (just sets the FH)
-    let (opnum, _op_status) = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
     assert_eq!(opnum, OP_PUTFH);
-    // GETFH after bad FH might fail or succeed depending on impl;
-    // the main check is that later ops using it fail with BADHANDLE/STALE
+    assert_eq!(op_status, NfsStat4::Badhandle as u32);
 }
 
 // ===== GETFH (pynfs GFH) =====
@@ -196,7 +196,7 @@ async fn test_getfh_no_current_fh() {
 
 // ===== SAVEFH / RESTOREFH (pynfs SVFH, RSFH) =====
 
-/// pynfs SVFH1/RSFH1 / RFC 8881 §18.27+§18.28: SAVEFH + RESTOREFH round-trip preserves the filehandle.
+/// RFC 8881 §18.27.3 + §18.28.3: SAVEFH + RESTOREFH round-trip preserves the filehandle.
 #[tokio::test]
 async fn test_savefh_restorefh_roundtrip() {
     let port = start_server().await;
@@ -268,7 +268,7 @@ async fn test_savefh_restorefh_roundtrip() {
     assert!(!restored_fh.is_empty());
 }
 
-/// pynfs RSFH2 / RFC 8881 §18.28.3: RESTOREFH without a prior SAVEFH returns NFS4ERR_RESTOREFH.
+/// pynfs RSFH2 (v4.0 lineage) / RFC 8881 §18.27.3: RESTOREFH without a prior SAVEFH returns NFS4ERR_NOFILEHANDLE.
 #[tokio::test]
 async fn test_restorefh_without_save_fails() {
     let port = start_server().await;
@@ -282,7 +282,7 @@ async fn test_restorefh_without_save_fails() {
     parse_rpc_reply(&mut resp);
 
     let (status, _, num_results) = parse_compound_header(&mut resp);
-    assert_eq!(status, NfsStat4::Restorefh as u32);
+    assert_eq!(status, NfsStat4::Nofilehandle as u32);
     assert_eq!(num_results, 2);
 
     let _ = parse_op_header(&mut resp);
@@ -290,10 +290,10 @@ async fn test_restorefh_without_save_fails() {
 
     let (opnum, op_status) = parse_op_header(&mut resp);
     assert_eq!(opnum, OP_RESTOREFH);
-    assert_eq!(op_status, NfsStat4::Restorefh as u32);
+    assert_eq!(op_status, NfsStat4::Nofilehandle as u32);
 }
 
-/// pynfs SVFH2 / RFC 8881 §18.27.3: SAVEFH without a current FH returns NFS4ERR_NOFILEHANDLE.
+/// pynfs SVFH2 (v4.0 lineage) / RFC 8881 §18.28.3: SAVEFH without a current FH returns NFS4ERR_NOFILEHANDLE.
 #[tokio::test]
 async fn test_savefh_no_current_fh() {
     let port = start_server().await;
@@ -320,7 +320,7 @@ async fn test_savefh_no_current_fh() {
 
 // ===== LOOKUP (pynfs LOOK) =====
 
-/// pynfs LOOK1 / RFC 8881 §18.15.3: LOOKUP of an existing file succeeds and changes current FH.
+/// RFC 8881 §18.13.3: LOOKUP of an existing file succeeds and changes current FH.
 #[tokio::test]
 async fn test_lookup_existing_file() {
     let fs = populated_fs(&["hello.txt"]).await;
@@ -355,7 +355,7 @@ async fn test_lookup_existing_file() {
     assert_ne!(root_fh, file_fh);
 }
 
-/// pynfs LOOK2 / RFC 8881 §18.15.3: LOOKUP of a nonexistent name returns NFS4ERR_NOENT.
+/// RFC 8881 §18.13.3: LOOKUP of a nonexistent name returns NFS4ERR_NOENT.
 #[tokio::test]
 async fn test_lookup_nonexistent() {
     let port = start_server().await;
@@ -382,7 +382,7 @@ async fn test_lookup_nonexistent() {
     assert_eq!(op_status, NfsStat4::Noent as u32);
 }
 
-/// pynfs LOOK3 / RFC 8881 §18.15.3: LOOKUP on a non-directory (file) returns NFS4ERR_NOTDIR.
+/// RFC 8881 §18.13.3: LOOKUP on a non-directory (file) returns NFS4ERR_NOTDIR.
 #[tokio::test]
 async fn test_lookup_on_file_returns_notdir() {
     let fs = populated_fs(&["regular.txt"]).await;
@@ -412,7 +412,7 @@ async fn test_lookup_on_file_returns_notdir() {
     assert_eq!(op_status, NfsStat4::Notdir as u32);
 }
 
-/// pynfs LOOK5 / RFC 8881 §18.15.3: LOOKUP without a current FH returns NFS4ERR_NOFILEHANDLE.
+/// RFC 8881 §18.13.3: LOOKUP without a current FH returns NFS4ERR_NOFILEHANDLE.
 #[tokio::test]
 async fn test_lookup_no_fh() {
     let port = start_server().await;
@@ -431,7 +431,7 @@ async fn test_lookup_no_fh() {
 
 // ===== LOOKUPP (pynfs LOOKP) =====
 
-/// pynfs LOOKP1 / RFC 8881 §18.16: LOOKUPP from root returns root (root is its own parent).
+/// pynfs LKPP2 / RFC 8881 §18.14.3: LOOKUPP from root returns NFS4ERR_NOENT.
 #[tokio::test]
 async fn test_lookupp_at_root() {
     let port = start_server().await;
@@ -450,23 +450,20 @@ async fn test_lookupp_at_root() {
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
 
-    let (status, _, _) = parse_compound_header(&mut resp);
-    assert_eq!(status, NfsStat4::Ok as u32);
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Noent as u32);
+    assert_eq!(num_results, 4);
     let _ = parse_op_header(&mut resp);
     skip_sequence_res(&mut resp);
     let _ = parse_op_header(&mut resp);
     let _ = parse_op_header(&mut resp);
-    let root_fh = parse_getfh(&mut resp);
+    let _root_fh = parse_getfh(&mut resp);
     let (opnum, op_status) = parse_op_header(&mut resp);
     assert_eq!(opnum, OP_LOOKUPP);
-    assert_eq!(op_status, NfsStat4::Ok as u32);
-    let _ = parse_op_header(&mut resp);
-    let parent_fh = parse_getfh(&mut resp);
-
-    assert_eq!(root_fh, parent_fh);
+    assert_eq!(op_status, NfsStat4::Noent as u32);
 }
 
-/// pynfs LOOKP2 / RFC 8881 §18.16: LOOKUPP from a subdirectory returns the parent.
+/// pynfs LKPP1d / RFC 8881 §18.14.3: LOOKUPP from a subdirectory returns the parent.
 #[tokio::test]
 async fn test_lookupp_from_subdir() {
     let fs = fs_with_subdir("subdir").await;

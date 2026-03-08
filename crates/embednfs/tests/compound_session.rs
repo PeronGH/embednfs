@@ -1,7 +1,7 @@
 //! Tests for COMPOUND, EXCHANGE_ID, CREATE_SESSION, DESTROY_SESSION,
 //! DESTROY_CLIENTID, SEQUENCE, and BIND_CONN_TO_SESSION operations.
 //!
-//! Adapted from pynfs st41 test suite (EXID, CSESS, SEQ, DSESS, DCID tests)
+//! Adapted from pynfs NFSv4.1 server41tests (EXID, CSESS, SEQ, DSESS, DCID)
 //! and Linux kernel NFS test infrastructure.
 
 mod common;
@@ -16,7 +16,7 @@ use common::*;
 
 // ===== NULL procedure (pynfs COMP1) =====
 
-/// pynfs COMP1 / RFC 8881 §17.1: NULL procedure must return success with empty body.
+/// RFC 8881 §17.1: NULL procedure must return success with empty body.
 #[tokio::test]
 async fn test_null_procedure() {
     let port = start_server().await;
@@ -30,7 +30,7 @@ async fn test_null_procedure() {
 
 // ===== COMPOUND basics =====
 
-/// pynfs COMP2 / RFC 8881 §2.10.6.4: COMPOUND with minorversion != 1 must return NFS4ERR_MINOR_VERS_MISMATCH.
+/// pynfs COMP4a/COMP4b-style / RFC 8881 §2.10.6.4: COMPOUND with minorversion != 1 must return NFS4ERR_MINOR_VERS_MISMATCH.
 #[tokio::test]
 async fn test_minor_version_mismatch_rejects_non_v41() {
     let port = start_server().await;
@@ -49,7 +49,7 @@ async fn test_minor_version_mismatch_rejects_non_v41() {
     }
 }
 
-/// pynfs COMP6 / RFC 8881 §2.10.6.4: Empty COMPOUND (zero ops) with minorversion=1 must succeed.
+/// pynfs COMP1 / RFC 8881 §2.10.6.4: Empty COMPOUND (zero ops) with minorversion=1 must succeed.
 #[tokio::test]
 async fn test_empty_compound_succeeds() {
     let port = start_server().await;
@@ -66,7 +66,7 @@ async fn test_empty_compound_succeeds() {
     assert_eq!(num_results, 0);
 }
 
-/// pynfs COMP3 / RFC 8881 §2.10.6.2: COMPOUND tag must be echoed back in the response.
+/// pynfs COMP2 / RFC 8881 §2.10.6.2: COMPOUND tag must be echoed back in the response.
 #[tokio::test]
 async fn test_compound_tag_echo() {
     let port = start_server().await;
