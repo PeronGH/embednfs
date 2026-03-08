@@ -382,7 +382,7 @@ impl Bitmap4 {
     pub fn is_set(&self, bit: u32) -> bool {
         let word = (bit / 32) as usize;
         let mask = 1u32 << (bit % 32);
-        self.0.get(word).map_or(false, |w| w & mask != 0)
+        self.0.get(word).is_some_and(|w| w & mask != 0)
     }
 
     pub fn set(&mut self, bit: u32) {
@@ -1516,28 +1516,28 @@ impl XdrEncode for NfsResop4 {
             NfsResop4::Getattr(status, attrs) => {
                 OP_GETATTR.encode(dst);
                 status.encode(dst);
-                if *status == NfsStat4::Ok {
-                    if let Some(a) = attrs {
-                        a.encode(dst);
-                    }
+                if *status == NfsStat4::Ok
+                    && let Some(a) = attrs
+                {
+                    a.encode(dst);
                 }
             }
             NfsResop4::Getfh(status, fh) => {
                 OP_GETFH.encode(dst);
                 status.encode(dst);
-                if *status == NfsStat4::Ok {
-                    if let Some(f) = fh {
-                        f.encode(dst);
-                    }
+                if *status == NfsStat4::Ok
+                    && let Some(f) = fh
+                {
+                    f.encode(dst);
                 }
             }
             NfsResop4::Link(status, cinfo) => {
                 OP_LINK.encode(dst);
                 status.encode(dst);
-                if *status == NfsStat4::Ok {
-                    if let Some(ci) = cinfo {
-                        ci.encode(dst);
-                    }
+                if *status == NfsStat4::Ok
+                    && let Some(ci) = cinfo
+                {
+                    ci.encode(dst);
                 }
             }
             NfsResop4::Lookup(status) => {
@@ -1551,32 +1551,32 @@ impl XdrEncode for NfsResop4 {
             NfsResop4::Open(status, res) => {
                 OP_OPEN.encode(dst);
                 status.encode(dst);
-                if *status == NfsStat4::Ok {
-                    if let Some(r) = res {
-                        r.stateid.encode(dst);
-                        r.cinfo.encode(dst);
-                        r.rflags.encode(dst);
-                        r.attrset.encode(dst);
-                        // delegation
-                        match &r.delegation {
-                            OpenDelegation4::None => {
-                                (OpenDelegationType4::None as u32).encode(dst);
-                            }
-                            OpenDelegation4::NoneExt(why) => {
-                                (OpenDelegationType4::NoneExt as u32).encode(dst);
-                                (*why as u32).encode(dst);
-                                // Only CONTENTION and RESOURCE have a bool
-                                match why {
-                                    WhyNoDelegation4::Contention
-                                    | WhyNoDelegation4::ResourceNotAvail => {
-                                        false.encode(dst);
-                                    }
-                                    _ => {}
+                if *status == NfsStat4::Ok
+                    && let Some(r) = res
+                {
+                    r.stateid.encode(dst);
+                    r.cinfo.encode(dst);
+                    r.rflags.encode(dst);
+                    r.attrset.encode(dst);
+                    // delegation
+                    match &r.delegation {
+                        OpenDelegation4::None => {
+                            (OpenDelegationType4::None as u32).encode(dst);
+                        }
+                        OpenDelegation4::NoneExt(why) => {
+                            (OpenDelegationType4::NoneExt as u32).encode(dst);
+                            (*why as u32).encode(dst);
+                            // Only CONTENTION and RESOURCE have a bool
+                            match why {
+                                WhyNoDelegation4::Contention
+                                | WhyNoDelegation4::ResourceNotAvail => {
+                                    false.encode(dst);
                                 }
+                                _ => {}
                             }
-                            _ => {
-                                (OpenDelegationType4::None as u32).encode(dst);
-                            }
+                        }
+                        _ => {
+                            (OpenDelegationType4::None as u32).encode(dst);
                         }
                     }
                 }
@@ -1596,47 +1596,47 @@ impl XdrEncode for NfsResop4 {
             NfsResop4::Read(status, res) => {
                 OP_READ.encode(dst);
                 status.encode(dst);
-                if *status == NfsStat4::Ok {
-                    if let Some(r) = res {
-                        r.eof.encode(dst);
-                        encode_opaque(dst, &r.data);
-                    }
+                if *status == NfsStat4::Ok
+                    && let Some(r) = res
+                {
+                    r.eof.encode(dst);
+                    encode_opaque(dst, &r.data);
                 }
             }
             NfsResop4::Readdir(status, res) => {
                 OP_READDIR.encode(dst);
                 status.encode(dst);
-                if *status == NfsStat4::Ok {
-                    if let Some(r) = res {
-                        dst.extend_from_slice(&r.cookieverf);
-                        // Encode directory entries as linked list
-                        for entry in &r.entries {
-                            true.encode(dst); // value follows
-                            entry.cookie.encode(dst);
-                            entry.name.encode(dst);
-                            entry.attrs.encode(dst);
-                        }
-                        false.encode(dst); // no more entries
-                        r.eof.encode(dst);
+                if *status == NfsStat4::Ok
+                    && let Some(r) = res
+                {
+                    dst.extend_from_slice(&r.cookieverf);
+                    // Encode directory entries as linked list
+                    for entry in &r.entries {
+                        true.encode(dst); // value follows
+                        entry.cookie.encode(dst);
+                        entry.name.encode(dst);
+                        entry.attrs.encode(dst);
                     }
+                    false.encode(dst); // no more entries
+                    r.eof.encode(dst);
                 }
             }
             NfsResop4::Readlink(status, target) => {
                 OP_READLINK.encode(dst);
                 status.encode(dst);
-                if *status == NfsStat4::Ok {
-                    if let Some(t) = target {
-                        t.encode(dst);
-                    }
+                if *status == NfsStat4::Ok
+                    && let Some(t) = target
+                {
+                    t.encode(dst);
                 }
             }
             NfsResop4::Remove(status, cinfo) => {
                 OP_REMOVE.encode(dst);
                 status.encode(dst);
-                if *status == NfsStat4::Ok {
-                    if let Some(ci) = cinfo {
-                        ci.encode(dst);
-                    }
+                if *status == NfsStat4::Ok
+                    && let Some(ci) = cinfo
+                {
+                    ci.encode(dst);
                 }
             }
             NfsResop4::Rename(status, src_cinfo, tgt_cinfo) => {
@@ -1677,45 +1677,45 @@ impl XdrEncode for NfsResop4 {
             NfsResop4::Write(status, res) => {
                 OP_WRITE.encode(dst);
                 status.encode(dst);
-                if *status == NfsStat4::Ok {
-                    if let Some(r) = res {
-                        r.count.encode(dst);
-                        r.committed.encode(dst);
-                        dst.extend_from_slice(&r.writeverf);
-                    }
+                if *status == NfsStat4::Ok
+                    && let Some(r) = res
+                {
+                    r.count.encode(dst);
+                    r.committed.encode(dst);
+                    dst.extend_from_slice(&r.writeverf);
                 }
             }
             NfsResop4::ExchangeId(status, res) => {
                 OP_EXCHANGE_ID.encode(dst);
                 status.encode(dst);
-                if *status == NfsStat4::Ok {
-                    if let Some(r) = res {
-                        r.clientid.encode(dst);
-                        r.sequenceid.encode(dst);
-                        r.flags.encode(dst);
-                        // state_protect4_r: SP4_NONE = 0
-                        0u32.encode(dst);
-                        r.server_owner.encode(dst);
-                        encode_opaque(dst, &r.server_scope);
-                        // server_impl_id
-                        (r.server_impl_id.len() as u32).encode(dst);
-                        for id in &r.server_impl_id {
-                            id.encode(dst);
-                        }
+                if *status == NfsStat4::Ok
+                    && let Some(r) = res
+                {
+                    r.clientid.encode(dst);
+                    r.sequenceid.encode(dst);
+                    r.flags.encode(dst);
+                    // state_protect4_r: SP4_NONE = 0
+                    0u32.encode(dst);
+                    r.server_owner.encode(dst);
+                    encode_opaque(dst, &r.server_scope);
+                    // server_impl_id
+                    (r.server_impl_id.len() as u32).encode(dst);
+                    for id in &r.server_impl_id {
+                        id.encode(dst);
                     }
                 }
             }
             NfsResop4::CreateSession(status, res) => {
                 OP_CREATE_SESSION.encode(dst);
                 status.encode(dst);
-                if *status == NfsStat4::Ok {
-                    if let Some(r) = res {
-                        dst.extend_from_slice(&r.sessionid);
-                        r.sequenceid.encode(dst);
-                        r.flags.encode(dst);
-                        r.fore_chan_attrs.encode(dst);
-                        r.back_chan_attrs.encode(dst);
-                    }
+                if *status == NfsStat4::Ok
+                    && let Some(r) = res
+                {
+                    dst.extend_from_slice(&r.sessionid);
+                    r.sequenceid.encode(dst);
+                    r.flags.encode(dst);
+                    r.fore_chan_attrs.encode(dst);
+                    r.back_chan_attrs.encode(dst);
                 }
             }
             NfsResop4::DestroySession(status) => {
@@ -1725,15 +1725,15 @@ impl XdrEncode for NfsResop4 {
             NfsResop4::Sequence(status, res) => {
                 OP_SEQUENCE.encode(dst);
                 status.encode(dst);
-                if *status == NfsStat4::Ok {
-                    if let Some(r) = res {
-                        dst.extend_from_slice(&r.sessionid);
-                        r.sequenceid.encode(dst);
-                        r.slotid.encode(dst);
-                        r.highest_slotid.encode(dst);
-                        r.target_highest_slotid.encode(dst);
-                        r.status_flags.encode(dst);
-                    }
+                if *status == NfsStat4::Ok
+                    && let Some(r) = res
+                {
+                    dst.extend_from_slice(&r.sessionid);
+                    r.sequenceid.encode(dst);
+                    r.slotid.encode(dst);
+                    r.highest_slotid.encode(dst);
+                    r.target_highest_slotid.encode(dst);
+                    r.status_flags.encode(dst);
                 }
             }
             NfsResop4::ReclaimComplete(status) => {
@@ -1747,12 +1747,12 @@ impl XdrEncode for NfsResop4 {
             NfsResop4::BindConnToSession(status, res) => {
                 OP_BIND_CONN_TO_SESSION.encode(dst);
                 status.encode(dst);
-                if *status == NfsStat4::Ok {
-                    if let Some(r) = res {
-                        dst.extend_from_slice(&r.sessionid);
-                        r.dir.encode(dst);
-                        r.use_conn_in_rdma_mode.encode(dst);
-                    }
+                if *status == NfsStat4::Ok
+                    && let Some(r) = res
+                {
+                    dst.extend_from_slice(&r.sessionid);
+                    r.dir.encode(dst);
+                    r.use_conn_in_rdma_mode.encode(dst);
                 }
             }
             NfsResop4::SecInfoNoName(status, entries) => {
@@ -1790,40 +1790,40 @@ impl XdrEncode for NfsResop4 {
             NfsResop4::Lock(status, stateid, denied) => {
                 OP_LOCK.encode(dst);
                 status.encode(dst);
-                if *status == NfsStat4::Ok {
-                    if let Some(s) = stateid {
-                        s.encode(dst);
-                    }
-                } else if *status == NfsStat4::Denied {
-                    if let Some(d) = denied {
-                        d.offset.encode(dst);
-                        d.length.encode(dst);
-                        d.locktype.encode(dst);
-                        d.owner.clientid.encode(dst);
-                        encode_opaque(dst, &d.owner.owner);
-                    }
+                if *status == NfsStat4::Ok
+                    && let Some(s) = stateid
+                {
+                    s.encode(dst);
+                } else if *status == NfsStat4::Denied
+                    && let Some(d) = denied
+                {
+                    d.offset.encode(dst);
+                    d.length.encode(dst);
+                    d.locktype.encode(dst);
+                    d.owner.clientid.encode(dst);
+                    encode_opaque(dst, &d.owner.owner);
                 }
             }
             NfsResop4::Lockt(status, denied) => {
                 OP_LOCKT.encode(dst);
                 status.encode(dst);
-                if *status == NfsStat4::Denied {
-                    if let Some(d) = denied {
-                        d.offset.encode(dst);
-                        d.length.encode(dst);
-                        d.locktype.encode(dst);
-                        d.owner.clientid.encode(dst);
-                        encode_opaque(dst, &d.owner.owner);
-                    }
+                if *status == NfsStat4::Denied
+                    && let Some(d) = denied
+                {
+                    d.offset.encode(dst);
+                    d.length.encode(dst);
+                    d.locktype.encode(dst);
+                    d.owner.clientid.encode(dst);
+                    encode_opaque(dst, &d.owner.owner);
                 }
             }
             NfsResop4::Locku(status, stateid) => {
                 OP_LOCKU.encode(dst);
                 status.encode(dst);
-                if *status == NfsStat4::Ok {
-                    if let Some(s) = stateid {
-                        s.encode(dst);
-                    }
+                if *status == NfsStat4::Ok
+                    && let Some(s) = stateid
+                {
+                    s.encode(dst);
                 }
             }
             NfsResop4::OpenAttr(status) => {
@@ -1845,10 +1845,10 @@ impl XdrEncode for NfsResop4 {
             NfsResop4::OpenDowngrade(status, stateid) => {
                 OP_OPEN_DOWNGRADE.encode(dst);
                 status.encode(dst);
-                if *status == NfsStat4::Ok {
-                    if let Some(s) = stateid {
-                        s.encode(dst);
-                    }
+                if *status == NfsStat4::Ok
+                    && let Some(s) = stateid
+                {
+                    s.encode(dst);
                 }
             }
             NfsResop4::LayoutGet(status) => {
