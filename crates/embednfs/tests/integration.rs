@@ -2,20 +2,25 @@
 #![allow(dead_code)]
 
 use std::time::Duration;
+use std::sync::Arc;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::sync::Notify;
 
 use embednfs_proto::xdr::*;
 use embednfs_proto::*;
-use embednfs::{MemFs, NfsFileSystem, NfsNamedAttrs, NfsServer, XattrSetMode};
+use embednfs::{
+    DirEntry, FileId, MemFs, NfsFileSystem, NfsNamedAttrs, NfsResult, NfsServer, NodeInfo,
+    XattrSetMode,
+};
 
 async fn start_server() -> u16 {
     start_server_with_fs(MemFs::new()).await
 }
 
-async fn start_server_with_fs(fs: MemFs) -> u16 {
+async fn start_server_with_fs<F: NfsFileSystem>(fs: F) -> u16 {
     let server = NfsServer::new(fs);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -111,13 +116,22 @@ fn encode_create_session(clientid: u64, seq: u32) -> Vec<u8> {
 }
 
 fn encode_sequence(sessionid: &[u8; 16], seq: u32, slot: u32) -> Vec<u8> {
+    encode_sequence_with_cache(sessionid, seq, slot, false)
+}
+
+fn encode_sequence_with_cache(
+    sessionid: &[u8; 16],
+    seq: u32,
+    slot: u32,
+    cachethis: bool,
+) -> Vec<u8> {
     let mut buf = BytesMut::new();
     OP_SEQUENCE.encode(&mut buf);
     buf.put_slice(sessionid);
     seq.encode(&mut buf);
     slot.encode(&mut buf);
     slot.encode(&mut buf); // highest_slotid
-    false.encode(&mut buf); // cachethis
+    cachethis.encode(&mut buf);
     buf.to_vec()
 }
 
@@ -247,6 +261,25 @@ fn encode_remove(name: &str) -> Vec<u8> {
     let mut buf = BytesMut::new();
     OP_REMOVE.encode(&mut buf);
     name.to_string().encode(&mut buf);
+    buf.to_vec()
+}
+
+fn encode_setattr_flags(archive: bool, hidden: bool, system: bool) -> Vec<u8> {
+    let mut bitmap = Bitmap4::new();
+    bitmap.set(FATTR4_ARCHIVE);
+    bitmap.set(FATTR4_HIDDEN);
+    bitmap.set(FATTR4_SYSTEM);
+
+    let mut vals = BytesMut::new();
+    archive.encode(&mut vals);
+    hidden.encode(&mut vals);
+    system.encode(&mut vals);
+
+    let mut buf = BytesMut::new();
+    OP_SETATTR.encode(&mut buf);
+    Stateid4::default().encode(&mut buf);
+    bitmap.encode(&mut buf);
+    encode_opaque(&mut buf, &vals);
     buf.to_vec()
 }
 
@@ -397,6 +430,87 @@ async fn fs_with_xattr(file_name: &str, xattr_name: &str, value: &[u8]) -> MemFs
         .await
         .unwrap();
     fs
+}
+
+struct BlockingRemoveFs {
+    inner: MemFs,
+    entered: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+#[async_trait::async_trait]
+impl NfsFileSystem for BlockingRemoveFs {
+    fn root(&self) -> FileId {
+        self.inner.root()
+    }
+
+    async fn stat(&self, id: FileId) -> NfsResult<NodeInfo> {
+        self.inner.stat(id).await
+    }
+
+    async fn lookup(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
+        self.inner.lookup(dir_id, name).await
+    }
+
+    async fn lookup_parent(&self, id: FileId) -> NfsResult<FileId> {
+        self.inner.lookup_parent(id).await
+    }
+
+    async fn readdir(&self, dir_id: FileId) -> NfsResult<Vec<DirEntry>> {
+        self.inner.readdir(dir_id).await
+    }
+
+    async fn read(&self, id: FileId, offset: u64, count: u32) -> NfsResult<(Vec<u8>, bool)> {
+        self.inner.read(id, offset, count).await
+    }
+
+    async fn write(&self, id: FileId, offset: u64, data: &[u8]) -> NfsResult<u32> {
+        self.inner.write(id, offset, data).await
+    }
+
+    async fn truncate(&self, id: FileId, size: u64) -> NfsResult<()> {
+        self.inner.truncate(id, size).await
+    }
+
+    async fn create_file(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
+        self.inner.create_file(dir_id, name).await
+    }
+
+    async fn create_dir(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
+        self.inner.create_dir(dir_id, name).await
+    }
+
+    async fn remove(&self, dir_id: FileId, name: &str) -> NfsResult<()> {
+        self.entered.notify_waiters();
+        self.release.notified().await;
+        self.inner.remove(dir_id, name).await
+    }
+
+    async fn rename(
+        &self,
+        from_dir: FileId,
+        from_name: &str,
+        to_dir: FileId,
+        to_name: &str,
+    ) -> NfsResult<()> {
+        self.inner.rename(from_dir, from_name, to_dir, to_name).await
+    }
+
+    fn symlinks(&self) -> Option<&dyn embednfs::NfsSymlinks> {
+        self.inner.symlinks()
+    }
+
+    fn hard_links(&self) -> Option<&dyn embednfs::NfsHardLinks> {
+        self.inner.hard_links()
+    }
+
+    fn named_attrs(&self) -> Option<&dyn NfsNamedAttrs> {
+        self.inner.named_attrs()
+    }
+
+    fn syncer(&self) -> Option<&dyn embednfs::NfsSync> {
+        self.inner.syncer()
+    }
 }
 
 fn apple_readdirplus_bits() -> Vec<u32> {
@@ -645,6 +759,200 @@ async fn test_reclaim_complete() {
     let (status, _, num_results) = parse_compound_header(&mut resp);
     assert_eq!(status, NfsStat4::Ok as u32);
     assert_eq!(num_results, 2);
+}
+
+#[tokio::test]
+async fn test_open_create_retry_replays_cached_reply() {
+    let port = start_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence_with_cache(&sessionid, 1, 0, true);
+    let rootfh_op = encode_putrootfh();
+    let open_op = encode_open_create("once.txt");
+    let compound = encode_compound("open-create-retry", &[&seq_op, &rootfh_op, &open_op]);
+
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 3);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_OPEN);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let first_stateid = skip_open_res(&mut resp);
+
+    let mut retry_resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    parse_rpc_reply(&mut retry_resp);
+    let (status, _, num_results) = parse_compound_header(&mut retry_resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 3);
+    let _ = parse_op_header(&mut retry_resp);
+    skip_sequence_res(&mut retry_resp);
+    let _ = parse_op_header(&mut retry_resp);
+    let (opnum, op_status) = parse_op_header(&mut retry_resp);
+    assert_eq!(opnum, OP_OPEN);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let retry_stateid = skip_open_res(&mut retry_resp);
+    assert_eq!(retry_stateid.seqid, first_stateid.seqid);
+    assert_eq!(retry_stateid.other, first_stateid.other);
+}
+
+#[tokio::test]
+async fn test_remove_retry_replays_cached_reply() {
+    let fs = populated_fs(&["remove-me.txt"]).await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence_with_cache(&sessionid, 1, 0, true);
+    let rootfh_op = encode_putrootfh();
+    let remove_op = encode_remove("remove-me.txt");
+    let compound = encode_compound("remove-retry", &[&seq_op, &rootfh_op, &remove_op]);
+
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 3);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_REMOVE);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+
+    let mut retry_resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    parse_rpc_reply(&mut retry_resp);
+    let (status, _, num_results) = parse_compound_header(&mut retry_resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 3);
+    let _ = parse_op_header(&mut retry_resp);
+    skip_sequence_res(&mut retry_resp);
+    let _ = parse_op_header(&mut retry_resp);
+    let (opnum, op_status) = parse_op_header(&mut retry_resp);
+    assert_eq!(opnum, OP_REMOVE);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+}
+
+#[tokio::test]
+async fn test_false_retry_returns_seq_false_retry() {
+    let port = start_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let getattr_op = encode_getattr(&[FATTR4_TYPE]);
+    let compound = encode_compound("false-retry-a", &[&seq_op, &rootfh_op, &getattr_op]);
+
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+
+    let readdir_op = encode_readdir();
+    let false_retry = encode_compound("false-retry-b", &[&seq_op, &rootfh_op, &readdir_op]);
+    let mut retry_resp = send_rpc(&mut stream, 4, 1, &false_retry).await;
+    parse_rpc_reply(&mut retry_resp);
+    let (status, _, num_results) = parse_compound_header(&mut retry_resp);
+    assert_eq!(status, NfsStat4::SeqFalseRetry as u32);
+    assert_eq!(num_results, 1);
+    let (opnum, op_status) = parse_op_header(&mut retry_resp);
+    assert_eq!(opnum, OP_SEQUENCE);
+    assert_eq!(op_status, NfsStat4::SeqFalseRetry as u32);
+}
+
+#[tokio::test]
+async fn test_retry_while_in_progress_returns_delay() {
+    let inner = populated_fs(&["slow.txt"]).await;
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let fs = BlockingRemoveFs {
+        inner,
+        entered: entered.clone(),
+        release: release.clone(),
+    };
+    let port = start_server_with_fs(fs).await;
+    let mut stream1 = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let sessionid = setup_session(&mut stream1).await;
+    let mut stream2 = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+
+    let seq_op = encode_sequence_with_cache(&sessionid, 1, 0, true);
+    let rootfh_op = encode_putrootfh();
+    let remove_op = encode_remove("slow.txt");
+    let compound = encode_compound("remove-delay", &[&seq_op, &rootfh_op, &remove_op]);
+
+    let request = compound.clone();
+    let handle = tokio::spawn(async move { send_rpc(&mut stream1, 3, 1, &request).await });
+    entered.notified().await;
+
+    let mut retry_resp = send_rpc(&mut stream2, 4, 1, &compound).await;
+    parse_rpc_reply(&mut retry_resp);
+    let (status, _, num_results) = parse_compound_header(&mut retry_resp);
+    assert_eq!(status, NfsStat4::Delay as u32);
+    assert_eq!(num_results, 1);
+    let (opnum, op_status) = parse_op_header(&mut retry_resp);
+    assert_eq!(opnum, OP_SEQUENCE);
+    assert_eq!(op_status, NfsStat4::Delay as u32);
+
+    release.notify_waiters();
+    let mut resp = handle.await.unwrap();
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+}
+
+#[tokio::test]
+async fn test_setattr_flags_round_trip() {
+    let fs = populated_fs(&["flags.txt"]).await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_op = encode_lookup("flags.txt");
+    let setattr_op = encode_setattr_flags(true, true, true);
+    let getattr_op = encode_getattr(&[FATTR4_ARCHIVE, FATTR4_HIDDEN, FATTR4_SYSTEM]);
+    let compound = encode_compound(
+        "setattr-flags",
+        &[&seq_op, &rootfh_op, &lookup_op, &setattr_op, &getattr_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 5);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    skip_bitmap(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_GETATTR);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let fattr = Fattr4::decode(&mut resp).unwrap();
+    let mut vals = Bytes::from(fattr.attr_vals);
+    assert!(bool::decode(&mut vals).unwrap());
+    assert!(bool::decode(&mut vals).unwrap());
+    assert!(bool::decode(&mut vals).unwrap());
 }
 
 #[tokio::test]

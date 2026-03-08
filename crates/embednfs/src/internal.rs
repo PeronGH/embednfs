@@ -61,9 +61,12 @@ pub(crate) enum SetTime {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SetAttrRequest {
     pub size: Option<u64>,
+    pub archive: Option<bool>,
+    pub hidden: Option<bool>,
     pub mode: Option<u32>,
     pub uid: Option<u32>,
     pub gid: Option<u32>,
+    pub system: Option<bool>,
     pub atime: Option<SetTime>,
     pub mtime: Option<SetTime>,
     pub crtime: Option<SetTime>,

@@ -438,13 +438,17 @@ pub(crate) fn decode_setattr(fattr: &Fattr4) -> SetAttrRequest {
     }
 
     // ARCHIVE (14) - macOS sends this; consume but store as flag
-    if fattr.attrmask.is_set(FATTR4_ARCHIVE) {
-        let _ = bool::decode(&mut src);
+    if fattr.attrmask.is_set(FATTR4_ARCHIVE)
+        && let Ok(archive) = bool::decode(&mut src)
+    {
+        result.archive = Some(archive);
     }
 
     // HIDDEN (25) - macOS sends this
-    if fattr.attrmask.is_set(FATTR4_HIDDEN) {
-        let _ = bool::decode(&mut src);
+    if fattr.attrmask.is_set(FATTR4_HIDDEN)
+        && let Ok(hidden) = bool::decode(&mut src)
+    {
+        result.hidden = Some(hidden);
     }
 
     if fattr.attrmask.is_set(FATTR4_MODE)
@@ -473,8 +477,10 @@ pub(crate) fn decode_setattr(fattr: &Fattr4) -> SetAttrRequest {
     }
 
     // SYSTEM (46) - macOS sends this
-    if fattr.attrmask.is_set(FATTR4_SYSTEM) {
-        let _ = bool::decode(&mut src);
+    if fattr.attrmask.is_set(FATTR4_SYSTEM)
+        && let Ok(system) = bool::decode(&mut src)
+    {
+        result.system = Some(system);
     }
 
     if fattr.attrmask.is_set(FATTR4_TIME_ACCESS_SET)

@@ -85,10 +85,28 @@ struct SessionState {
 }
 
 #[derive(Clone)]
+struct CachedReplay {
+    fingerprint: Vec<u8>,
+    response: Vec<u8>,
+}
+
+#[derive(Clone)]
 struct SlotState {
     sequence_id: Sequenceid4,
-    #[allow(dead_code)]
-    cached_reply: Option<Vec<u8>>,
+    in_progress: Option<Vec<u8>>,
+    cached_reply: Option<CachedReplay>,
+}
+
+pub(crate) struct SequenceCacheToken {
+    sessionid: Sessionid4,
+    slotid: Slotid4,
+    fingerprint: Vec<u8>,
+}
+
+pub(crate) enum SequenceReplay {
+    Execute(SequenceRes4, SequenceCacheToken),
+    Replay(Vec<u8>),
+    Error(NfsStat4),
 }
 
 #[derive(Debug)]
@@ -271,11 +289,20 @@ impl StateManager {
         if let Some(mode) = attrs.mode {
             meta.mode = mode;
         }
+        if let Some(archive) = attrs.archive {
+            meta.archive = archive;
+        }
+        if let Some(hidden) = attrs.hidden {
+            meta.hidden = hidden;
+        }
         if let Some(uid) = attrs.uid {
             meta.uid = uid;
         }
         if let Some(gid) = attrs.gid {
             meta.gid = gid;
+        }
+        if let Some(system) = attrs.system {
+            meta.system = system;
         }
         if let Some(atime) = attrs.atime {
             match atime {
@@ -402,6 +429,7 @@ impl StateManager {
         let slots = vec![
             SlotState {
                 sequence_id: 1,
+                in_progress: None,
                 cached_reply: None
             };
             max_slots.max(1)
@@ -445,38 +473,104 @@ impl StateManager {
         })
     }
 
-    /// Handle SEQUENCE.
-    pub async fn sequence(&self, args: &SequenceArgs4) -> Result<SequenceRes4, NfsStat4> {
-        let mut inner = self.inner.write().await;
-
-        let session = inner
-            .sessions
-            .get_mut(&args.sessionid)
-            .ok_or(NfsStat4::BadSession)?;
-
-        let slot_idx = args.slotid as usize;
-        if slot_idx >= session.slots.len() {
-            return Err(NfsStat4::BadSlot);
-        }
-
-        let slot = &mut session.slots[slot_idx];
-
-        if args.sequenceid == slot.sequence_id {
-            slot.sequence_id += 1;
-        } else if args.sequenceid != slot.sequence_id - 1 {
-            return Err(NfsStat4::SeqMisordered);
-        }
-
+    fn sequence_res(session: &SessionState, args: &SequenceArgs4) -> SequenceRes4 {
         let highest_slot = (session.slots.len() - 1) as u32;
-
-        Ok(SequenceRes4 {
+        SequenceRes4 {
             sessionid: args.sessionid,
             sequenceid: args.sequenceid,
             slotid: args.slotid,
             highest_slotid: highest_slot,
             target_highest_slotid: highest_slot,
             status_flags: 0,
-        })
+        }
+    }
+
+    /// Prepare forechannel SEQUENCE handling and classify the request as
+    /// a new execution, a retry that should replay a cached reply, or an error.
+    pub(crate) async fn prepare_sequence(
+        &self,
+        args: &SequenceArgs4,
+        fingerprint: &[u8],
+    ) -> SequenceReplay {
+        let mut inner = self.inner.write().await;
+
+        let session = inner
+            .sessions
+            .get_mut(&args.sessionid)
+            .ok_or(NfsStat4::BadSession);
+        let session = match session {
+            Ok(session) => session,
+            Err(status) => return SequenceReplay::Error(status),
+        };
+
+        let slot_idx = args.slotid as usize;
+        if slot_idx >= session.slots.len() {
+            return SequenceReplay::Error(NfsStat4::BadSlot);
+        }
+
+        let slot = &mut session.slots[slot_idx];
+        let retry_seq = slot.sequence_id.wrapping_sub(1);
+
+        if args.sequenceid == slot.sequence_id {
+            slot.sequence_id = slot.sequence_id.wrapping_add(1);
+            slot.in_progress = Some(fingerprint.to_vec());
+            slot.cached_reply = None;
+            let res = Self::sequence_res(session, args);
+            return SequenceReplay::Execute(
+                res,
+                SequenceCacheToken {
+                    sessionid: args.sessionid,
+                    slotid: args.slotid,
+                    fingerprint: fingerprint.to_vec(),
+                },
+            );
+        }
+
+        if args.sequenceid != retry_seq {
+            return SequenceReplay::Error(NfsStat4::SeqMisordered);
+        }
+
+        if let Some(in_progress) = &slot.in_progress {
+            return if in_progress == fingerprint {
+                SequenceReplay::Error(NfsStat4::Delay)
+            } else {
+                SequenceReplay::Error(NfsStat4::SeqFalseRetry)
+            };
+        }
+
+        if let Some(cached) = &slot.cached_reply {
+            return if cached.fingerprint == fingerprint {
+                SequenceReplay::Replay(cached.response.clone())
+            } else {
+                SequenceReplay::Error(NfsStat4::SeqFalseRetry)
+            };
+        }
+
+        SequenceReplay::Error(NfsStat4::Serverfault)
+    }
+
+    /// Complete a forechannel request and store the encoded Compound4Res body
+    /// for future retries on the same slot/sequence.
+    pub(crate) async fn finish_sequence(
+        &self,
+        token: SequenceCacheToken,
+        response: Vec<u8>,
+    ) -> Result<(), NfsStat4> {
+        let mut inner = self.inner.write().await;
+
+        let session = inner
+            .sessions
+            .get_mut(&token.sessionid)
+            .ok_or(NfsStat4::BadSession)?;
+        let slot_idx = token.slotid as usize;
+        let slot = session.slots.get_mut(slot_idx).ok_or(NfsStat4::BadSlot)?;
+
+        slot.in_progress = None;
+        slot.cached_reply = Some(CachedReplay {
+            fingerprint: token.fingerprint,
+            response,
+        });
+        Ok(())
     }
 
     /// Handle DESTROY_SESSION.

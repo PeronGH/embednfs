@@ -14,7 +14,7 @@ use embednfs_proto::*;
 use crate::attrs;
 use crate::fs::*;
 use crate::internal::{ServerFileAttr, ServerFileType, ServerObject};
-use crate::session::{StateManager, SynthMeta};
+use crate::session::{SequenceReplay, StateManager, SynthMeta};
 
 /// The NFS server.
 pub struct NfsServer<F: NfsFileSystem> {
@@ -131,11 +131,49 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
         match call.proc_num {
             0 => encode_rpc_reply_accepted(&mut response, call.xid),
-            1 => match Compound4Args::decode(&mut src) {
+            1 => {
+                let compound_payload = src.clone();
+                match Compound4Args::decode(&mut src) {
                 Ok(args) => {
-                    let result = self.handle_compound(args).await;
+                    let mut replay_token = None;
+                    let prepared_sequence = if args.minorversion == 1 {
+                        match args.argarray.first() {
+                            Some(NfsArgop4::Sequence(seq_args)) => {
+                                let fingerprint = replay_fingerprint(&call.cred, &compound_payload);
+                                match self.state.prepare_sequence(seq_args, &fingerprint).await {
+                                    SequenceReplay::Execute(res, token) => {
+                                        replay_token = Some(token);
+                                        Some(NfsResop4::Sequence(NfsStat4::Ok, Some(res)))
+                                    }
+                                    SequenceReplay::Replay(cached) => {
+                                        encode_rpc_reply_accepted(&mut response, call.xid);
+                                        response.extend_from_slice(&cached);
+                                        return response.freeze();
+                                    }
+                                    SequenceReplay::Error(status) => {
+                                        let result = sequence_error_compound(&args.tag, status);
+                                        encode_rpc_reply_accepted(&mut response, call.xid);
+                                        result.encode(&mut response);
+                                        return response.freeze();
+                                    }
+                                }
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+
+                    let result = self.handle_compound(args, prepared_sequence).await;
                     encode_rpc_reply_accepted(&mut response, call.xid);
+                    let body_start = response.len();
                     result.encode(&mut response);
+                    if let Some(token) = replay_token {
+                        let body = response[body_start..].to_vec();
+                        if let Err(status) = self.state.finish_sequence(token, body).await {
+                            warn!("Failed to finalize replay cache entry: {status:?}");
+                        }
+                    }
                 }
                 Err(e) => {
                     warn!("Failed to decode COMPOUND: {e}");
@@ -147,7 +185,8 @@ impl<F: NfsFileSystem> NfsServer<F> {
                     }
                     .encode(&mut response);
                 }
-            },
+                }
+            }
             _ => encode_rpc_reply_proc_unavail(&mut response, call.xid),
         }
 
@@ -161,7 +200,11 @@ impl<F: NfsFileSystem> NfsServer<F> {
         response
     }
 
-    async fn handle_compound(&self, args: Compound4Args) -> Compound4Res {
+    async fn handle_compound(
+        &self,
+        args: Compound4Args,
+        mut prepared_sequence: Option<NfsResop4>,
+    ) -> Compound4Res {
         let op_names: Vec<&'static str> = args.argarray.iter().map(argop_name).collect();
         debug!(
             "COMPOUND: tag={:?}, minorversion={}, ops={}, sequence={:?}",
@@ -267,7 +310,14 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 }
             }
 
-            let res = self.handle_op(op, &mut current_fh, &mut saved_fh).await;
+            let res = if idx == 0 {
+                match (&op, prepared_sequence.take()) {
+                    (NfsArgop4::Sequence(_), Some(res)) => res,
+                    _ => self.handle_op(op, &mut current_fh, &mut saved_fh).await,
+                }
+            } else {
+                self.handle_op(op, &mut current_fh, &mut saved_fh).await
+            };
             let status = res_status(&res);
             trace!("  result: op={}, status={:?}", resop_name(&res), status);
             if status != NfsStat4::Ok {
@@ -360,10 +410,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
                     Err(status) => NfsResop4::DestroySession(status),
                 }
             }
-            NfsArgop4::Sequence(args) => match self.state.sequence(&args).await {
-                Ok(res) => NfsResop4::Sequence(NfsStat4::Ok, Some(res)),
-                Err(status) => NfsResop4::Sequence(status, None),
-            },
+            NfsArgop4::Sequence(_) => NfsResop4::Sequence(NfsStat4::Serverfault, None),
             NfsArgop4::ReclaimComplete(_) => NfsResop4::ReclaimComplete(NfsStat4::Ok),
             NfsArgop4::DestroyClientid(args) => {
                 match self.state.destroy_clientid(args.clientid).await {
@@ -1616,6 +1663,22 @@ fn hex_bytes(data: &[u8]) -> String {
         let _ = write!(&mut out, "{byte:02x}");
     }
     out
+}
+
+fn replay_fingerprint(cred: &OpaqueAuth, payload: &Bytes) -> Vec<u8> {
+    let mut out = BytesMut::with_capacity(8 + cred.body.len() + payload.len());
+    cred.flavor.encode(&mut out);
+    encode_opaque(&mut out, &cred.body);
+    out.extend_from_slice(payload);
+    out.to_vec()
+}
+
+fn sequence_error_compound(tag: &str, status: NfsStat4) -> Compound4Res {
+    Compound4Res {
+        status,
+        tag: tag.to_string(),
+        resarray: vec![NfsResop4::Sequence(status, None)],
+    }
 }
 
 fn xdr_bitmap4_len(bitmap: &Bitmap4) -> usize {
