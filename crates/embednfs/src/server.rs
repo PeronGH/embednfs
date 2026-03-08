@@ -445,11 +445,14 @@ impl<F: NfsFileSystem> NfsServer<F> {
             NfsArgop4::DelegPurge => NfsResop4::DelegPurge(NfsStat4::Ok),
             NfsArgop4::Verify(vattr) => self.op_verify(&vattr, current_fh, false).await,
             NfsArgop4::Nverify(vattr) => self.op_verify(&vattr, current_fh, true).await,
-            NfsArgop4::OpenDowngrade(args) => {
-                let mut stateid = args.open_stateid;
-                stateid.seqid = stateid.seqid.wrapping_add(1);
-                NfsResop4::OpenDowngrade(NfsStat4::Ok, Some(stateid))
-            }
+            NfsArgop4::OpenDowngrade(args) => match self
+                .state
+                .open_downgrade(&args.open_stateid, args.share_access, args.share_deny)
+                .await
+            {
+                Ok(stateid) => NfsResop4::OpenDowngrade(NfsStat4::Ok, Some(stateid)),
+                Err(status) => NfsResop4::OpenDowngrade(status, None),
+            },
             NfsArgop4::LayoutGet => NfsResop4::LayoutGet(NfsStat4::Notsupp),
             NfsArgop4::LayoutReturn => NfsResop4::LayoutReturn(NfsStat4::Notsupp),
             NfsArgop4::LayoutCommit => NfsResop4::LayoutCommit(NfsStat4::Notsupp),

@@ -213,6 +213,16 @@ fn encode_close(stateid: &Stateid4) -> Vec<u8> {
     buf.to_vec()
 }
 
+fn encode_open_downgrade(stateid: &Stateid4, share_access: u32, share_deny: u32) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_OPEN_DOWNGRADE.encode(&mut buf);
+    stateid.encode(&mut buf);
+    0u32.encode(&mut buf); // seqid is ignored in NFSv4.1
+    share_access.encode(&mut buf);
+    share_deny.encode(&mut buf);
+    buf.to_vec()
+}
+
 fn encode_read(offset: u64, count: u32) -> Vec<u8> {
     let mut buf = BytesMut::new();
     OP_READ.encode(&mut buf);
@@ -383,6 +393,10 @@ fn skip_open_res(resp: &mut Bytes) -> Stateid4 {
     skip_bitmap(resp); // attrset
     let _ = u32::decode(resp).unwrap(); // delegation type
     stateid
+}
+
+fn parse_open_downgrade_res(resp: &mut Bytes) -> Stateid4 {
+    Stateid4::decode(resp).unwrap()
 }
 
 fn parse_getfh(resp: &mut Bytes) -> Vec<u8> {
@@ -937,6 +951,50 @@ async fn test_open_create_retry_replays_cached_reply() {
     let retry_stateid = skip_open_res(&mut retry_resp);
     assert_eq!(retry_stateid.seqid, first_stateid.seqid);
     assert_eq!(retry_stateid.other, first_stateid.other);
+}
+
+#[tokio::test]
+async fn test_open_downgrade_updates_open_stateid() {
+    let port = start_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let open_op = encode_open_create("downgrade.txt");
+    let compound = encode_compound("open-for-downgrade", &[&seq_op, &rootfh_op, &open_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let open_stateid = skip_open_res(&mut resp);
+
+    let seq_op = encode_sequence(&sessionid, 2, 0);
+    let downgrade_op = encode_open_downgrade(
+        &open_stateid,
+        OPEN4_SHARE_ACCESS_READ,
+        OPEN4_SHARE_DENY_NONE,
+    );
+    let compound = encode_compound("open-downgrade", &[&seq_op, &downgrade_op]);
+    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 2);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_OPEN_DOWNGRADE);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let downgraded = parse_open_downgrade_res(&mut resp);
+    assert_eq!(downgraded.other, open_stateid.other);
+    assert_eq!(downgraded.seqid, open_stateid.seqid.wrapping_add(1));
 }
 
 #[tokio::test]

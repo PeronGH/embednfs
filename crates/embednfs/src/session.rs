@@ -118,7 +118,6 @@ pub(crate) enum SequenceReplay {
 struct OpenFileState {
     object: ServerObject,
     clientid: Clientid4,
-    #[allow(dead_code)]
     stateid_seq: u32,
     share_access: u32,
     share_deny: u32,
@@ -704,6 +703,16 @@ impl StateManager {
         Ok(Stateid4 { seqid: 1, other })
     }
 
+    fn validate_stateid_seq(stored_seq: u32, provided_seq: u32) -> Result<(), NfsStat4> {
+        if provided_seq == 0 || provided_seq == stored_seq {
+            Ok(())
+        } else if provided_seq < stored_seq {
+            Err(NfsStat4::OldStateid)
+        } else {
+            Err(NfsStat4::BadStateid)
+        }
+    }
+
     /// Look up the object and owner associated with a lock state.
     pub(crate) async fn lock_state_info(
         &self,
@@ -719,12 +728,15 @@ impl StateManager {
     /// Close an open state.
     pub async fn close_state(&self, stateid: &Stateid4) -> Result<Stateid4, NfsStat4> {
         let mut inner = self.inner.write().await;
-        inner
+        let stored_seq = inner
             .open_files
-            .remove(&stateid.other)
-            .ok_or(NfsStat4::BadStateid)?;
+            .get(&stateid.other)
+            .ok_or(NfsStat4::BadStateid)?
+            .stateid_seq;
+        Self::validate_stateid_seq(stored_seq, stateid.seqid)?;
+        inner.open_files.remove(&stateid.other);
         Ok(Stateid4 {
-            seqid: stateid.seqid.wrapping_add(1),
+            seqid: stored_seq.wrapping_add(1),
             other: stateid.other,
         })
     }
@@ -742,10 +754,16 @@ impl StateManager {
         stateids
             .iter()
             .map(|stateid| {
-                if inner.open_files.contains_key(&stateid.other)
-                    || inner.lock_files.contains_key(&stateid.other)
-                {
-                    NfsStat4::Ok
+                if let Some(state) = inner.open_files.get(&stateid.other) {
+                    match Self::validate_stateid_seq(state.stateid_seq, stateid.seqid) {
+                        Ok(()) => NfsStat4::Ok,
+                        Err(status) => status,
+                    }
+                } else if let Some(state) = inner.lock_files.get(&stateid.other) {
+                    match Self::validate_stateid_seq(state.stateid_seq, stateid.seqid) {
+                        Ok(()) => NfsStat4::Ok,
+                        Err(status) => status,
+                    }
                 } else {
                     NfsStat4::BadStateid
                 }
@@ -887,6 +905,50 @@ impl StateManager {
         Ok(Stateid4 { seqid: 1, other })
     }
 
+    pub async fn open_downgrade(
+        &self,
+        open_stateid: &Stateid4,
+        share_access: u32,
+        share_deny: u32,
+    ) -> Result<Stateid4, NfsStat4> {
+        let access_mode = share_access & !OPEN4_SHARE_ACCESS_WANT_DELEG_MASK;
+        if !matches!(
+            access_mode,
+            OPEN4_SHARE_ACCESS_READ | OPEN4_SHARE_ACCESS_WRITE | OPEN4_SHARE_ACCESS_BOTH
+        ) {
+            return Err(NfsStat4::Inval);
+        }
+        if !matches!(
+            share_deny,
+            OPEN4_SHARE_DENY_NONE
+                | OPEN4_SHARE_DENY_READ
+                | OPEN4_SHARE_DENY_WRITE
+                | OPEN4_SHARE_DENY_BOTH
+        ) {
+            return Err(NfsStat4::Inval);
+        }
+
+        let mut inner = self.inner.write().await;
+        let state = inner
+            .open_files
+            .get_mut(&open_stateid.other)
+            .ok_or(NfsStat4::BadStateid)?;
+        Self::validate_stateid_seq(state.stateid_seq, open_stateid.seqid)?;
+
+        let current_access = state.share_access & !OPEN4_SHARE_ACCESS_WANT_DELEG_MASK;
+        if (access_mode & !current_access) != 0 || (share_deny & !state.share_deny) != 0 {
+            return Err(NfsStat4::Inval);
+        }
+
+        state.share_access = share_access;
+        state.share_deny = share_deny;
+        state.stateid_seq = state.stateid_seq.wrapping_add(1);
+        Ok(Stateid4 {
+            seqid: state.stateid_seq,
+            other: open_stateid.other,
+        })
+    }
+
     /// Update an existing lock state (LOCK with existing lock owner).
     pub async fn update_lock_state(
         &self,
@@ -900,6 +962,7 @@ impl StateManager {
             .lock_files
             .get_mut(&lock_stateid.other)
             .ok_or(NfsStat4::BadStateid)?;
+        Self::validate_stateid_seq(state.stateid_seq, lock_stateid.seqid)?;
         state.ranges.push(LockRange {
             locktype,
             offset,
@@ -925,6 +988,7 @@ impl StateManager {
             .lock_files
             .get_mut(&lock_stateid.other)
             .ok_or(NfsStat4::BadStateid)?;
+        Self::validate_stateid_seq(state.stateid_seq, lock_stateid.seqid)?;
 
         if !state
             .ranges
@@ -1048,6 +1112,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_test_stateids_checks_nonzero_seqids() {
+        let state = StateManager::new();
+        let object = ServerObject::Fs(1);
+        let open_stateid = setup_open_state(&state, object.clone(), 17).await;
+        let downgraded = state
+            .open_downgrade(
+                &open_stateid,
+                OPEN4_SHARE_ACCESS_READ,
+                OPEN4_SHARE_DENY_NONE,
+            )
+            .await
+            .unwrap();
+        let owner = StateOwner4 {
+            clientid: 17,
+            owner: b"lock-owner".to_vec(),
+        };
+        let lock_stateid = state
+            .create_lock_state(
+                &downgraded,
+                &owner,
+                object,
+                NfsLockType4::WriteLt,
+                0,
+                10,
+            )
+            .await
+            .unwrap();
+        let updated_lock = state
+            .update_lock_state(&lock_stateid, NfsLockType4::WriteLt, 20, 10)
+            .await
+            .unwrap();
+
+        let results = state
+            .test_stateids(&[
+                Stateid4 {
+                    seqid: 0,
+                    other: downgraded.other,
+                },
+                open_stateid,
+                downgraded,
+                lock_stateid,
+                updated_lock,
+                Stateid4 {
+                    seqid: updated_lock.seqid.wrapping_add(1),
+                    other: updated_lock.other,
+                },
+            ])
+            .await;
+
+        assert_eq!(
+            results,
+            vec![
+                NfsStat4::Ok,
+                NfsStat4::OldStateid,
+                NfsStat4::Ok,
+                NfsStat4::OldStateid,
+                NfsStat4::Ok,
+                NfsStat4::BadStateid,
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn test_exchange_id_reuses_existing_client_when_verifier_matches() {
         let state = StateManager::new();
         let args = exchange_id_args(b"owner", [0x11; 8]);
@@ -1149,6 +1276,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_open_downgrade_validates_subset_and_bumps_seqid() {
+        let state = StateManager::new();
+        let open_stateid = setup_open_state(&state, ServerObject::Fs(7), 22).await;
+
+        let downgraded = state
+            .open_downgrade(
+                &open_stateid,
+                OPEN4_SHARE_ACCESS_READ,
+                OPEN4_SHARE_DENY_NONE,
+            )
+            .await
+            .unwrap();
+        assert_eq!(downgraded.other, open_stateid.other);
+        assert_eq!(downgraded.seqid, 2);
+
+        let inner = state.inner.read().await;
+        let open = inner.open_files.get(&open_stateid.other).unwrap();
+        assert_eq!(open.share_access, OPEN4_SHARE_ACCESS_READ);
+        assert_eq!(open.share_deny, OPEN4_SHARE_DENY_NONE);
+        drop(inner);
+
+        assert_eq!(
+            state
+                .open_downgrade(&downgraded, 0, OPEN4_SHARE_DENY_NONE)
+                .await
+                .unwrap_err(),
+            NfsStat4::Inval
+        );
+        assert_eq!(
+            state
+                .open_downgrade(
+                    &downgraded,
+                    OPEN4_SHARE_ACCESS_BOTH,
+                    OPEN4_SHARE_DENY_NONE,
+                )
+                .await
+                .unwrap_err(),
+            NfsStat4::Inval
+        );
+        assert_eq!(
+            state
+                .open_downgrade(&downgraded, OPEN4_SHARE_ACCESS_READ, 4)
+                .await
+                .unwrap_err(),
+            NfsStat4::Inval
+        );
+    }
+
+    #[tokio::test]
     async fn test_unlock_splits_range_and_conflict_checks_all_ranges() {
         let state = StateManager::new();
         let object = ServerObject::Fs(9);
@@ -1197,5 +1373,95 @@ mod tests {
             .find_lock_conflict(&object, &owner2, NfsLockType4::WriteLt, 70, 5, None)
             .await;
         assert!(denied_right.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_close_and_unlock_validate_stateid_seqids() {
+        let state = StateManager::new();
+        let object = ServerObject::Fs(9);
+        let open_stateid = setup_open_state(&state, object.clone(), 31).await;
+        let downgraded = state
+            .open_downgrade(
+                &open_stateid,
+                OPEN4_SHARE_ACCESS_READ,
+                OPEN4_SHARE_DENY_NONE,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            state.close_state(&open_stateid).await.unwrap_err(),
+            NfsStat4::OldStateid
+        );
+        assert_eq!(
+            state
+                .close_state(&Stateid4 {
+                    seqid: downgraded.seqid.wrapping_add(1),
+                    other: downgraded.other,
+                })
+                .await
+                .unwrap_err(),
+            NfsStat4::BadStateid
+        );
+        let closed = state
+            .close_state(&Stateid4 {
+                seqid: 0,
+                other: downgraded.other,
+            })
+            .await
+            .unwrap();
+        assert_eq!(closed.seqid, downgraded.seqid.wrapping_add(1));
+
+        let open_stateid = setup_open_state(&state, object.clone(), 31).await;
+        let owner = StateOwner4 {
+            clientid: 31,
+            owner: b"owner1".to_vec(),
+        };
+        let lock_stateid = state
+            .create_lock_state(
+                &open_stateid,
+                &owner,
+                object,
+                NfsLockType4::WriteLt,
+                0,
+                100,
+            )
+            .await
+            .unwrap();
+        let updated_lock = state
+            .update_lock_state(&lock_stateid, NfsLockType4::WriteLt, 120, 20)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            state.unlock_state(&lock_stateid, 0, 5).await.unwrap_err(),
+            NfsStat4::OldStateid
+        );
+        assert_eq!(
+            state
+                .unlock_state(
+                    &Stateid4 {
+                        seqid: updated_lock.seqid.wrapping_add(1),
+                        other: updated_lock.other,
+                    },
+                    0,
+                    5,
+                )
+                .await
+                .unwrap_err(),
+            NfsStat4::BadStateid
+        );
+        let unlocked = state
+            .unlock_state(
+                &Stateid4 {
+                    seqid: 0,
+                    other: updated_lock.other,
+                },
+                0,
+                5,
+            )
+            .await
+            .unwrap();
+        assert_eq!(unlocked.seqid, updated_lock.seqid.wrapping_add(1));
     }
 }
