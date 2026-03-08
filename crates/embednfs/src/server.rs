@@ -660,6 +660,25 @@ impl<F: NfsFileSystem> NfsServer<F> {
         Ok(count)
     }
 
+    fn synthetic_change_info(before: u64) -> ChangeInfo4 {
+        ChangeInfo4 {
+            atomic: false,
+            before,
+            after: before.wrapping_add(1),
+        }
+    }
+
+    async fn mutation_change_info(&self, object: &ServerObject, before: u64) -> ChangeInfo4 {
+        match self.build_attr(object).await {
+            Ok(attr) => ChangeInfo4 {
+                atomic: true,
+                before,
+                after: attr.change_id,
+            },
+            Err(_) => Self::synthetic_change_info(before),
+        }
+    }
+
     // ===== Individual operation handlers =====
 
     async fn op_access(&self, args: &AccessArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
@@ -765,21 +784,14 @@ impl<F: NfsFileSystem> NfsServer<F> {
             _ => return NfsResop4::Create(NfsStat4::Notsupp, None, Bitmap4::new()),
         };
 
-        let _ = self.state.apply_setattr(&new_object, new_type, &set_attrs).await;
-        let _ = self.state.touch_metadata(&dir_object, dir_type).await;
-
-        let dir_attr_after = match self.build_attr(&dir_object).await {
-            Ok(attr) => attr,
-            Err(_) => dir_attr_before.clone(),
-        };
+        self.state.apply_setattr(&new_object, new_type, &set_attrs).await;
+        self.state.touch_metadata(&dir_object, dir_type).await;
         let new_fh = self.state.object_to_fh(&new_object).await;
         *current_fh = Some(new_fh);
 
-        let cinfo = ChangeInfo4 {
-            atomic: true,
-            before: dir_attr_before.change_id,
-            after: dir_attr_after.change_id,
-        };
+        let cinfo = self
+            .mutation_change_info(&dir_object, dir_attr_before.change_id)
+            .await;
         NfsResop4::Create(NfsStat4::Ok, Some(cinfo), Bitmap4::new())
     }
 
@@ -849,13 +861,10 @@ impl<F: NfsFileSystem> NfsServer<F> {
         };
         match links.link(source_id, dir_id, &args.newname).await {
             Ok(()) => {
-                let _ = self.state.touch_metadata(&target_dir, dir_type).await;
-                let dir_attr_after = self.build_attr(&target_dir).await.unwrap_or(dir_attr_before.clone());
-                let cinfo = ChangeInfo4 {
-                    atomic: true,
-                    before: dir_attr_before.change_id,
-                    after: dir_attr_after.change_id,
-                };
+                self.state.touch_metadata(&target_dir, dir_type).await;
+                let cinfo = self
+                    .mutation_change_info(&target_dir, dir_attr_before.change_id)
+                    .await;
                 NfsResop4::Link(NfsStat4::Ok, Some(cinfo))
             }
             Err(e) => NfsResop4::Link(e.to_nfsstat4(), None),
@@ -931,9 +940,10 @@ impl<F: NfsFileSystem> NfsServer<F> {
             Ok(object) => object,
             Err(status) => return NfsResop4::Open(status, None),
         };
-        let before_attr = self.build_attr(&container).await.ok();
+        let before_attr = self.build_attr(&container).await;
 
         let mut created = false;
+        let mut created_before_change = None;
         let object = match (&container, &args.claim) {
             (ServerObject::Fs(dir_id), OpenClaim4::Null(name)) => {
                 let dir_info = match self.fs.stat(*dir_id).await {
@@ -953,42 +963,47 @@ impl<F: NfsFileSystem> NfsServer<F> {
                         ServerObject::Fs(id)
                     }
                     Err(NfsError::Noent) => match &args.openhow {
-                        Openflag4::Create(how) => match self.fs.create_file(*dir_id, name).await {
-                            Ok(id) => {
-                                created = true;
-                                let object = ServerObject::Fs(id);
-                                let set_attrs = match how {
-                                    Createhow4::Unchecked(fa) | Createhow4::Guarded(fa) => {
-                                        match attrs::decode_setattr(fa) {
-                                            Ok(attrs) => attrs,
-                                            Err(status) => return NfsResop4::Open(status, None),
+                        Openflag4::Create(how) => {
+                            let before_change = match &before_attr {
+                                Ok(attr) => attr.change_id,
+                                Err(e) => return NfsResop4::Open(e.to_nfsstat4(), None),
+                            };
+                            match self.fs.create_file(*dir_id, name).await {
+                                Ok(id) => {
+                                    created = true;
+                                    created_before_change = Some(before_change);
+                                    let object = ServerObject::Fs(id);
+                                    let set_attrs = match how {
+                                        Createhow4::Unchecked(fa) | Createhow4::Guarded(fa) => {
+                                            match attrs::decode_setattr(fa) {
+                                                Ok(attrs) => attrs,
+                                                Err(status) => return NfsResop4::Open(status, None),
+                                            }
                                         }
-                                    }
-                                    Createhow4::Exclusive4_1 { attrs: fa, .. } => {
-                                        match attrs::decode_setattr(fa) {
-                                            Ok(attrs) => attrs,
-                                            Err(status) => return NfsResop4::Open(status, None),
+                                        Createhow4::Exclusive4_1 { attrs: fa, .. } => {
+                                            match attrs::decode_setattr(fa) {
+                                                Ok(attrs) => attrs,
+                                                Err(status) => return NfsResop4::Open(status, None),
+                                            }
                                         }
+                                        Createhow4::Exclusive(_) => Default::default(),
+                                    };
+                                    if let Some(size) = set_attrs.size
+                                        && let Err(e) = self.fs.truncate(id, size).await
+                                    {
+                                        return NfsResop4::Open(e.to_nfsstat4(), None);
                                     }
-                                    Createhow4::Exclusive(_) => Default::default(),
-                                };
-                                if let Some(size) = set_attrs.size
-                                    && let Err(e) = self.fs.truncate(id, size).await
-                                {
-                                    return NfsResop4::Open(e.to_nfsstat4(), None);
+                                    self.state
+                                        .apply_setattr(&object, ServerFileType::Regular, &set_attrs)
+                                        .await;
+                                    self.state
+                                        .touch_metadata(&container, ServerFileType::Directory)
+                                        .await;
+                                    object
                                 }
-                                let _ = self
-                                    .state
-                                    .apply_setattr(&object, ServerFileType::Regular, &set_attrs)
-                                    .await;
-                                let _ = self
-                                    .state
-                                    .touch_metadata(&container, ServerFileType::Directory)
-                                    .await;
-                                object
+                                Err(e) => return NfsResop4::Open(e.to_nfsstat4(), None),
                             }
-                            Err(e) => return NfsResop4::Open(e.to_nfsstat4(), None),
-                        },
+                        }
                         Openflag4::NoCreate => return NfsResop4::Open(NfsStat4::Noent, None),
                     },
                     Err(e) => return NfsResop4::Open(e.to_nfsstat4(), None),
@@ -1013,7 +1028,12 @@ impl<F: NfsFileSystem> NfsServer<F> {
                     }
                     Err(NfsError::Noent) => match &args.openhow {
                         Openflag4::Create(how) => {
+                            let before_change = match &before_attr {
+                                Ok(attr) => attr.change_id,
+                                Err(e) => return NfsResop4::Open(e.to_nfsstat4(), None),
+                            };
                             created = true;
+                            created_before_change = Some(before_change);
                             let object = ServerObject::NamedAttrFile {
                                 parent: *parent,
                                 name: name.clone(),
@@ -1043,13 +1063,13 @@ impl<F: NfsFileSystem> NfsServer<F> {
                             {
                                 return NfsResop4::Open(e.to_nfsstat4(), None);
                             }
-                            let _ = self.refresh_xattr_summary(*parent).await;
-                            let _ = self
-                                .state
+                            if let Err(e) = self.refresh_xattr_summary(*parent).await {
+                                warn!("xattr summary refresh failed: {e:?}");
+                            }
+                            self.state
                                 .apply_setattr(&object, ServerFileType::NamedAttr, &set_attrs)
                                 .await;
-                            let _ = self
-                                .state
+                            self.state
                                 .touch_metadata(&container, ServerFileType::NamedAttrDir)
                                 .await;
                             self.parent_change_after_xattr_mutation(*parent).await;
@@ -1094,35 +1114,23 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
         *current_fh = Some(self.state.object_to_fh(&object).await);
 
-        let (before, after) = if created {
-            let after_attr = self.build_attr(&container).await.ok();
-            (
-                before_attr
-                    .as_ref()
-                    .map(|attr| attr.change_id)
-                    .unwrap_or(0),
-                after_attr
-                    .or_else(|| before_attr.clone())
-                    .map(|attr| attr.change_id)
-                    .unwrap_or(0),
-            )
+        let cinfo = if created {
+            self.mutation_change_info(&container, created_before_change.unwrap_or(0))
+                .await
         } else {
-            let change = before_attr
-                .as_ref()
-                .map(|attr| attr.change_id)
-                .unwrap_or(0);
-            (change, change)
+            let change = before_attr.as_ref().map(|attr| attr.change_id).unwrap_or(0);
+            ChangeInfo4 {
+                atomic: before_attr.is_ok(),
+                before: change,
+                after: change,
+            }
         };
 
         NfsResop4::Open(
             NfsStat4::Ok,
             Some(OpenRes4 {
                 stateid,
-                cinfo: ChangeInfo4 {
-                    atomic: true,
-                    before,
-                    after,
-                },
+                cinfo,
                 rflags: OPEN4_RESULT_LOCKTYPE_POSIX,
                 attrset: Bitmap4::new(),
                 delegation: OpenDelegation4::None,
@@ -1227,7 +1235,10 @@ impl<F: NfsFileSystem> NfsServer<F> {
         for (i, (name, object)) in available.iter().enumerate() {
             let entry_attr = match self.build_attr(object).await {
                 Ok(attr) => attr,
-                Err(_) => continue,
+                Err(e) => {
+                    trace!("readdir: skipping entry {name:?}: {e:?}");
+                    continue;
+                }
             };
             let entry_fh = self.state.object_to_fh(object).await;
             let result_entry = Entry4 {
@@ -1304,8 +1315,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
         let status = match dir_object.clone() {
             ServerObject::Fs(dir_id) => match self.fs.remove(dir_id, &args.target).await {
                 Ok(()) => {
-                    let _ = self
-                        .state
+                    self.state
                         .touch_metadata(&dir_object, ServerFileType::Directory)
                         .await;
                     NfsStat4::Ok
@@ -1319,9 +1329,10 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 };
                 match named.remove_xattr(parent, &args.target).await {
                     Ok(()) => {
-                        let _ = self.refresh_xattr_summary(parent).await;
-                        let _ = self
-                            .state
+                        if let Err(e) = self.refresh_xattr_summary(parent).await {
+                            warn!("xattr summary refresh failed: {e:?}");
+                        }
+                        self.state
                             .touch_metadata(&dir_object, ServerFileType::NamedAttrDir)
                             .await;
                         self.parent_change_after_xattr_mutation(parent).await;
@@ -1334,12 +1345,9 @@ impl<F: NfsFileSystem> NfsServer<F> {
         };
 
         if status == NfsStat4::Ok {
-            let dir_attr_after = self.build_attr(&dir_object).await.unwrap_or(dir_attr_before.clone());
-            let cinfo = ChangeInfo4 {
-                atomic: true,
-                before: dir_attr_before.change_id,
-                after: dir_attr_after.change_id,
-            };
+            let cinfo = self
+                .mutation_change_info(&dir_object, dir_attr_before.change_id)
+                .await;
             NfsResop4::Remove(NfsStat4::Ok, Some(cinfo))
         } else {
             NfsResop4::Remove(status, None)
@@ -1381,28 +1389,22 @@ impl<F: NfsFileSystem> NfsServer<F> {
             .await
         {
             Ok(()) => {
-                let _ = self
-                    .state
+                self.state
                     .touch_metadata(&src_object, ServerFileType::Directory)
                     .await;
-                let _ = self
-                    .state
+                self.state
                     .touch_metadata(&tgt_object, ServerFileType::Directory)
                     .await;
-                let src_after = self.build_attr(&src_object).await.unwrap_or(src_before.clone());
-                let tgt_after = self.build_attr(&tgt_object).await.unwrap_or(tgt_before.clone());
+                let src_cinfo = self
+                    .mutation_change_info(&src_object, src_before.change_id)
+                    .await;
+                let tgt_cinfo = self
+                    .mutation_change_info(&tgt_object, tgt_before.change_id)
+                    .await;
                 NfsResop4::Rename(
                     NfsStat4::Ok,
-                    Some(ChangeInfo4 {
-                        atomic: true,
-                        before: src_before.change_id,
-                        after: src_after.change_id,
-                    }),
-                    Some(ChangeInfo4 {
-                        atomic: true,
-                        before: tgt_before.change_id,
-                        after: tgt_after.change_id,
-                    }),
+                    Some(src_cinfo),
+                    Some(tgt_cinfo),
                 )
             }
             Err(e) => NfsResop4::Rename(e.to_nfsstat4(), None, None),
@@ -2060,5 +2062,13 @@ mod tests {
 
         let expected_entries = vec![sample_entry("a.txt", 1), sample_entry("b.txt", 2)];
         assert_eq!(readdir_resok_len(&expected_entries, true), encoded.len() - 8);
+    }
+
+    #[test]
+    fn test_synthetic_change_info_marks_response_non_atomic() {
+        let cinfo = NfsServer::<crate::memfs::MemFs>::synthetic_change_info(41);
+        assert!(!cinfo.atomic);
+        assert_eq!(cinfo.before, 41);
+        assert_eq!(cinfo.after, 42);
     }
 }

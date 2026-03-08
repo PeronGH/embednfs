@@ -382,6 +382,14 @@ fn skip_change_info(resp: &mut Bytes) {
     let _ = u64::decode(resp).unwrap();
 }
 
+fn parse_change_info(resp: &mut Bytes) -> (bool, u64, u64) {
+    (
+        bool::decode(resp).unwrap(),
+        u64::decode(resp).unwrap(),
+        u64::decode(resp).unwrap(),
+    )
+}
+
 fn skip_bitmap(resp: &mut Bytes) {
     let _ = Bitmap4::decode(resp).unwrap();
 }
@@ -393,6 +401,15 @@ fn skip_open_res(resp: &mut Bytes) -> Stateid4 {
     skip_bitmap(resp); // attrset
     let _ = u32::decode(resp).unwrap(); // delegation type
     stateid
+}
+
+fn parse_open_res(resp: &mut Bytes) -> (Stateid4, (bool, u64, u64)) {
+    let stateid = parse_stateid(resp);
+    let cinfo = parse_change_info(resp);
+    let _ = u32::decode(resp).unwrap(); // rflags
+    skip_bitmap(resp); // attrset
+    let _ = u32::decode(resp).unwrap(); // delegation type
+    (stateid, cinfo)
 }
 
 fn parse_open_downgrade_res(resp: &mut Bytes) -> Stateid4 {
@@ -487,6 +504,12 @@ struct BlockingRemoveFs {
 struct CountingNamedAttrFs {
     inner: MemFs,
     list_count: Arc<AtomicUsize>,
+}
+
+struct FailPostMutationRootStatFs {
+    inner: MemFs,
+    root_stat_limit: usize,
+    root_stat_calls: AtomicUsize,
 }
 
 #[async_trait::async_trait]
@@ -634,6 +657,69 @@ impl NfsFileSystem for CountingNamedAttrFs {
 
     fn syncer(&self) -> Option<&dyn embednfs::NfsSync> {
         self.inner.syncer()
+    }
+}
+
+#[async_trait::async_trait]
+impl NfsFileSystem for FailPostMutationRootStatFs {
+    fn root(&self) -> FileId {
+        self.inner.root()
+    }
+
+    async fn stat(&self, id: FileId) -> NfsResult<NodeInfo> {
+        if id == self.inner.root() {
+            let call = self.root_stat_calls.fetch_add(1, Ordering::Relaxed);
+            if call >= self.root_stat_limit {
+                return Err(embednfs::NfsError::Io);
+            }
+        }
+        self.inner.stat(id).await
+    }
+
+    async fn lookup(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
+        self.inner.lookup(dir_id, name).await
+    }
+
+    async fn lookup_parent(&self, id: FileId) -> NfsResult<FileId> {
+        self.inner.lookup_parent(id).await
+    }
+
+    async fn readdir(&self, dir_id: FileId) -> NfsResult<Vec<DirEntry>> {
+        self.inner.readdir(dir_id).await
+    }
+
+    async fn read(&self, id: FileId, offset: u64, count: u32) -> NfsResult<(Vec<u8>, bool)> {
+        self.inner.read(id, offset, count).await
+    }
+
+    async fn write(&self, id: FileId, offset: u64, data: &[u8]) -> NfsResult<u32> {
+        self.inner.write(id, offset, data).await
+    }
+
+    async fn truncate(&self, id: FileId, size: u64) -> NfsResult<()> {
+        self.inner.truncate(id, size).await
+    }
+
+    async fn create_file(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
+        self.inner.create_file(dir_id, name).await
+    }
+
+    async fn create_dir(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
+        self.inner.create_dir(dir_id, name).await
+    }
+
+    async fn remove(&self, dir_id: FileId, name: &str) -> NfsResult<()> {
+        self.inner.remove(dir_id, name).await
+    }
+
+    async fn rename(
+        &self,
+        from_dir: FileId,
+        from_name: &str,
+        to_dir: FileId,
+        to_name: &str,
+    ) -> NfsResult<()> {
+        self.inner.rename(from_dir, from_name, to_dir, to_name).await
     }
 }
 
@@ -951,6 +1037,39 @@ async fn test_open_create_retry_replays_cached_reply() {
     let retry_stateid = skip_open_res(&mut retry_resp);
     assert_eq!(retry_stateid.seqid, first_stateid.seqid);
     assert_eq!(retry_stateid.other, first_stateid.other);
+}
+
+#[tokio::test]
+async fn test_open_create_synthesizes_non_atomic_change_info_when_after_attr_fails() {
+    let fs = FailPostMutationRootStatFs {
+        inner: MemFs::new(),
+        root_stat_limit: 2,
+        root_stat_calls: AtomicUsize::new(0),
+    };
+    let port = start_server_with_fs(fs).await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let open_op = encode_open_create("synth-change.txt");
+    let compound = encode_compound("open-synth-cinfo", &[&seq_op, &rootfh_op, &open_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 3);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_OPEN);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let (_stateid, cinfo) = parse_open_res(&mut resp);
+    assert!(!cinfo.0);
+    assert_eq!(cinfo.2, cinfo.1.wrapping_add(1));
 }
 
 #[tokio::test]
