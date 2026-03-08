@@ -6,6 +6,8 @@ Build a production-quality, high-performance Rust NFSv4.1 server library. The us
 
 This is not a toy or proof-of-concept. It should be correct, fast, and suitable for real workloads. Zero-copy where possible, minimal allocations on the hot path, and designed to saturate the I/O capabilities of the underlying filesystem implementation.
 
+Strictly NFSv4.1 only (RFC 8881). Do not implement NFSv4.0 compatibility or mix NFSv4.0 semantics — they are different protocols. COMPOUND requests with `minorversion != 1` must be rejected. Do not use NFSv4.0-only libraries, tools, or test clients.
+
 Licensed MIT. Rust edition 2024. Determine the implementation scope yourself based on what the spec requires, what real clients actually need, and what matters for the localhost FUSE-replacement use case. Cut what doesn't serve that use case; don't cut corners on what does.
 
 ## Commands
