@@ -1,7 +1,6 @@
 # embednfs
 
 [![crates.io](https://img.shields.io/crates/v/embednfs)](https://crates.io/crates/embednfs)
-[![crates.io](https://img.shields.io/crates/v/embednfs-proto)](https://crates.io/crates/embednfs-proto)
 
 An embeddable NFSv4.1 server library in Rust. You implement a small filesystem trait; the library handles the wire protocol, sessions, filehandles, locking, and TCP serving.
 
