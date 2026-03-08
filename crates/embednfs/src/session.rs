@@ -38,6 +38,7 @@ struct LockFileState {
     locktype: NfsLockType4,
     offset: u64,
     length: u64,
+    active: bool,
     stateid_seq: u32,
 }
 
@@ -636,6 +637,9 @@ impl StateManager {
             if Some(*other) == ignore_stateid.map(|sid| sid.other) {
                 continue;
             }
+            if !state.active {
+                continue;
+            }
             if state.object != *object {
                 continue;
             }
@@ -690,6 +694,7 @@ impl StateManager {
                 locktype,
                 offset,
                 length,
+                active: true,
                 stateid_seq: 1,
             },
         );
@@ -713,6 +718,7 @@ impl StateManager {
         state.locktype = locktype;
         state.offset = offset;
         state.length = length;
+        state.active = true;
         state.stateid_seq += 1;
         Ok(Stateid4 {
             seqid: state.stateid_seq,
@@ -744,10 +750,10 @@ impl StateManager {
         let unlock_end = Self::lock_end(offset, length);
         let state_end = Self::lock_end(state.offset, state.length);
         if offset <= state.offset && unlock_end >= state_end {
-            let seqid = state.stateid_seq.wrapping_add(1);
-            inner.lock_files.remove(&lock_stateid.other);
+            state.active = false;
+            state.stateid_seq += 1;
             return Ok(Stateid4 {
-                seqid,
+                seqid: state.stateid_seq,
                 other: lock_stateid.other,
             });
         }
