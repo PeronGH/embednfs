@@ -16,7 +16,7 @@ use common::*;
 
 // ===== NULL procedure (pynfs COMP1) =====
 
-/// pynfs COMP1: NULL procedure must return success with empty body.
+/// pynfs COMP1 / RFC 8881 §17.1: NULL procedure must return success with empty body.
 #[tokio::test]
 async fn test_null_procedure() {
     let port = start_server().await;
@@ -30,7 +30,7 @@ async fn test_null_procedure() {
 
 // ===== COMPOUND basics =====
 
-/// pynfs COMP2: COMPOUND with minorversion != 1 must return NFS4ERR_MINOR_VERS_MISMATCH.
+/// pynfs COMP2 / RFC 8881 §2.10.6.4: COMPOUND with minorversion != 1 must return NFS4ERR_MINOR_VERS_MISMATCH.
 #[tokio::test]
 async fn test_minor_version_mismatch_rejects_non_v41() {
     let port = start_server().await;
@@ -49,7 +49,7 @@ async fn test_minor_version_mismatch_rejects_non_v41() {
     }
 }
 
-/// pynfs COMP6: Empty COMPOUND (zero ops) with minorversion=1 must succeed.
+/// pynfs COMP6 / RFC 8881 §2.10.6.4: Empty COMPOUND (zero ops) with minorversion=1 must succeed.
 #[tokio::test]
 async fn test_empty_compound_succeeds() {
     let port = start_server().await;
@@ -66,7 +66,7 @@ async fn test_empty_compound_succeeds() {
     assert_eq!(num_results, 0);
 }
 
-/// COMPOUND tag must be echoed back in the response.
+/// pynfs COMP3 / RFC 8881 §2.10.6.2: COMPOUND tag must be echoed back in the response.
 #[tokio::test]
 async fn test_compound_tag_echo() {
     let port = start_server().await;
@@ -81,7 +81,7 @@ async fn test_compound_tag_echo() {
 
 // ===== EXCHANGE_ID (pynfs EXID) =====
 
-/// pynfs EXID1: Basic EXCHANGE_ID succeeds and returns a valid clientid.
+/// pynfs EXID1 / RFC 8881 §18.35.3: Basic EXCHANGE_ID succeeds and returns a valid clientid.
 #[tokio::test]
 async fn test_exchange_id_basic() {
     let port = start_server().await;
@@ -105,8 +105,8 @@ async fn test_exchange_id_basic() {
     assert_ne!(flags & EXCHGID4_FLAG_USE_NON_PNFS, 0);
 }
 
-/// pynfs EXID2: EXCHANGE_ID must NOT be preceded by SEQUENCE — must be NOT_ONLY_OP
-/// if combined with other ops.
+/// pynfs EXID2 / RFC 8881 §18.35.3: EXCHANGE_ID must NOT be preceded by SEQUENCE — must be
+/// NOT_ONLY_OP if combined with other ops.
 #[tokio::test]
 async fn test_exchange_id_without_sequence_must_be_only_op() {
     let port = start_server().await;
@@ -127,7 +127,7 @@ async fn test_exchange_id_without_sequence_must_be_only_op() {
     assert_eq!(op_status, NfsStat4::NotOnlyOp as u32);
 }
 
-/// pynfs EXID4: Re-sending EXCHANGE_ID with the same ownerid returns
+/// pynfs EXID4 / RFC 8881 §18.35.3: Re-sending EXCHANGE_ID with the same ownerid returns
 /// EXCHGID4_FLAG_CONFIRMED_R on the second call.
 #[tokio::test]
 async fn test_exchange_id_confirmed_on_reissue() {
@@ -166,7 +166,7 @@ async fn test_exchange_id_confirmed_on_reissue() {
 
 // ===== CREATE_SESSION (pynfs CSESS) =====
 
-/// pynfs CSESS1: Full session establishment flow works.
+/// pynfs CSESS1 / RFC 8881 §18.36.3: Full session establishment flow works.
 #[tokio::test]
 async fn test_v41_session_flow_and_readdir() {
     let port = start_server().await;
@@ -199,7 +199,7 @@ async fn test_v41_session_flow_and_readdir() {
     assert_eq!(op_status, NfsStat4::Ok as u32);
 }
 
-/// pynfs CSESS24: CREATE_SESSION with bad clientid returns NFS4ERR_STALE_CLIENTID.
+/// pynfs CSESS24 / RFC 8881 §18.36.3: CREATE_SESSION with bad clientid returns NFS4ERR_STALE_CLIENTID.
 #[tokio::test]
 async fn test_create_session_stale_clientid() {
     let port = start_server().await;
@@ -219,7 +219,7 @@ async fn test_create_session_stale_clientid() {
     assert_eq!(op_status, NfsStat4::StaleClientid as u32);
 }
 
-/// pynfs CSESS9: CREATE_SESSION with wrong sequenceid returns NFS4ERR_SEQ_MISORDERED.
+/// pynfs CSESS9 / RFC 8881 §18.36.3: CREATE_SESSION with wrong sequenceid returns NFS4ERR_SEQ_MISORDERED.
 #[tokio::test]
 async fn test_create_session_wrong_sequenceid() {
     let port = start_server().await;
@@ -249,7 +249,7 @@ async fn test_create_session_wrong_sequenceid() {
 
 // ===== SEQUENCE (pynfs SEQ) =====
 
-/// pynfs SEQ2: Fore-channel ops without SEQUENCE must return NFS4ERR_OP_NOT_IN_SESSION.
+/// pynfs SEQ2 / RFC 8881 §18.46.3: Fore-channel ops without SEQUENCE must return NFS4ERR_OP_NOT_IN_SESSION.
 #[tokio::test]
 async fn test_fore_channel_ops_require_sequence() {
     let port = start_server().await;
@@ -270,7 +270,7 @@ async fn test_fore_channel_ops_require_sequence() {
     assert_eq!(op_status, NfsStat4::OpNotInSession as u32);
 }
 
-/// pynfs SEQ9: SEQUENCE must be the first op and must not appear more than once.
+/// pynfs SEQ9 / RFC 8881 §18.46.3: SEQUENCE must be the first op and must not appear more than once.
 #[tokio::test]
 async fn test_sequence_must_be_first_and_unique() {
     let port = start_server().await;
@@ -302,7 +302,7 @@ async fn test_sequence_must_be_first_and_unique() {
     assert_eq!(op_status, NfsStat4::SequencePos as u32);
 }
 
-/// pynfs SEQ3: SEQUENCE with a bad session ID must return NFS4ERR_BADSESSION.
+/// pynfs SEQ3 / RFC 8881 §18.46.3: SEQUENCE with a bad session ID must return NFS4ERR_BADSESSION.
 #[tokio::test]
 async fn test_sequence_bad_session() {
     let port = start_server().await;
@@ -324,7 +324,7 @@ async fn test_sequence_bad_session() {
     assert_eq!(op_status, NfsStat4::BadSession as u32);
 }
 
-/// pynfs SEQ4: SEQUENCE with seq_misordered (skipping a seqid).
+/// pynfs SEQ4 / RFC 8881 §18.46.3: SEQUENCE with seq_misordered (skipping a seqid).
 #[tokio::test]
 async fn test_sequence_misordered() {
     let port = start_server().await;
@@ -345,7 +345,7 @@ async fn test_sequence_misordered() {
     assert_eq!(op_status, NfsStat4::SeqMisordered as u32);
 }
 
-/// pynfs SEQ6: Slot replay cache — exact replay returns cached response.
+/// pynfs SEQ6 / RFC 8881 §2.10.6.1.3: Slot replay cache — exact replay returns cached response.
 #[tokio::test]
 async fn test_open_create_retry_replays_cached_reply() {
     let port = start_server().await;
@@ -386,7 +386,7 @@ async fn test_open_create_retry_replays_cached_reply() {
     assert_eq!(retry_stateid.other, first_stateid.other);
 }
 
-/// pynfs SEQ10: False retry — same seqid but different ops returns NFS4ERR_SEQ_FALSE_RETRY.
+/// pynfs SEQ10 / RFC 8881 §2.10.6.1.3.1: False retry — same seqid but different ops returns NFS4ERR_SEQ_FALSE_RETRY.
 #[tokio::test]
 async fn test_false_retry_returns_seq_false_retry() {
     let port = start_server().await;
@@ -415,7 +415,7 @@ async fn test_false_retry_returns_seq_false_retry() {
     assert_eq!(op_status, NfsStat4::SeqFalseRetry as u32);
 }
 
-/// Retry while the original request is still in progress returns NFS4ERR_DELAY.
+/// RFC 8881 §2.10.6.1.3: Retry while the original request is still in progress returns NFS4ERR_DELAY.
 #[tokio::test]
 async fn test_retry_while_in_progress_returns_delay() {
     use std::sync::Arc;
@@ -459,7 +459,7 @@ async fn test_retry_while_in_progress_returns_delay() {
     assert_eq!(status, NfsStat4::Ok as u32);
 }
 
-/// pynfs SEQ5: SEQUENCE with slot > highest_slot returns NFS4ERR_BADSLOT.
+/// pynfs SEQ5 / RFC 8881 §18.46.3: SEQUENCE with slot > highest_slot returns NFS4ERR_BADSLOT.
 #[tokio::test]
 async fn test_sequence_bad_slot() {
     let port = start_server().await;
@@ -482,7 +482,7 @@ async fn test_sequence_bad_slot() {
 
 // ===== DESTROY_SESSION (pynfs DSESS) =====
 
-/// pynfs DSESS1: Destroy a valid session succeeds.
+/// pynfs DSESS1 / RFC 8881 §18.37.3: Destroy a valid session succeeds.
 #[tokio::test]
 async fn test_destroy_session_basic() {
     let port = start_server().await;
@@ -502,7 +502,7 @@ async fn test_destroy_session_basic() {
     assert_eq!(op_status, NfsStat4::Ok as u32);
 }
 
-/// pynfs DSESS2: Destroy a non-existent session returns NFS4ERR_BADSESSION.
+/// pynfs DSESS2 / RFC 8881 §18.37.3: Destroy a non-existent session returns NFS4ERR_BADSESSION.
 #[tokio::test]
 async fn test_destroy_session_bad_session() {
     let port = start_server().await;
@@ -521,7 +521,7 @@ async fn test_destroy_session_bad_session() {
     assert_eq!(op_status, NfsStat4::BadSession as u32);
 }
 
-/// After destroying a session, SEQUENCE on it must fail with NFS4ERR_BADSESSION.
+/// RFC 8881 §18.37.3: After destroying a session, SEQUENCE on it must fail with NFS4ERR_BADSESSION.
 #[tokio::test]
 async fn test_destroyed_session_cannot_be_used() {
     let port = start_server().await;
@@ -551,7 +551,7 @@ async fn test_destroyed_session_cannot_be_used() {
 
 // ===== DESTROY_CLIENTID (pynfs DCID) =====
 
-/// pynfs DCID1: DESTROY_CLIENTID with a non-existent client returns NFS4ERR_STALE_CLIENTID.
+/// pynfs DCID1 / RFC 8881 §18.50.3: DESTROY_CLIENTID with a non-existent client returns NFS4ERR_STALE_CLIENTID.
 #[tokio::test]
 async fn test_destroy_clientid_stale() {
     let port = start_server().await;
@@ -571,7 +571,7 @@ async fn test_destroy_clientid_stale() {
 
 // ===== RECLAIM_COMPLETE (pynfs RECC) =====
 
-/// pynfs RECC1: RECLAIM_COMPLETE with one_fs=false succeeds.
+/// pynfs RECC1 / RFC 8881 §18.51.3: RECLAIM_COMPLETE with one_fs=false succeeds.
 #[tokio::test]
 async fn test_reclaim_complete() {
     let port = start_server().await;
@@ -591,7 +591,7 @@ async fn test_reclaim_complete() {
 
 // ===== V4.0-only ops must be rejected (pynfs CT) =====
 
-/// pynfs CT3: NFSv4.0-only ops (OPEN_CONFIRM, RENEW, etc.) return NFS4ERR_NOTSUPP.
+/// pynfs CT3 / RFC 8881 §18.17: NFSv4.0-only ops (OPEN_CONFIRM, RENEW, etc.) return NFS4ERR_NOTSUPP.
 #[tokio::test]
 async fn test_v40_only_op_is_not_supported_in_v41() {
     let port = start_server().await;
@@ -620,7 +620,7 @@ async fn test_v40_only_op_is_not_supported_in_v41() {
 
 // ===== RPC-level malformed input =====
 
-/// Malformed RPC (zero-length body) closes connection.
+/// RFC 5531 §9: Malformed RPC (zero-length body) closes connection.
 #[tokio::test]
 async fn test_malformed_rpc_header_closes_connection() {
     let port = start_server().await;
@@ -640,7 +640,7 @@ async fn test_malformed_rpc_header_closes_connection() {
     assert_eq!(bytes_read, 0);
 }
 
-/// pynfs COMP5: ILLEGAL operation returns NFS4ERR_OP_ILLEGAL.
+/// pynfs COMP5 / RFC 8881 §18.14: ILLEGAL operation returns NFS4ERR_OP_ILLEGAL.
 #[tokio::test]
 async fn test_illegal_op() {
     let port = start_server().await;
@@ -667,7 +667,7 @@ async fn test_illegal_op() {
     assert_eq!(op_status, NfsStat4::OpIllegal as u32);
 }
 
-/// Truly unknown opcode (beyond any valid range) returns NFS4ERR_OP_ILLEGAL.
+/// RFC 8881 §18.14: Truly unknown opcode (beyond any valid range) returns NFS4ERR_OP_ILLEGAL.
 #[tokio::test]
 async fn test_unknown_opcode_returns_illegal() {
     let port = start_server().await;
@@ -699,7 +699,7 @@ async fn test_unknown_opcode_returns_illegal() {
     assert_eq!(op_status, NfsStat4::OpIllegal as u32);
 }
 
-/// Multiple concurrent sessions can be created on the same client.
+/// RFC 8881 §18.36.3: Multiple concurrent sessions can be created on the same client.
 #[tokio::test]
 async fn test_multiple_sessions_same_client() {
     let port = start_server().await;
@@ -755,7 +755,7 @@ async fn test_multiple_sessions_same_client() {
 
 // ===== BIND_CONN_TO_SESSION (pynfs BCTOS) =====
 
-/// pynfs BCTOS1: BIND_CONN_TO_SESSION with a valid session succeeds.
+/// pynfs BCTOS1 / RFC 8881 §18.34.3: BIND_CONN_TO_SESSION with a valid session succeeds.
 #[tokio::test]
 async fn test_bind_conn_to_session_basic() {
     let port = start_server().await;
@@ -775,7 +775,7 @@ async fn test_bind_conn_to_session_basic() {
     assert_eq!(op_status, NfsStat4::Ok as u32);
 }
 
-/// pynfs BCTOS2: BIND_CONN_TO_SESSION with bad session returns NFS4ERR_BADSESSION.
+/// pynfs BCTOS2 / RFC 8881 §18.34.3: BIND_CONN_TO_SESSION with bad session returns NFS4ERR_BADSESSION.
 #[tokio::test]
 async fn test_bind_conn_to_session_bad_session() {
     let port = start_server().await;
@@ -796,7 +796,7 @@ async fn test_bind_conn_to_session_bad_session() {
 
 // ===== Multi-slot concurrent usage (pynfs SEQ) =====
 
-/// Multiple slots can be used concurrently on the same session.
+/// RFC 8881 §2.10.6.1: Multiple slots can be used concurrently on the same session.
 #[tokio::test]
 async fn test_multiple_slots_concurrent() {
     let port = start_server().await;
@@ -829,7 +829,7 @@ async fn test_multiple_slots_concurrent() {
     assert_eq!(status, NfsStat4::Ok as u32);
 }
 
-/// EXCHANGE_ID with different client names creates distinct clients.
+/// pynfs EXID5 / RFC 8881 §18.35.3: EXCHANGE_ID with different client names creates distinct clients.
 #[tokio::test]
 async fn test_exchange_id_different_names_different_clients() {
     let port = start_server().await;
@@ -856,7 +856,7 @@ async fn test_exchange_id_different_names_different_clients() {
     assert_ne!(clientid1, clientid2);
 }
 
-/// COMPOUND with long tag (up to 1024 chars per spec) echoes correctly.
+/// RFC 8881 §2.10.6.2: COMPOUND with long tag (up to 1024 chars per spec) echoes correctly.
 #[tokio::test]
 async fn test_compound_long_tag() {
     let port = start_server().await;
@@ -870,7 +870,7 @@ async fn test_compound_long_tag() {
     assert_eq!(tag, long_tag);
 }
 
-/// DESTROY_CLIENTID after destroying all sessions succeeds.
+/// pynfs DCID2 / RFC 8881 §18.50.3: DESTROY_CLIENTID after destroying all sessions succeeds.
 #[tokio::test]
 async fn test_destroy_clientid_after_destroy_session() {
     let port = start_server().await;

@@ -17,7 +17,7 @@ use common::*;
 
 // ===== READDIR (pynfs RDDR) =====
 
-/// pynfs RDDR1: READDIR on an empty directory returns eof with no entries.
+/// pynfs RDDR1 / RFC 8881 §18.23.3: READDIR on an empty directory returns eof with no entries.
 #[tokio::test]
 async fn test_readdir_empty_directory() {
     let port = start_server().await;
@@ -44,7 +44,7 @@ async fn test_readdir_empty_directory() {
     assert!(entries.is_empty());
 }
 
-/// pynfs RDDR2: READDIR on a populated directory lists all entries.
+/// pynfs RDDR2 / RFC 8881 §18.23.3: READDIR on a populated directory lists all entries.
 #[tokio::test]
 async fn test_readdir_lists_all_entries() {
     let fs = populated_fs(&["alpha.txt", "beta.txt", "gamma.txt"]).await;
@@ -76,8 +76,8 @@ async fn test_readdir_lists_all_entries() {
     assert!(names.contains(&"gamma.txt"));
 }
 
-/// pynfs RDDR3: READDIR must NOT include "." or ".." entries.
-/// (Adapted from Linux kernel nfsd tests)
+/// pynfs RDDR3 / RFC 8881 §18.23.3: READDIR must NOT include "." or ".." entries.
+/// (Also adapted from Linux kernel nfsd tests)
 #[tokio::test]
 async fn test_readdir_excludes_dot_entries() {
     let fs = populated_fs(&["file.txt"]).await;
@@ -105,8 +105,8 @@ async fn test_readdir_excludes_dot_entries() {
     }
 }
 
-/// pynfs RDDR5: READDIR cookies must be >= 3 (0 = start, 1-2 = reserved for . and ..).
-/// (Adapted from Linux kernel nfsd)
+/// pynfs RDDR5 / RFC 8881 §18.23.3: READDIR cookies must be >= 3 (0 = start, 1-2 = reserved for . and ..).
+/// (Also adapted from Linux kernel nfsd)
 #[tokio::test]
 async fn test_readdir_cookies_start_at_3() {
     let fs = populated_fs(&["one.txt", "two.txt"]).await;
@@ -133,7 +133,7 @@ async fn test_readdir_cookies_start_at_3() {
     }
 }
 
-/// READDIR reply stays within maxcount.
+/// RFC 8881 §18.23.3: READDIR reply stays within maxcount.
 /// (Adapted from Apple/macOS NFS client readdirplus pattern)
 #[tokio::test]
 async fn test_readdir_reply_stays_within_maxcount_and_skips_dot_entries() {
@@ -183,7 +183,7 @@ async fn test_readdir_reply_stays_within_maxcount_and_skips_dot_entries() {
     assert!(entries.iter().all(|(cookie, _, _)| *cookie >= 3));
 }
 
-/// pynfs RDDR8: READDIR with maxcount too small returns NFS4ERR_TOOSMALL.
+/// pynfs RDDR8 / RFC 8881 §18.23.3: READDIR with maxcount too small returns NFS4ERR_TOOSMALL.
 #[tokio::test]
 async fn test_readdir_returns_toosmall_when_entry_cannot_fit() {
     let fs = populated_fs(&["oversized.txt"]).await;
@@ -222,8 +222,8 @@ async fn test_readdir_returns_toosmall_when_entry_cannot_fit() {
     assert_eq!(op_status, NfsStat4::Toosmall as u32);
 }
 
-/// READDIR cookieverf is stable for unchanged directory.
-/// (Linux kernel nfsd pattern)
+/// RFC 8881 §18.23.3: READDIR cookieverf is stable for unchanged directory.
+/// (Also adapted from Linux kernel nfsd pattern)
 #[tokio::test]
 async fn test_readdir_cookieverf_stable_for_unchanged_dir() {
     let fs = populated_fs(&["alpha.txt", "beta.txt"]).await;
@@ -273,8 +273,8 @@ async fn test_readdir_cookieverf_stable_for_unchanged_dir() {
     assert!(!continued_entries.is_empty());
 }
 
-/// READDIR cookieverf rejects stale continuation after mutation.
-/// (Linux kernel nfsd pattern)
+/// RFC 8881 §18.23.3: READDIR cookieverf rejects stale continuation after mutation.
+/// (Also adapted from Linux kernel nfsd pattern)
 #[tokio::test]
 async fn test_readdir_cookieverf_rejects_stale_continuation_after_mutation() {
     let fs = populated_fs(&["alpha.txt", "beta.txt", "gamma.txt"]).await;
@@ -353,7 +353,7 @@ async fn test_readdir_cookieverf_rejects_stale_continuation_after_mutation() {
 
 // ===== OPENATTR (pynfs OAT) =====
 
-/// pynfs OAT1: OPENATTR on a file with xattrs sets current FH to attr directory.
+/// pynfs OAT1 / RFC 8881 §18.17: OPENATTR on a file with xattrs sets current FH to attr directory.
 #[tokio::test]
 async fn test_openattr_on_file_returns_attrdir() {
     let fs = fs_with_xattr("notes.txt", "user.demo", b"value").await;
@@ -401,7 +401,7 @@ async fn test_openattr_on_file_returns_attrdir() {
     assert_eq!(file_type, NfsFtype4::AttrDir as u32);
 }
 
-/// pynfs OAT2: OPENATTR + READDIR lists named attributes.
+/// pynfs OAT2 / RFC 8881 §18.17: OPENATTR + READDIR lists named attributes.
 #[tokio::test]
 async fn test_openattr_readdir_lists_named_attrs() {
     let fs = fs_with_xattr("notes.txt", "user.demo", b"value").await;
@@ -447,7 +447,7 @@ async fn test_openattr_readdir_lists_named_attrs() {
     assert_eq!(entries[0].1, "user.demo");
 }
 
-/// Named attribute lookup and read.
+/// RFC 8881 §5.3: Named attribute lookup and read.
 #[tokio::test]
 async fn test_named_attr_lookup_and_read() {
     let fs = fs_with_xattr("notes.txt", "user.demo", b"value").await;
@@ -495,7 +495,7 @@ async fn test_named_attr_lookup_and_read() {
     assert_eq!(data, b"value");
 }
 
-/// Full named-attr lifecycle: OPEN+CREATE, WRITE, CLOSE, read-back, REMOVE.
+/// RFC 8881 §5.3: Full named-attr lifecycle: OPEN+CREATE, WRITE, CLOSE, read-back, REMOVE.
 #[tokio::test]
 async fn test_named_attr_open_create_write_close_and_remove() {
     let fs = MemFs::new();
@@ -695,7 +695,7 @@ async fn test_getattr_named_attr_dir_summary_is_cached() {
     assert_eq!(list_count.load(Ordering::Relaxed), 1);
 }
 
-/// READDIR on a sub-directory works the same as on root.
+/// RFC 8881 §18.23.3: READDIR on a sub-directory works the same as on root.
 #[tokio::test]
 async fn test_readdir_subdirectory() {
     let fs = MemFs::new();
@@ -731,8 +731,8 @@ async fn test_readdir_subdirectory() {
     assert_eq!(entries[0].1, "inner.txt");
 }
 
-/// REMOVE of a non-empty directory returns NFS4ERR_NOTEMPTY.
-/// (Linux kernel nfsd pattern)
+/// RFC 8881 §18.25.3: REMOVE of a non-empty directory returns NFS4ERR_NOTEMPTY.
+/// (Also adapted from Linux kernel nfsd pattern)
 #[tokio::test]
 async fn test_remove_nonempty_directory() {
     let fs = MemFs::new();
@@ -753,7 +753,7 @@ async fn test_remove_nonempty_directory() {
     assert_eq!(status, NfsStat4::Notempty as u32);
 }
 
-/// REMOVE an empty directory succeeds.
+/// RFC 8881 §18.25.3: REMOVE an empty directory succeeds.
 #[tokio::test]
 async fn test_remove_empty_directory() {
     let fs = fs_with_subdir("empty-dir").await;

@@ -17,7 +17,7 @@ use common::*;
 
 // ===== OPEN + CLOSE (pynfs OPEN, CLOSE) =====
 
-/// pynfs OPEN1: OPEN with CLAIM_NULL + OPEN4_CREATE creates a new file.
+/// pynfs OPEN1 / RFC 8881 §18.16.3: OPEN with CLAIM_NULL + OPEN4_CREATE creates a new file.
 #[tokio::test]
 async fn test_open_create_new_file() {
     let port = start_server().await;
@@ -55,7 +55,7 @@ async fn test_open_create_new_file() {
     assert!(!fh.is_empty());
 }
 
-/// pynfs OPEN3: OPEN with OPEN4_NOCREATE on an existing file succeeds.
+/// pynfs OPEN3 / RFC 8881 §18.16.3: OPEN with OPEN4_NOCREATE on an existing file succeeds.
 #[tokio::test]
 async fn test_open_nocreate_existing_file() {
     let fs = populated_fs(&["existing.txt"]).await;
@@ -80,7 +80,7 @@ async fn test_open_nocreate_existing_file() {
     assert_eq!(op_status, NfsStat4::Ok as u32);
 }
 
-/// pynfs OPEN4: OPEN with OPEN4_NOCREATE on a non-existent file returns NFS4ERR_NOENT.
+/// pynfs OPEN4 / RFC 8881 §18.16.3: OPEN with OPEN4_NOCREATE on a non-existent file returns NFS4ERR_NOENT.
 #[tokio::test]
 async fn test_open_nocreate_nonexistent() {
     let port = start_server().await;
@@ -98,7 +98,7 @@ async fn test_open_nocreate_nonexistent() {
     assert_eq!(status, NfsStat4::Noent as u32);
 }
 
-/// pynfs CLOSE1: CLOSE on a valid open stateid succeeds.
+/// pynfs CLOSE1 / RFC 8881 §18.2.3: CLOSE on a valid open stateid succeeds.
 #[tokio::test]
 async fn test_close_valid_stateid() {
     let port = start_server().await;
@@ -137,7 +137,7 @@ async fn test_close_valid_stateid() {
     assert_eq!(op_status, NfsStat4::Ok as u32);
 }
 
-/// pynfs CLOSE2: CLOSE with a bogus stateid returns NFS4ERR_BAD_STATEID.
+/// pynfs CLOSE2 / RFC 8881 §18.2.3: CLOSE with a bogus stateid returns NFS4ERR_BAD_STATEID.
 #[tokio::test]
 async fn test_close_bad_stateid() {
     let port = start_server().await;
@@ -165,7 +165,7 @@ async fn test_close_bad_stateid() {
 
 // ===== READ (pynfs RD) =====
 
-/// pynfs RD1: READ from a file with data returns the correct bytes.
+/// pynfs RD1 / RFC 8881 §18.22.3: READ from a file with data returns the correct bytes.
 #[tokio::test]
 async fn test_read_file_data() {
     let fs = fs_with_data("data.txt", b"hello world").await;
@@ -199,7 +199,7 @@ async fn test_read_file_data() {
     assert_eq!(data, b"hello world");
 }
 
-/// pynfs RD4: READ from an empty file returns eof=true with empty data.
+/// pynfs RD4 / RFC 8881 §18.22.3: READ from an empty file returns eof=true with empty data.
 #[tokio::test]
 async fn test_read_empty_file() {
     let fs = populated_fs(&["empty.txt"]).await;
@@ -233,7 +233,7 @@ async fn test_read_empty_file() {
     assert!(data.is_empty());
 }
 
-/// pynfs RD5: READ with offset beyond EOF returns eof=true with empty data.
+/// pynfs RD5 / RFC 8881 §18.22.3: READ with offset beyond EOF returns eof=true with empty data.
 #[tokio::test]
 async fn test_read_beyond_eof() {
     let fs = fs_with_data("small.txt", b"hi").await;
@@ -293,7 +293,7 @@ async fn test_read_directory_returns_error() {
 
 // ===== WRITE (pynfs WRT) =====
 
-/// pynfs WRT1: WRITE to a file with an open stateid succeeds.
+/// pynfs WRT1 / RFC 8881 §18.32.3: WRITE to a file with an open stateid succeeds.
 #[tokio::test]
 async fn test_write_and_read_back() {
     let port = start_server().await;
@@ -360,7 +360,7 @@ async fn test_write_and_read_back() {
     assert_eq!(data, b"test data 12345");
 }
 
-/// pynfs WRT4: WRITE at a non-zero offset works correctly.
+/// pynfs WRT4 / RFC 8881 §18.32.3: WRITE at a non-zero offset works correctly.
 #[tokio::test]
 async fn test_write_at_offset() {
     let port = start_server().await;
@@ -423,7 +423,7 @@ async fn test_write_at_offset() {
 
 // ===== REMOVE (pynfs RM) =====
 
-/// pynfs RM1: REMOVE of an existing file succeeds.
+/// pynfs RM1 / RFC 8881 §18.25.3: REMOVE of an existing file succeeds.
 #[tokio::test]
 async fn test_remove_existing_file() {
     let fs = populated_fs(&["doomed.txt"]).await;
@@ -458,7 +458,7 @@ async fn test_remove_existing_file() {
     assert_eq!(status, NfsStat4::Noent as u32);
 }
 
-/// pynfs RM2: REMOVE of a non-existent name returns NFS4ERR_NOENT.
+/// pynfs RM2 / RFC 8881 §18.25.3: REMOVE of a non-existent name returns NFS4ERR_NOENT.
 #[tokio::test]
 async fn test_remove_nonexistent() {
     let port = start_server().await;
@@ -476,7 +476,7 @@ async fn test_remove_nonexistent() {
     assert_eq!(status, NfsStat4::Noent as u32);
 }
 
-/// pynfs RM6: Remove retry replays cached reply.
+/// pynfs RM6 / RFC 8881 §18.25.3: Remove retry replays cached reply.
 #[tokio::test]
 async fn test_remove_retry_replays_cached_reply() {
     let fs = populated_fs(&["remove-me.txt"]).await;
@@ -516,7 +516,7 @@ async fn test_remove_retry_replays_cached_reply() {
 
 // ===== RENAME (pynfs RNM) =====
 
-/// pynfs RNM1: RENAME of an existing file to a new name succeeds.
+/// pynfs RNM1 / RFC 8881 §18.26.3: RENAME of an existing file to a new name succeeds.
 #[tokio::test]
 async fn test_rename_file() {
     let fs = populated_fs(&["old-name.txt"]).await;
@@ -563,7 +563,7 @@ async fn test_rename_file() {
     assert_eq!(status, NfsStat4::Ok as u32);
 }
 
-/// pynfs RNM2: RENAME of a non-existent source returns NFS4ERR_NOENT.
+/// pynfs RNM2 / RFC 8881 §18.26.3: RENAME of a non-existent source returns NFS4ERR_NOENT.
 #[tokio::test]
 async fn test_rename_nonexistent_source() {
     let port = start_server().await;
@@ -587,7 +587,7 @@ async fn test_rename_nonexistent_source() {
 
 // ===== OPEN_DOWNGRADE (pynfs OPDG) =====
 
-/// pynfs OPDG1: OPEN_DOWNGRADE from READ+WRITE to READ-only succeeds.
+/// pynfs OPDG1 / RFC 8881 §18.18.3: OPEN_DOWNGRADE from READ+WRITE to READ-only succeeds.
 #[tokio::test]
 async fn test_open_downgrade_updates_open_stateid() {
     let port = start_server().await;
@@ -632,7 +632,7 @@ async fn test_open_downgrade_updates_open_stateid() {
 
 // ===== SETATTR (pynfs SATT) =====
 
-/// pynfs SATT1: SETATTR boolean flags round-trip.
+/// pynfs SATT1 / RFC 8881 §18.30.3: SETATTR boolean flags round-trip.
 #[tokio::test]
 async fn test_setattr_flags_round_trip() {
     let fs = populated_fs(&["flags.txt"]).await;
@@ -670,7 +670,7 @@ async fn test_setattr_flags_round_trip() {
     assert!(bool::decode(&mut vals).unwrap());
 }
 
-/// pynfs SATT3: SETATTR with truncated/bad XDR returns NFS4ERR_BADXDR.
+/// pynfs SATT3 / RFC 8881 §18.30.3: SETATTR with truncated/bad XDR returns NFS4ERR_BADXDR.
 #[tokio::test]
 async fn test_setattr_badxdr_for_truncated_client_time() {
     let fs = populated_fs(&["badxdr.txt"]).await;
@@ -703,7 +703,7 @@ async fn test_setattr_badxdr_for_truncated_client_time() {
 
 // ===== GETATTR (pynfs GATT) =====
 
-/// pynfs GATT1: GETATTR on root returns valid type=DIR and fileid.
+/// pynfs GATT1 / RFC 8881 §18.7.3: GETATTR on root returns valid type=DIR and fileid.
 #[tokio::test]
 async fn test_getattr_root_is_directory() {
     let port = start_server().await;
@@ -733,7 +733,7 @@ async fn test_getattr_root_is_directory() {
     assert_ne!(fileid, 0);
 }
 
-/// pynfs GATT3: GETATTR for supported_attrs returns a valid bitmap.
+/// pynfs GATT3 / RFC 8881 §18.7.3: GETATTR for supported_attrs returns a valid bitmap.
 #[tokio::test]
 async fn test_getattr_supported_attrs() {
     let port = start_server().await;
@@ -765,7 +765,7 @@ async fn test_getattr_supported_attrs() {
     assert!(supported.is_set(FATTR4_CHANGE));
 }
 
-/// pynfs GATT5: GETATTR on a file returns size matching what was written.
+/// pynfs GATT5 / RFC 8881 §18.7.3: GETATTR on a file returns size matching what was written.
 #[tokio::test]
 async fn test_getattr_file_size() {
     let fs = fs_with_data("sized.txt", b"1234567890").await;
@@ -801,7 +801,7 @@ async fn test_getattr_file_size() {
 
 // ===== ACCESS (pynfs ACC) =====
 
-/// pynfs ACC1: ACCESS on root directory returns read/lookup access.
+/// pynfs ACC1 / RFC 8881 §18.1.3: ACCESS on root directory returns read/lookup access.
 #[tokio::test]
 async fn test_access_on_root() {
     let port = start_server().await;
@@ -833,7 +833,7 @@ async fn test_access_on_root() {
     assert_ne!(access & ACCESS4_LOOKUP, 0);
 }
 
-/// pynfs ACC2: ACCESS on a regular file returns read/modify.
+/// pynfs ACC2 / RFC 8881 §18.1.3: ACCESS on a regular file returns read/modify.
 #[tokio::test]
 async fn test_access_on_file() {
     let fs = populated_fs(&["accessible.txt"]).await;
@@ -868,7 +868,7 @@ async fn test_access_on_file() {
 
 // ===== TEST_STATEID (pynfs TSID) =====
 
-/// pynfs TSID1: TEST_STATEID with known and unknown stateids.
+/// pynfs TSID1 / RFC 8881 §18.48.3: TEST_STATEID with known and unknown stateids.
 #[tokio::test]
 async fn test_test_stateid_reports_known_and_unknown_stateids() {
     let port = start_server().await;
@@ -979,7 +979,7 @@ async fn test_open_existing_fails_when_directory_change_info_is_unavailable() {
 
 // ===== SECINFO_NO_NAME =====
 
-/// pynfs SINN1: SECINFO_NO_NAME on root returns at least one security entry.
+/// pynfs SINN1 / RFC 8881 §18.45.3: SECINFO_NO_NAME on root returns at least one security entry.
 #[tokio::test]
 async fn test_secinfo_no_name_on_root() {
     let port = start_server().await;
@@ -1010,7 +1010,7 @@ async fn test_secinfo_no_name_on_root() {
 
 // ===== VERIFY / NVERIFY (pynfs VF, NVF) =====
 
-/// pynfs VF1: VERIFY with matching attrs succeeds (NFS4_OK).
+/// pynfs VF1 / RFC 8881 §18.31.3: VERIFY with matching attrs succeeds (NFS4_OK).
 #[tokio::test]
 async fn test_verify_matching_attrs_succeeds() {
     let port = start_server().await;
@@ -1043,7 +1043,7 @@ async fn test_verify_matching_attrs_succeeds() {
     assert_eq!(status, NfsStat4::Ok as u32);
 }
 
-/// pynfs VF2: VERIFY with non-matching attrs returns NFS4ERR_NOT_SAME.
+/// pynfs VF2 / RFC 8881 §18.31.3: VERIFY with non-matching attrs returns NFS4ERR_NOT_SAME.
 #[tokio::test]
 async fn test_verify_mismatching_attrs_returns_not_same() {
     let port = start_server().await;
@@ -1064,7 +1064,7 @@ async fn test_verify_mismatching_attrs_returns_not_same() {
     assert_eq!(status, NfsStat4::NotSame as u32);
 }
 
-/// pynfs NVF1: NVERIFY with matching attrs returns NFS4ERR_SAME.
+/// pynfs NVF1 / RFC 8881 §18.19.3: NVERIFY with matching attrs returns NFS4ERR_SAME.
 #[tokio::test]
 async fn test_nverify_matching_attrs_returns_same() {
     let port = start_server().await;
@@ -1097,7 +1097,7 @@ async fn test_nverify_matching_attrs_returns_same() {
     assert_eq!(status, NfsStat4::Same as u32);
 }
 
-/// pynfs NVF2: NVERIFY with non-matching attrs succeeds (NFS4_OK).
+/// pynfs NVF2 / RFC 8881 §18.19.3: NVERIFY with non-matching attrs succeeds (NFS4_OK).
 #[tokio::test]
 async fn test_nverify_mismatching_attrs_succeeds() {
     let port = start_server().await;
@@ -1120,7 +1120,7 @@ async fn test_nverify_mismatching_attrs_succeeds() {
 
 // ===== SETATTR truncate (pynfs SATT) =====
 
-/// pynfs SATT4: SETATTR size truncates file and GETATTR reflects new size.
+/// pynfs SATT4 / RFC 8881 §18.30.3: SETATTR size truncates file and GETATTR reflects new size.
 #[tokio::test]
 async fn test_setattr_truncate_file() {
     let fs = fs_with_data("trunc.txt", b"hello world!").await;
@@ -1161,7 +1161,7 @@ async fn test_setattr_truncate_file() {
     assert_eq!(size, 5);
 }
 
-/// SETATTR size=0 empties the file, then READ returns empty.
+/// RFC 8881 §18.30.3: SETATTR size=0 empties the file, then READ returns empty.
 #[tokio::test]
 async fn test_setattr_truncate_to_zero_then_read() {
     let fs = fs_with_data("zero.txt", b"content").await;
@@ -1199,7 +1199,7 @@ async fn test_setattr_truncate_to_zero_then_read() {
 
 // ===== OPEN share modes (pynfs OPEN) =====
 
-/// pynfs OPEN9: OPEN with SHARE_ACCESS_READ only, then READ succeeds.
+/// pynfs OPEN9 / RFC 8881 §18.16.3: OPEN with SHARE_ACCESS_READ only, then READ succeeds.
 #[tokio::test]
 async fn test_open_read_only_then_read() {
     let fs = fs_with_data("ro.txt", b"readonly data").await;
@@ -1234,7 +1234,7 @@ async fn test_open_read_only_then_read() {
     assert_eq!(data, b"readonly data");
 }
 
-/// OPEN + CLOSE + FREE_STATEID cycle.
+/// pynfs FREESTATEID1 / RFC 8881 §18.38.3: OPEN + CLOSE + FREE_STATEID lifecycle.
 #[tokio::test]
 async fn test_open_close_free_stateid() {
     let port = start_server().await;
@@ -1287,7 +1287,7 @@ async fn test_open_close_free_stateid() {
 
 // ===== GETATTR edge cases =====
 
-/// GETATTR with multiple attribute classes returns all requested.
+/// RFC 8881 §18.7.3: GETATTR with multiple attribute classes returns all requested.
 #[tokio::test]
 async fn test_getattr_multiple_attrs() {
     let fs = fs_with_data("multi.txt", b"hello").await;
@@ -1326,7 +1326,7 @@ async fn test_getattr_multiple_attrs() {
     assert_eq!(size, 5);
 }
 
-/// GETATTR without current filehandle returns NFS4ERR_NOFILEHANDLE.
+/// RFC 8881 §18.7.3: GETATTR without current filehandle returns NFS4ERR_NOFILEHANDLE.
 #[tokio::test]
 async fn test_getattr_no_fh() {
     let port = start_server().await;
@@ -1342,7 +1342,7 @@ async fn test_getattr_no_fh() {
     assert_eq!(status, NfsStat4::Nofilehandle as u32);
 }
 
-/// GETATTR for fs-level attributes on root (fsid, space, etc).
+/// RFC 8881 §5.8: GETATTR for fs-level attributes on root (fsid, maxread, maxwrite, lease_time).
 #[tokio::test]
 async fn test_getattr_fs_level_attrs() {
     let port = start_server().await;
@@ -1375,7 +1375,7 @@ async fn test_getattr_fs_level_attrs() {
 
 // ===== WRITE edge cases =====
 
-/// WRITE to a new file, then GETATTR confirms the size.
+/// RFC 8881 §18.32.3 + §18.7.3: WRITE to a new file, then GETATTR confirms the size.
 #[tokio::test]
 async fn test_write_then_getattr_confirms_size() {
     let port = start_server().await;
@@ -1426,7 +1426,7 @@ async fn test_write_then_getattr_confirms_size() {
     assert_eq!(size, 100);
 }
 
-/// ACCESS without current filehandle returns NFS4ERR_NOFILEHANDLE.
+/// RFC 8881 §18.1.3: ACCESS without current filehandle returns NFS4ERR_NOFILEHANDLE.
 #[tokio::test]
 async fn test_access_no_fh() {
     let port = start_server().await;
@@ -1442,7 +1442,7 @@ async fn test_access_no_fh() {
     assert_eq!(status, NfsStat4::Nofilehandle as u32);
 }
 
-/// RENAME within same directory.
+/// pynfs RNM4 / RFC 8881 §18.26.3: RENAME within same directory.
 #[tokio::test]
 async fn test_rename_same_directory() {
     let fs = populated_fs(&["before.txt"]).await;
@@ -1481,7 +1481,7 @@ async fn test_rename_same_directory() {
     assert_eq!(status, NfsStat4::Ok as u32);
 }
 
-/// DELEGRETURN with a dummy stateid succeeds (our server stubs it as OK).
+/// RFC 8881 §18.6: DELEGRETURN with a dummy stateid succeeds (our server stubs it as OK).
 #[tokio::test]
 async fn test_delegreturn_stub_succeeds() {
     let port = start_server().await;
@@ -1502,7 +1502,7 @@ async fn test_delegreturn_stub_succeeds() {
     assert_eq!(op_status, NfsStat4::Ok as u32);
 }
 
-/// DELEGPURGE stub succeeds.
+/// RFC 8881 §18.5: DELEGPURGE stub succeeds.
 #[tokio::test]
 async fn test_delegpurge_stub_succeeds() {
     let port = start_server().await;
