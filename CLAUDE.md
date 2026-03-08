@@ -81,6 +81,6 @@ Doc comments on every public item. `cargo doc` should produce useful, navigable 
 
 ### Panic and Unsafe Policy
 
-Avoid `unwrap()`/`expect()` in non-test code when a real error can be returned instead. If a panic is genuinely required because an internal invariant has already been established, the panic site must have an immediately preceding comment that explains the invariant and why panicking is acceptable there.
+`panic!`, `unwrap()`, and `expect()` are allowed in non-test code when they keep the implementation clearer than propagating an error that is not usefully recoverable. Each such site must have an immediately preceding comment that explains the invariant, why the failure is considered unrecoverable, or why crashing is preferable to additional error plumbing there.
 
 Every `unsafe` block, `unsafe fn`, and `unsafe impl` must have an immediately preceding `// SAFETY:` comment that explains the required invariants and why they hold.
