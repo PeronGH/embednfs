@@ -5,7 +5,6 @@
 
 mod common;
 
-use embednfs_proto::xdr::*;
 use embednfs_proto::*;
 
 use common::*;
