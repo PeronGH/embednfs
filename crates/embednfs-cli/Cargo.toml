@@ -8,7 +8,6 @@ publish = false
 
 [dependencies]
 embednfs = { path = "../embednfs" }
-embednfs-proto = { path = "../embednfs-proto" }
 tokio = { version = "1.50.0", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }

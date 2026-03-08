@@ -73,7 +73,7 @@ impl fmt::Display for NfsError {
 impl std::error::Error for NfsError {}
 
 impl NfsError {
-    pub fn to_nfsstat4(self) -> embednfs_proto::NfsStat4 {
+    pub(crate) fn to_nfsstat4(self) -> embednfs_proto::NfsStat4 {
         use embednfs_proto::NfsStat4;
         match self {
             NfsError::Ok => NfsStat4::Ok,
