@@ -89,12 +89,7 @@ The root directory must have `FileId = 1`. The server handles all protocol detai
 ## Testing
 
 ```bash
-# Unit tests
 cargo test --workspace
-
-# End-to-end with libnfs (requires libnfs-dev)
-cargo run --release &
-# Then run the libnfs test client
 ```
 
 ## License
