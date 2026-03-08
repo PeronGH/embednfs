@@ -9,8 +9,7 @@ use tokio::net::TcpStream;
 
 use embednfs_proto::xdr::*;
 use embednfs_proto::*;
-use embednfs::fs::SetFileAttr;
-use embednfs::{MemFs, NfsFileSystem, NfsServer};
+use embednfs::{MemFs, NfsFileSystem, NfsNamedAttrs, NfsServer, XattrSetMode};
 
 async fn start_server() -> u16 {
     start_server_with_fs(MemFs::new()).await
@@ -137,6 +136,42 @@ fn encode_getattr(bits: &[u32]) -> Vec<u8> {
     let mut buf = BytesMut::new();
     OP_GETATTR.encode(&mut buf);
     bitmap.encode(&mut buf);
+    buf.to_vec()
+}
+
+fn encode_getfh() -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_GETFH.encode(&mut buf);
+    buf.to_vec()
+}
+
+fn encode_putfh(fh: &[u8]) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_PUTFH.encode(&mut buf);
+    encode_opaque(&mut buf, fh);
+    buf.to_vec()
+}
+
+fn encode_lookup(name: &str) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_LOOKUP.encode(&mut buf);
+    name.to_string().encode(&mut buf);
+    buf.to_vec()
+}
+
+fn encode_openattr(createdir: bool) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_OPENATTR.encode(&mut buf);
+    createdir.encode(&mut buf);
+    buf.to_vec()
+}
+
+fn encode_read(offset: u64, count: u32) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_READ.encode(&mut buf);
+    Stateid4::default().encode(&mut buf);
+    offset.encode(&mut buf);
+    count.encode(&mut buf);
     buf.to_vec()
 }
 
@@ -279,8 +314,17 @@ async fn setup_session(stream: &mut TcpStream) -> [u8; 16] {
 async fn populated_fs(names: &[&str]) -> MemFs {
     let fs = MemFs::new();
     for name in names {
-        fs.create(1, name, &SetFileAttr::default()).await.unwrap();
+        fs.create_file(1, name).await.unwrap();
     }
+    fs
+}
+
+async fn fs_with_xattr(file_name: &str, xattr_name: &str, value: &[u8]) -> MemFs {
+    let fs = MemFs::new();
+    let file_id = fs.create_file(1, file_name).await.unwrap();
+    fs.set_xattr(file_id, xattr_name, value, XattrSetMode::CreateOnly)
+        .await
+        .unwrap();
     fs
 }
 
@@ -530,6 +574,131 @@ async fn test_reclaim_complete() {
     let (status, _, num_results) = parse_compound_header(&mut resp);
     assert_eq!(status, NfsStat4::Ok as u32);
     assert_eq!(num_results, 2);
+}
+
+#[tokio::test]
+async fn test_openattr_on_file_returns_attrdir() {
+    let fs = fs_with_xattr("notes.txt", "user.demo", b"value").await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_op = encode_lookup("notes.txt");
+    let openattr_op = encode_openattr(false);
+    let getattr_op = encode_getattr(&[FATTR4_TYPE]);
+    let compound = encode_compound(
+        "openattr",
+        &[&seq_op, &rootfh_op, &lookup_op, &openattr_op, &getattr_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 5);
+
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_OPENATTR);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_GETATTR);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let fattr = Fattr4::decode(&mut resp).unwrap();
+    let mut attr_vals = Bytes::from(fattr.attr_vals);
+    let file_type = u32::decode(&mut attr_vals).unwrap();
+    assert_eq!(file_type, NfsFtype4::AttrDir as u32);
+}
+
+#[tokio::test]
+async fn test_openattr_readdir_lists_named_attrs() {
+    let fs = fs_with_xattr("notes.txt", "user.demo", b"value").await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_op = encode_lookup("notes.txt");
+    let openattr_op = encode_openattr(false);
+    let readdir_op = encode_readdir_custom(0, [0u8; 8], 4096, 8192, &[FATTR4_FILEID, FATTR4_TYPE]);
+    let compound = encode_compound(
+        "openattr-readdir",
+        &[&seq_op, &rootfh_op, &lookup_op, &openattr_op, &readdir_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 5);
+
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_READDIR);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let (_, _, entries, eof) = parse_readdir_body(&mut resp);
+    assert!(eof);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].1, "user.demo");
+}
+
+#[tokio::test]
+async fn test_named_attr_lookup_and_read() {
+    let fs = fs_with_xattr("notes.txt", "user.demo", b"value").await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_file_op = encode_lookup("notes.txt");
+    let openattr_op = encode_openattr(false);
+    let lookup_xattr_op = encode_lookup("user.demo");
+    let read_op = encode_read(0, 1024);
+    let compound = encode_compound(
+        "named-attr-read",
+        &[&seq_op, &rootfh_op, &lookup_file_op, &openattr_op, &lookup_xattr_op, &read_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 6);
+
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_READ);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let eof = bool::decode(&mut resp).unwrap();
+    let data = decode_opaque(&mut resp).unwrap();
+    assert!(eof);
+    assert_eq!(data, b"value");
 }
 
 #[tokio::test]

@@ -1,19 +1,43 @@
-use crate::fs::FileId;
+use crate::internal::{ServerFileType, ServerObject, SetAttrRequest, SetTime};
 use dashmap::DashMap;
-/// NFSv4.1 session and state management.
-///
-/// Manages client IDs, sessions, slot tables, open state, and file handle mappings.
+/// NFSv4.1 session, object, and server-side state management.
 use embednfs_proto::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use tokio::sync::RwLock;
 
-/// Lock state for a file.
+/// Server-owned metadata tracked for each visible object.
+#[derive(Debug, Clone)]
+pub(crate) struct SynthMeta {
+    pub fileid: u64,
+    pub mode: u32,
+    pub nlink: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub owner: String,
+    pub owner_group: String,
+    pub atime_sec: i64,
+    pub atime_nsec: u32,
+    pub mtime_sec: i64,
+    pub mtime_nsec: u32,
+    pub ctime_sec: i64,
+    pub ctime_nsec: u32,
+    pub crtime_sec: i64,
+    pub crtime_nsec: u32,
+    pub change_id: u64,
+    pub archive: bool,
+    pub hidden: bool,
+    pub system: bool,
+}
+
 #[derive(Debug)]
 struct LockFileState {
-    #[allow(dead_code)]
+    object: ServerObject,
     owner: StateOwner4,
+    locktype: NfsLockType4,
+    offset: u64,
+    length: u64,
     stateid_seq: u32,
 }
 
@@ -21,11 +45,13 @@ struct LockFileState {
 pub struct StateManager {
     inner: Arc<RwLock<StateInner>>,
     /// Lock-free file handle mappings (hot path).
-    fh_to_id: DashMap<Vec<u8>, FileId>,
-    id_to_fh: DashMap<FileId, Vec<u8>>,
+    fh_to_object: DashMap<Vec<u8>, ServerObject>,
+    object_to_fh: DashMap<ServerObject, Vec<u8>>,
     next_fh: AtomicU64,
     next_clientid: AtomicU64,
     next_stateid: AtomicU32,
+    next_changeid: AtomicU64,
+    next_synth_fileid: AtomicU64,
     /// Server boot verifier (changes each restart).
     pub write_verifier: Verifier4,
     pub server_owner: ServerOwner4,
@@ -34,10 +60,12 @@ pub struct StateManager {
 struct StateInner {
     clients: HashMap<Clientid4, ClientState>,
     sessions: HashMap<Sessionid4, SessionState>,
-    /// Open file state: stateid -> OpenFileState
+    /// Open file state: stateid.other -> OpenFileState
     open_files: HashMap<[u8; 12], OpenFileState>,
     /// Lock state: stateid.other -> LockFileState
     lock_files: HashMap<[u8; 12], LockFileState>,
+    /// Server-owned synthesized metadata.
+    metadata: HashMap<ServerObject, SynthMeta>,
 }
 
 #[derive(Debug)]
@@ -64,15 +92,11 @@ struct SlotState {
 
 #[derive(Debug)]
 struct OpenFileState {
-    #[allow(dead_code)]
-    file_id: FileId,
-    #[allow(dead_code)]
+    object: ServerObject,
     clientid: Clientid4,
     #[allow(dead_code)]
     stateid_seq: u32,
-    #[allow(dead_code)]
     share_access: u32,
-    #[allow(dead_code)]
     share_deny: u32,
 }
 
@@ -95,41 +119,211 @@ impl StateManager {
                 sessions: HashMap::new(),
                 open_files: HashMap::new(),
                 lock_files: HashMap::new(),
+                metadata: HashMap::new(),
             })),
-            fh_to_id: DashMap::new(),
-            id_to_fh: DashMap::new(),
+            fh_to_object: DashMap::new(),
+            object_to_fh: DashMap::new(),
             next_fh: AtomicU64::new(1),
             next_clientid: AtomicU64::new(1),
             next_stateid: AtomicU32::new(1),
+            next_changeid: AtomicU64::new(2),
+            next_synth_fileid: AtomicU64::new(1 << 63),
             write_verifier,
             server_owner,
         }
     }
 
-    /// Get or create a file handle for a FileId.
-    /// Uses lock-free DashMap — no await contention on hot path.
-    pub async fn file_id_to_fh(&self, id: FileId) -> NfsFh4 {
-        if let Some(fh) = self.id_to_fh.get(&id) {
+    /// Get or create a file handle for a server object.
+    pub(crate) async fn object_to_fh(&self, object: &ServerObject) -> NfsFh4 {
+        if let Some(fh) = self.object_to_fh.get(object) {
             return NfsFh4(fh.value().clone());
         }
         let fh_num = self.next_fh.fetch_add(1, Ordering::Relaxed);
         let fh = fh_num.to_be_bytes().to_vec();
-        self.fh_to_id.insert(fh.clone(), id);
-        self.id_to_fh.insert(id, fh.clone());
+        self.fh_to_object.insert(fh.clone(), object.clone());
+        self.object_to_fh.insert(object.clone(), fh.clone());
         NfsFh4(fh)
     }
 
-    /// Resolve a file handle to a FileId.
-    /// Uses lock-free DashMap — no await contention on hot path.
-    pub async fn fh_to_file_id(&self, fh: &NfsFh4) -> Option<FileId> {
-        self.fh_to_id.get(&fh.0).map(|r| *r.value())
+    /// Resolve a file handle to a server object.
+    pub(crate) async fn fh_to_object(&self, fh: &NfsFh4) -> Option<ServerObject> {
+        self.fh_to_object.get(&fh.0).map(|r| r.value().clone())
+    }
+
+    fn now() -> (i64, u32) {
+        let dur = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        (dur.as_secs() as i64, dur.subsec_nanos())
+    }
+
+    fn default_mode(file_type: ServerFileType) -> u32 {
+        match file_type {
+            ServerFileType::Regular | ServerFileType::NamedAttr => 0o644,
+            ServerFileType::Directory | ServerFileType::NamedAttrDir => 0o755,
+            ServerFileType::Symlink => 0o777,
+        }
+    }
+
+    fn default_nlink(file_type: ServerFileType) -> u32 {
+        match file_type {
+            ServerFileType::Directory | ServerFileType::NamedAttrDir => 2,
+            _ => 1,
+        }
+    }
+
+    fn ensure_meta_locked(
+        &self,
+        inner: &mut StateInner,
+        object: &ServerObject,
+        file_type: ServerFileType,
+    ) -> SynthMeta {
+        if let Some(meta) = inner.metadata.get(object) {
+            return meta.clone();
+        }
+
+        let (now_s, now_ns) = Self::now();
+        let fileid = match object {
+            ServerObject::Fs(id) => *id,
+            ServerObject::NamedAttrDir(_) | ServerObject::NamedAttrFile { .. } => {
+                self.next_synth_fileid.fetch_add(1, Ordering::Relaxed)
+            }
+        };
+        let meta = SynthMeta {
+            fileid,
+            mode: Self::default_mode(file_type),
+            nlink: Self::default_nlink(file_type),
+            uid: 0,
+            gid: 0,
+            owner: "root".into(),
+            owner_group: "root".into(),
+            atime_sec: now_s,
+            atime_nsec: now_ns,
+            mtime_sec: now_s,
+            mtime_nsec: now_ns,
+            ctime_sec: now_s,
+            ctime_nsec: now_ns,
+            crtime_sec: now_s,
+            crtime_nsec: now_ns,
+            change_id: self.next_changeid.fetch_add(1, Ordering::Relaxed),
+            archive: false,
+            hidden: false,
+            system: false,
+        };
+        inner.metadata.insert(object.clone(), meta.clone());
+        meta
+    }
+
+    pub(crate) async fn ensure_meta(
+        &self,
+        object: &ServerObject,
+        file_type: ServerFileType,
+    ) -> SynthMeta {
+        let mut inner = self.inner.write().await;
+        self.ensure_meta_locked(&mut inner, object, file_type)
+    }
+
+    pub(crate) async fn touch_data(
+        &self,
+        object: &ServerObject,
+        file_type: ServerFileType,
+    ) -> SynthMeta {
+        let mut inner = self.inner.write().await;
+        let mut meta = self.ensure_meta_locked(&mut inner, object, file_type);
+        let (now_s, now_ns) = Self::now();
+        meta.mtime_sec = now_s;
+        meta.mtime_nsec = now_ns;
+        meta.ctime_sec = now_s;
+        meta.ctime_nsec = now_ns;
+        meta.change_id = self.next_changeid.fetch_add(1, Ordering::Relaxed);
+        inner.metadata.insert(object.clone(), meta.clone());
+        meta
+    }
+
+    pub(crate) async fn touch_metadata(
+        &self,
+        object: &ServerObject,
+        file_type: ServerFileType,
+    ) -> SynthMeta {
+        let mut inner = self.inner.write().await;
+        let mut meta = self.ensure_meta_locked(&mut inner, object, file_type);
+        let (now_s, now_ns) = Self::now();
+        meta.ctime_sec = now_s;
+        meta.ctime_nsec = now_ns;
+        meta.mtime_sec = now_s;
+        meta.mtime_nsec = now_ns;
+        meta.change_id = self.next_changeid.fetch_add(1, Ordering::Relaxed);
+        inner.metadata.insert(object.clone(), meta.clone());
+        meta
+    }
+
+    pub(crate) async fn apply_setattr(
+        &self,
+        object: &ServerObject,
+        file_type: ServerFileType,
+        attrs: &SetAttrRequest,
+    ) -> SynthMeta {
+        let mut inner = self.inner.write().await;
+        let mut meta = self.ensure_meta_locked(&mut inner, object, file_type);
+        let (now_s, now_ns) = Self::now();
+
+        if let Some(mode) = attrs.mode {
+            meta.mode = mode;
+        }
+        if let Some(uid) = attrs.uid {
+            meta.uid = uid;
+        }
+        if let Some(gid) = attrs.gid {
+            meta.gid = gid;
+        }
+        if let Some(atime) = attrs.atime {
+            match atime {
+                SetTime::ServerTime => {
+                    meta.atime_sec = now_s;
+                    meta.atime_nsec = now_ns;
+                }
+                SetTime::ClientTime(s, ns) => {
+                    meta.atime_sec = s;
+                    meta.atime_nsec = ns;
+                }
+            }
+        }
+        if let Some(mtime) = attrs.mtime {
+            match mtime {
+                SetTime::ServerTime => {
+                    meta.mtime_sec = now_s;
+                    meta.mtime_nsec = now_ns;
+                }
+                SetTime::ClientTime(s, ns) => {
+                    meta.mtime_sec = s;
+                    meta.mtime_nsec = ns;
+                }
+            }
+        }
+        if let Some(crtime) = attrs.crtime {
+            match crtime {
+                SetTime::ServerTime => {
+                    meta.crtime_sec = now_s;
+                    meta.crtime_nsec = now_ns;
+                }
+                SetTime::ClientTime(s, ns) => {
+                    meta.crtime_sec = s;
+                    meta.crtime_nsec = ns;
+                }
+            }
+        }
+
+        meta.ctime_sec = now_s;
+        meta.ctime_nsec = now_ns;
+        meta.change_id = self.next_changeid.fetch_add(1, Ordering::Relaxed);
+        inner.metadata.insert(object.clone(), meta.clone());
+        meta
     }
 
     /// Handle EXCHANGE_ID.
     pub async fn exchange_id(&self, args: &ExchangeIdArgs4) -> ExchangeIdRes4 {
         let mut inner = self.inner.write().await;
 
-        // Check if we already have this client
         let clientid = {
             let existing = inner
                 .clients
@@ -155,20 +349,8 @@ impl StateManager {
         let client = inner.clients.get(&clientid).unwrap();
         let seq = client.sequence_id;
         let confirmed = client.confirmed;
-
-        // Compute response flags:
-        // - pNFS role: AND client's requested pNFS bits with what we support (NON_PNFS only)
-        let client_pnfs = args.flags & EXCHGID4_FLAG_MASK_PNFS;
-        let pnfs_role = if client_pnfs & EXCHGID4_FLAG_USE_NON_PNFS != 0 {
-            EXCHGID4_FLAG_USE_NON_PNFS
-        } else if client_pnfs == 0 {
-            // Client didn't specify; default to non-pNFS
-            EXCHGID4_FLAG_USE_NON_PNFS
-        } else {
-            // Client only wants pNFS roles we don't support
-            EXCHGID4_FLAG_USE_NON_PNFS
-        };
-        // - CONFIRMED_R: only set if client record is already confirmed
+        let _client_pnfs = args.flags & EXCHGID4_FLAG_MASK_PNFS;
+        let pnfs_role = EXCHGID4_FLAG_USE_NON_PNFS;
         let confirmed_flag = if confirmed {
             EXCHGID4_FLAG_CONFIRMED_R
         } else {
@@ -205,14 +387,12 @@ impl StateManager {
             .get_mut(&args.clientid)
             .ok_or(NfsStat4::StaleClientid)?;
 
-        // Validate sequence
         if args.sequence != client.sequence_id {
             return Err(NfsStat4::SeqMisordered);
         }
         client.sequence_id += 1;
         client.confirmed = true;
 
-        // Generate session ID
         let mut sessionid = [0u8; 16];
         sessionid[..8].copy_from_slice(&args.clientid.to_be_bytes());
         sessionid[8..16].copy_from_slice(&(client.sequence_id as u64).to_be_bytes());
@@ -280,13 +460,9 @@ impl StateManager {
 
         let slot = &mut session.slots[slot_idx];
 
-        // Check sequence
         if args.sequenceid == slot.sequence_id {
-            // New request
             slot.sequence_id += 1;
-        } else if args.sequenceid == slot.sequence_id - 1 {
-            // Retry - for now just accept it
-        } else {
+        } else if args.sequenceid != slot.sequence_id - 1 {
             return Err(NfsStat4::SeqMisordered);
         }
 
@@ -315,8 +491,9 @@ impl StateManager {
     /// Handle DESTROY_CLIENTID.
     pub async fn destroy_clientid(&self, clientid: Clientid4) -> Result<(), NfsStat4> {
         let mut inner = self.inner.write().await;
-        // Remove all sessions for this client
         inner.sessions.retain(|_, s| s.clientid != clientid);
+        inner.open_files.retain(|_, s| s.clientid != clientid);
+        inner.lock_files.retain(|_, s| s.owner.clientid != clientid);
         inner
             .clients
             .remove(&clientid)
@@ -340,24 +517,32 @@ impl StateManager {
         })
     }
 
-    /// Create an open state for a file. Returns a Stateid4.
-    pub async fn create_open_state(
+    /// Create an open state for an object.
+    pub(crate) async fn create_open_state(
         &self,
-        file_id: FileId,
+        object: ServerObject,
         clientid: Clientid4,
         share_access: u32,
         share_deny: u32,
-    ) -> Stateid4 {
+    ) -> Result<Stateid4, NfsStat4> {
+        let mut inner = self.inner.write().await;
+        for state in inner.open_files.values() {
+            if state.object == object
+                && ((state.share_deny & share_access) != 0 || (share_deny & state.share_access) != 0)
+            {
+                return Err(NfsStat4::ShareDenied);
+            }
+        }
+
         let seq = self.next_stateid.fetch_add(1, Ordering::Relaxed);
         let mut other = [0u8; 12];
         other[..4].copy_from_slice(&seq.to_be_bytes());
         other[4..12].copy_from_slice(&clientid.to_be_bytes());
 
-        let mut inner = self.inner.write().await;
         inner.open_files.insert(
             other,
             OpenFileState {
-                file_id,
+                object,
                 clientid,
                 stateid_seq: 1,
                 share_access,
@@ -365,7 +550,19 @@ impl StateManager {
             },
         );
 
-        Stateid4 { seqid: 1, other }
+        Ok(Stateid4 { seqid: 1, other })
+    }
+
+    /// Look up the object and owner associated with a lock state.
+    pub(crate) async fn lock_state_info(
+        &self,
+        stateid: &Stateid4,
+    ) -> Option<(ServerObject, StateOwner4)> {
+        let inner = self.inner.read().await;
+        inner
+            .lock_files
+            .get(&stateid.other)
+            .map(|state| (state.object.clone(), state.owner.clone()))
     }
 
     /// Close an open state.
@@ -375,7 +572,6 @@ impl StateManager {
             .open_files
             .remove(&stateid.other)
             .ok_or(NfsStat4::BadStateid)?;
-        // Return a stateid with seqid+1 and all-zeros other (marks as closed)
         Ok(Stateid4 {
             seqid: stateid.seqid.wrapping_add(1),
             other: stateid.other,
@@ -401,28 +597,99 @@ impl StateManager {
     /// Look up the client ID associated with a session.
     pub async fn session_clientid(&self, sessionid: &Sessionid4) -> Option<Clientid4> {
         let inner = self.inner.read().await;
-        inner
-            .sessions
-            .get(sessionid)
-            .map(|session| session.clientid)
+        inner.sessions.get(sessionid).map(|session| session.clientid)
+    }
+
+    fn lock_end(offset: u64, length: u64) -> u128 {
+        if length == 0 {
+            u128::MAX
+        } else {
+            offset as u128 + length as u128
+        }
+    }
+
+    fn locks_overlap(a_offset: u64, a_length: u64, b_offset: u64, b_length: u64) -> bool {
+        let a_end = Self::lock_end(a_offset, a_length);
+        let b_end = Self::lock_end(b_offset, b_length);
+        (a_offset as u128) < b_end && (b_offset as u128) < a_end
+    }
+
+    fn is_write_lock(locktype: NfsLockType4) -> bool {
+        matches!(locktype, NfsLockType4::WriteLt | NfsLockType4::WritewLt)
+    }
+
+    fn same_lock_owner(a: &StateOwner4, b: &StateOwner4) -> bool {
+        a.clientid == b.clientid && a.owner == b.owner
+    }
+
+    pub(crate) async fn find_lock_conflict(
+        &self,
+        object: &ServerObject,
+        owner: &StateOwner4,
+        locktype: NfsLockType4,
+        offset: u64,
+        length: u64,
+        ignore_stateid: Option<&Stateid4>,
+    ) -> Option<LockDenied4> {
+        let inner = self.inner.read().await;
+        for (other, state) in &inner.lock_files {
+            if Some(*other) == ignore_stateid.map(|sid| sid.other) {
+                continue;
+            }
+            if state.object != *object {
+                continue;
+            }
+            if Self::same_lock_owner(&state.owner, owner) {
+                continue;
+            }
+            if !Self::locks_overlap(state.offset, state.length, offset, length) {
+                continue;
+            }
+            if !Self::is_write_lock(state.locktype) && !Self::is_write_lock(locktype) {
+                continue;
+            }
+            return Some(LockDenied4 {
+                offset: state.offset,
+                length: state.length,
+                locktype: state.locktype,
+                owner: state.owner.clone(),
+            });
+        }
+        None
     }
 
     /// Create a new lock state (LOCK with new lock owner).
-    pub async fn create_lock_state(
+    pub(crate) async fn create_lock_state(
         &self,
-        _open_stateid: &Stateid4,
+        open_stateid: &Stateid4,
         owner: &StateOwner4,
+        object: ServerObject,
+        locktype: NfsLockType4,
+        offset: u64,
+        length: u64,
     ) -> Result<Stateid4, NfsStat4> {
+        let mut inner = self.inner.write().await;
+        let open = inner
+            .open_files
+            .get(&open_stateid.other)
+            .ok_or(NfsStat4::Openmode)?;
+        if open.object != object {
+            return Err(NfsStat4::Openmode);
+        }
+
         let seq = self.next_stateid.fetch_add(1, Ordering::Relaxed);
         let mut other = [0u8; 12];
         other[..4].copy_from_slice(&seq.to_be_bytes());
         other[4..12].copy_from_slice(&owner.clientid.to_be_bytes());
 
-        let mut inner = self.inner.write().await;
         inner.lock_files.insert(
             other,
             LockFileState {
+                object,
                 owner: owner.clone(),
+                locktype,
+                offset,
+                length,
                 stateid_seq: 1,
             },
         );
@@ -431,12 +698,21 @@ impl StateManager {
     }
 
     /// Update an existing lock state (LOCK with existing lock owner).
-    pub async fn update_lock_state(&self, lock_stateid: &Stateid4) -> Result<Stateid4, NfsStat4> {
+    pub async fn update_lock_state(
+        &self,
+        lock_stateid: &Stateid4,
+        locktype: NfsLockType4,
+        offset: u64,
+        length: u64,
+    ) -> Result<Stateid4, NfsStat4> {
         let mut inner = self.inner.write().await;
         let state = inner
             .lock_files
             .get_mut(&lock_stateid.other)
             .ok_or(NfsStat4::BadStateid)?;
+        state.locktype = locktype;
+        state.offset = offset;
+        state.length = length;
         state.stateid_seq += 1;
         Ok(Stateid4 {
             seqid: state.stateid_seq,
@@ -445,18 +721,58 @@ impl StateManager {
     }
 
     /// Unlock (LOCKU).
-    pub async fn unlock_state(&self, lock_stateid: &Stateid4) -> Result<Stateid4, NfsStat4> {
+    pub async fn unlock_state(
+        &self,
+        lock_stateid: &Stateid4,
+        offset: u64,
+        length: u64,
+    ) -> Result<Stateid4, NfsStat4> {
         let mut inner = self.inner.write().await;
         let state = inner
             .lock_files
             .get_mut(&lock_stateid.other)
             .ok_or(NfsStat4::BadStateid)?;
+
+        if !Self::locks_overlap(state.offset, state.length, offset, length) {
+            state.stateid_seq += 1;
+            return Ok(Stateid4 {
+                seqid: state.stateid_seq,
+                other: lock_stateid.other,
+            });
+        }
+
+        let unlock_end = Self::lock_end(offset, length);
+        let state_end = Self::lock_end(state.offset, state.length);
+        if offset <= state.offset && unlock_end >= state_end {
+            let seqid = state.stateid_seq.wrapping_add(1);
+            inner.lock_files.remove(&lock_stateid.other);
+            return Ok(Stateid4 {
+                seqid,
+                other: lock_stateid.other,
+            });
+        }
+
+        if offset <= state.offset {
+            let new_start = unlock_end as u64;
+            state.length = if state.length == 0 {
+                0
+            } else {
+                (state_end.saturating_sub(new_start as u128)) as u64
+            };
+            state.offset = new_start;
+        } else {
+            state.length = offset.saturating_sub(state.offset);
+        }
         state.stateid_seq += 1;
-        let new_seqid = state.stateid_seq;
-        // Keep the state around (may be reused)
         Ok(Stateid4 {
-            seqid: new_seqid,
+            seqid: state.stateid_seq,
             other: lock_stateid.other,
         })
+    }
+}
+
+impl Default for StateManager {
+    fn default() -> Self {
+        Self::new()
     }
 }

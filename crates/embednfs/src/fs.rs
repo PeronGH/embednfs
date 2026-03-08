@@ -1,115 +1,43 @@
-/// Filesystem trait for NFSv4.1 server.
+/// Filesystem trait for the embeddable NFSv4.1 server.
 ///
-/// Implement this trait to expose any data source as an NFS filesystem.
-/// The server library handles all protocol details — implementors only
-/// need to think in terms of files, directories, and metadata.
+/// The public API is intentionally object-centric and minimal. Implementors
+/// provide stable `FileId` values for real filesystem objects, and the server
+/// layers NFS-specific state, filehandles, locking, and optional capabilities
+/// such as named attributes on top.
 use async_trait::async_trait;
 use std::fmt;
 
 /// Unique file identifier (inode number equivalent).
 pub type FileId = u64;
 
-/// File type.
+/// Basic node kinds required by the core filesystem trait.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileType {
-    Regular,
+pub enum NodeKind {
+    File,
     Directory,
     Symlink,
-    BlockDevice,
-    CharDevice,
-    Socket,
-    Fifo,
 }
 
-/// File attributes (metadata).
-#[derive(Debug, Clone)]
-pub struct FileAttr {
-    pub fileid: FileId,
-    pub file_type: FileType,
+/// Minimal node information required from a filesystem implementation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodeInfo {
+    pub kind: NodeKind,
     pub size: u64,
-    pub used: u64,
-    pub mode: u32,
-    pub nlink: u32,
-    pub uid: u32,
-    pub gid: u32,
-    pub owner: String,
-    pub owner_group: String,
-    pub atime_sec: i64,
-    pub atime_nsec: u32,
-    pub mtime_sec: i64,
-    pub mtime_nsec: u32,
-    pub ctime_sec: i64,
-    pub ctime_nsec: u32,
-    /// Birth/creation time (macOS expects this).
-    pub crtime_sec: i64,
-    pub crtime_nsec: u32,
-    pub change_id: u64,
-    /// Device numbers for block/char devices
-    pub rdev_major: u32,
-    pub rdev_minor: u32,
-    /// macOS flags: archive, hidden, system
-    pub archive: bool,
-    pub hidden: bool,
-    pub system: bool,
 }
 
-impl Default for FileAttr {
-    fn default() -> Self {
-        FileAttr {
-            fileid: 0,
-            file_type: FileType::Regular,
-            size: 0,
-            used: 0,
-            mode: 0o644,
-            nlink: 1,
-            uid: 0,
-            gid: 0,
-            owner: "nobody".into(),
-            owner_group: "nogroup".into(),
-            atime_sec: 0,
-            atime_nsec: 0,
-            mtime_sec: 0,
-            mtime_nsec: 0,
-            ctime_sec: 0,
-            ctime_nsec: 0,
-            crtime_sec: 0,
-            crtime_nsec: 0,
-            change_id: 0,
-            rdev_major: 0,
-            rdev_minor: 0,
-            archive: false,
-            hidden: false,
-            system: false,
-        }
-    }
-}
-
-/// A directory entry returned by readdir.
-#[derive(Debug, Clone)]
+/// A directory entry returned by `readdir`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirEntry {
     pub fileid: FileId,
     pub name: String,
-    pub attr: FileAttr,
 }
 
-/// Set-time specification.
-#[derive(Debug, Clone, Copy)]
-pub enum SetTime {
-    ServerTime,
-    ClientTime(i64, u32),
-}
-
-/// Attributes to set (only fields that are Some get applied).
-#[derive(Debug, Clone, Default)]
-pub struct SetFileAttr {
-    pub size: Option<u64>,
-    pub mode: Option<u32>,
-    pub uid: Option<u32>,
-    pub gid: Option<u32>,
-    pub atime: Option<SetTime>,
-    pub mtime: Option<SetTime>,
-    /// Birth/creation time (macOS sends this).
-    pub crtime: Option<SetTime>,
+/// Controls how a named attribute should be written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum XattrSetMode {
+    CreateOrReplace,
+    CreateOnly,
+    ReplaceOnly,
 }
 
 /// NFS error type.
@@ -173,27 +101,70 @@ impl NfsError {
 
 pub type NfsResult<T> = Result<T, NfsError>;
 
-/// The filesystem trait. Implement this to serve files over NFS.
-///
-/// All methods receive the file identifier as a `FileId` (u64). The server
-/// library manages the mapping between NFS file handles and FileIds.
-///
-/// The root directory always has FileId 1.
+/// Optional named-attribute support used for Apple/macOS xattr flows.
+#[async_trait]
+pub trait NfsNamedAttrs: Send + Sync {
+    /// List all named attributes attached to an object.
+    async fn list_xattrs(&self, id: FileId) -> NfsResult<Vec<String>>;
+
+    /// Fetch a full named-attribute value.
+    async fn get_xattr(&self, id: FileId, name: &str) -> NfsResult<Vec<u8>>;
+
+    /// Set or replace a named-attribute value.
+    async fn set_xattr(
+        &self,
+        id: FileId,
+        name: &str,
+        value: &[u8],
+        mode: XattrSetMode,
+    ) -> NfsResult<()>;
+
+    /// Remove a named attribute.
+    async fn remove_xattr(&self, id: FileId, name: &str) -> NfsResult<()>;
+}
+
+/// Optional symlink support.
+#[async_trait]
+pub trait NfsSymlinks: Send + Sync {
+    /// Create a symlink in a directory and return its `FileId`.
+    async fn symlink(&self, dir_id: FileId, name: &str, target: &str) -> NfsResult<FileId>;
+
+    /// Read a symlink target.
+    async fn readlink(&self, id: FileId) -> NfsResult<String>;
+}
+
+/// Optional hard-link support.
+#[async_trait]
+pub trait NfsHardLinks: Send + Sync {
+    /// Create a hard link to an existing file.
+    async fn link(&self, id: FileId, dir_id: FileId, name: &str) -> NfsResult<()>;
+}
+
+/// Optional flush/commit support.
+#[async_trait]
+pub trait NfsSync: Send + Sync {
+    /// Flush any buffered data for a file.
+    async fn commit(&self, id: FileId) -> NfsResult<()>;
+}
+
+/// The core filesystem trait.
 #[async_trait]
 pub trait NfsFileSystem: Send + Sync + 'static {
-    /// Get file attributes by file ID.
-    async fn getattr(&self, id: FileId) -> NfsResult<FileAttr>;
+    /// Return the root object ID. The default root is `1`.
+    fn root(&self) -> FileId {
+        1
+    }
 
-    /// Set file attributes.
-    async fn setattr(&self, id: FileId, attrs: SetFileAttr) -> NfsResult<FileAttr>;
+    /// Return minimal information about an object.
+    async fn stat(&self, id: FileId) -> NfsResult<NodeInfo>;
 
     /// Look up a child entry by name in a directory.
     async fn lookup(&self, dir_id: FileId, name: &str) -> NfsResult<FileId>;
 
-    /// Look up the parent of a directory.
+    /// Look up the parent of an object.
     async fn lookup_parent(&self, id: FileId) -> NfsResult<FileId>;
 
-    /// Read actual directory entries.
+    /// List a directory's entries.
     ///
     /// Do not synthesize `"."` or `".."`; the server handles cookie and reply
     /// formatting for the entries returned here.
@@ -205,28 +176,19 @@ pub trait NfsFileSystem: Send + Sync + 'static {
     /// Write file data. Returns bytes written.
     async fn write(&self, id: FileId, offset: u64, data: &[u8]) -> NfsResult<u32>;
 
-    /// Create a regular file. Returns the new file ID.
-    async fn create(&self, dir_id: FileId, name: &str, attrs: &SetFileAttr) -> NfsResult<FileId>;
+    /// Truncate or extend a file to the given size.
+    async fn truncate(&self, id: FileId, size: u64) -> NfsResult<()>;
 
-    /// Create a directory. Returns the new directory ID.
-    async fn mkdir(&self, dir_id: FileId, name: &str, attrs: &SetFileAttr) -> NfsResult<FileId>;
+    /// Create a regular file and return its `FileId`.
+    async fn create_file(&self, dir_id: FileId, name: &str) -> NfsResult<FileId>;
 
-    /// Create a symbolic link. Returns the new symlink ID.
-    async fn symlink(
-        &self,
-        dir_id: FileId,
-        name: &str,
-        target: &str,
-        attrs: &SetFileAttr,
-    ) -> NfsResult<FileId>;
+    /// Create a directory and return its `FileId`.
+    async fn create_dir(&self, dir_id: FileId, name: &str) -> NfsResult<FileId>;
 
-    /// Read a symbolic link target.
-    async fn readlink(&self, id: FileId) -> NfsResult<String>;
-
-    /// Remove a file or empty directory.
+    /// Remove a file or empty directory by name.
     async fn remove(&self, dir_id: FileId, name: &str) -> NfsResult<()>;
 
-    /// Rename/move an entry.
+    /// Rename or move an entry.
     async fn rename(
         &self,
         from_dir: FileId,
@@ -235,13 +197,27 @@ pub trait NfsFileSystem: Send + Sync + 'static {
         to_name: &str,
     ) -> NfsResult<()>;
 
-    /// Create a hard link.
-    async fn link(&self, id: FileId, dir_id: FileId, name: &str) -> NfsResult<()>;
+    /// Optional symlink capability.
+    fn symlinks(&self) -> Option<&dyn NfsSymlinks> {
+        None
+    }
 
-    /// Commit buffered data to stable storage.
-    async fn commit(&self, id: FileId) -> NfsResult<()>;
+    /// Optional hard-link capability.
+    fn hard_links(&self) -> Option<&dyn NfsHardLinks> {
+        None
+    }
 
-    /// Filesystem info.
+    /// Optional named-attribute capability.
+    fn named_attrs(&self) -> Option<&dyn NfsNamedAttrs> {
+        None
+    }
+
+    /// Optional explicit flush capability.
+    fn syncer(&self) -> Option<&dyn NfsSync> {
+        None
+    }
+
+    /// Filesystem-level information.
     fn fs_info(&self) -> FsInfo {
         FsInfo::default()
     }

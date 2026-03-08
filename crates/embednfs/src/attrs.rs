@@ -1,4 +1,5 @@
-use crate::fs::{FileAttr, FileType, FsInfo, SetFileAttr, SetTime};
+use crate::fs::FsInfo;
+use crate::internal::{ServerFileAttr, ServerFileType, SetAttrRequest, SetTime};
 /// NFSv4.1 file attribute encoding and decoding.
 ///
 /// Handles the bitmap-driven attribute encoding used by GETATTR/SETATTR.
@@ -7,7 +8,13 @@ use embednfs_proto::xdr::*;
 use embednfs_proto::*;
 
 /// Encode file attributes according to the requested bitmap.
-pub fn encode_fattr4(attr: &FileAttr, request: &Bitmap4, fh: &NfsFh4, fs_info: &FsInfo) -> Fattr4 {
+pub(crate) fn encode_fattr4(
+    attr: &ServerFileAttr,
+    request: &Bitmap4,
+    fh: &NfsFh4,
+    fs_info: &FsInfo,
+    supports_named_attrs: bool,
+) -> Fattr4 {
     let mut result_bitmap = Bitmap4::new();
     let mut vals = BytesMut::with_capacity(256);
 
@@ -25,7 +32,6 @@ pub fn encode_fattr4(attr: &FileAttr, request: &Bitmap4, fh: &NfsFh4, fs_info: &
             FATTR4_SIZE,
             FATTR4_LINK_SUPPORT,
             FATTR4_SYMLINK_SUPPORT,
-            FATTR4_NAMED_ATTR,
             FATTR4_FSID,
             FATTR4_UNIQUE_HANDLES,
             FATTR4_LEASE_TIME,
@@ -72,6 +78,9 @@ pub fn encode_fattr4(attr: &FileAttr, request: &Bitmap4, fh: &NfsFh4, fs_info: &
         ] {
             supported.set(*bit);
         }
+        if supports_named_attrs {
+            supported.set(FATTR4_NAMED_ATTR);
+        }
         supported.encode(&mut vals);
     }
 
@@ -79,13 +88,11 @@ pub fn encode_fattr4(attr: &FileAttr, request: &Bitmap4, fh: &NfsFh4, fs_info: &
     if request.is_set(FATTR4_TYPE) {
         result_bitmap.set(FATTR4_TYPE);
         let nfs_type = match attr.file_type {
-            FileType::Regular => NfsFtype4::Reg,
-            FileType::Directory => NfsFtype4::Dir,
-            FileType::Symlink => NfsFtype4::Lnk,
-            FileType::BlockDevice => NfsFtype4::Blk,
-            FileType::CharDevice => NfsFtype4::Chr,
-            FileType::Socket => NfsFtype4::Sock,
-            FileType::Fifo => NfsFtype4::Fifo,
+            ServerFileType::Regular => NfsFtype4::Reg,
+            ServerFileType::Directory => NfsFtype4::Dir,
+            ServerFileType::Symlink => NfsFtype4::Lnk,
+            ServerFileType::NamedAttrDir => NfsFtype4::AttrDir,
+            ServerFileType::NamedAttr => NfsFtype4::NamedAttr,
         };
         nfs_type.encode(&mut vals);
     }
@@ -124,7 +131,7 @@ pub fn encode_fattr4(attr: &FileAttr, request: &Bitmap4, fh: &NfsFh4, fs_info: &
     // FATTR4_NAMED_ATTR (7)
     if request.is_set(FATTR4_NAMED_ATTR) {
         result_bitmap.set(FATTR4_NAMED_ATTR);
-        false.encode(&mut vals);
+        attr.has_named_attrs.encode(&mut vals);
     }
 
     // FATTR4_FSID (8) - mandatory
@@ -419,8 +426,8 @@ pub fn encode_fattr4(attr: &FileAttr, request: &Bitmap4, fh: &NfsFh4, fs_info: &
 }
 
 /// Decode setattr attributes from an Fattr4.
-pub fn decode_setattr(fattr: &Fattr4) -> SetFileAttr {
-    let mut result = SetFileAttr::default();
+pub(crate) fn decode_setattr(fattr: &Fattr4) -> SetAttrRequest {
+    let mut result = SetAttrRequest::default();
     let mut src = bytes::Bytes::from(fattr.attr_vals.clone());
 
     // Attributes must be decoded in bitmap order
@@ -540,12 +547,35 @@ mod tests {
         let mut request = Bitmap4::new();
         request.set(FATTR4_MODE);
 
-        let attr = FileAttr {
+        let attr = ServerFileAttr {
+            fileid: 1,
+            file_type: ServerFileType::Regular,
+            size: 0,
+            used: 0,
             mode: 0o100644,
-            ..FileAttr::default()
+            nlink: 1,
+            uid: 0,
+            gid: 0,
+            owner: "root".into(),
+            owner_group: "root".into(),
+            atime_sec: 0,
+            atime_nsec: 0,
+            mtime_sec: 0,
+            mtime_nsec: 0,
+            ctime_sec: 0,
+            ctime_nsec: 0,
+            crtime_sec: 0,
+            crtime_nsec: 0,
+            change_id: 0,
+            rdev_major: 0,
+            rdev_minor: 0,
+            archive: false,
+            hidden: false,
+            system: false,
+            has_named_attrs: false,
         };
         let fh = NfsFh4(vec![1, 2, 3, 4]);
-        let fattr = encode_fattr4(&attr, &request, &fh, &FsInfo::default());
+        let fattr = encode_fattr4(&attr, &request, &fh, &FsInfo::default(), false);
         let mut src = bytes::Bytes::from(fattr.attr_vals);
 
         assert_eq!(u32::decode(&mut src).unwrap(), 0o644);

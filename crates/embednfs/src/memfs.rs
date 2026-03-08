@@ -1,7 +1,7 @@
 /// In-memory filesystem implementation.
 ///
 /// Provides a fully functional in-memory filesystem for testing and as
-/// a reference implementation of the [`NfsFileSystem`] trait.
+/// a reference implementation of the public filesystem traits.
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,7 +13,6 @@ use crate::fs::*;
 pub struct MemFs {
     inner: RwLock<MemFsInner>,
     next_id: AtomicU64,
-    change_counter: AtomicU64,
 }
 
 struct MemFsInner {
@@ -21,8 +20,9 @@ struct MemFsInner {
 }
 
 struct Inode {
-    attr: FileAttr,
+    kind: NodeKind,
     data: InodeData,
+    xattrs: HashMap<String, Vec<u8>>,
 }
 
 enum InodeData {
@@ -35,141 +35,50 @@ impl MemFs {
     /// Create a new in-memory filesystem with an empty root directory.
     pub fn new() -> Self {
         let mut inodes = HashMap::new();
-
-        let now_sec = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-
-        let root_attr = FileAttr {
-            fileid: 1,
-            file_type: FileType::Directory,
-            size: 4096,
-            used: 4096,
-            mode: 0o755,
-            nlink: 2,
-            uid: 0,
-            gid: 0,
-            owner: "root".into(),
-            owner_group: "root".into(),
-            atime_sec: now_sec,
-            atime_nsec: 0,
-            mtime_sec: now_sec,
-            mtime_nsec: 0,
-            ctime_sec: now_sec,
-            ctime_nsec: 0,
-            crtime_sec: now_sec,
-            crtime_nsec: 0,
-            change_id: 1,
-            rdev_major: 0,
-            rdev_minor: 0,
-            archive: false,
-            hidden: false,
-            system: false,
-        };
-
-        // No . or .. stored; they're synthesized by the server
         inodes.insert(
             1,
             Inode {
-                attr: root_attr,
+                kind: NodeKind::Directory,
                 data: InodeData::Directory(HashMap::new()),
+                xattrs: HashMap::new(),
             },
         );
 
         MemFs {
             inner: RwLock::new(MemFsInner { inodes }),
             next_id: AtomicU64::new(2),
-            change_counter: AtomicU64::new(2),
         }
     }
 
-    fn next_change(&self) -> u64 {
-        self.change_counter.fetch_add(1, Ordering::Relaxed)
+    fn next_id(&self) -> FileId {
+        self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    fn now() -> (i64, u32) {
-        let dur = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default();
-        (dur.as_secs() as i64, dur.subsec_nanos())
+    fn inode_size(inode: &Inode) -> u64 {
+        match &inode.data {
+            InodeData::File(data) => data.len() as u64,
+            InodeData::Directory(entries) => entries.len() as u64,
+            InodeData::Symlink(target) => target.len() as u64,
+        }
+    }
+
+    fn has_remaining_links(inner: &MemFsInner, target: FileId) -> bool {
+        inner.inodes.values().any(|inode| match &inode.data {
+            InodeData::Directory(entries) => entries.values().any(|id| *id == target),
+            _ => false,
+        })
     }
 }
 
 #[async_trait]
 impl NfsFileSystem for MemFs {
-    async fn getattr(&self, id: FileId) -> NfsResult<FileAttr> {
+    async fn stat(&self, id: FileId) -> NfsResult<NodeInfo> {
         let inner = self.inner.read().await;
-        inner
-            .inodes
-            .get(&id)
-            .map(|i| i.attr.clone())
-            .ok_or(NfsError::Stale)
-    }
-
-    async fn setattr(&self, id: FileId, attrs: SetFileAttr) -> NfsResult<FileAttr> {
-        let mut inner = self.inner.write().await;
-        let inode = inner.inodes.get_mut(&id).ok_or(NfsError::Stale)?;
-        let (now_s, now_ns) = Self::now();
-
-        if let Some(size) = attrs.size {
-            if let InodeData::File(ref mut data) = inode.data {
-                data.resize(size as usize, 0);
-                inode.attr.size = size;
-                inode.attr.used = size;
-            }
-        }
-        if let Some(mode) = attrs.mode {
-            inode.attr.mode = mode;
-        }
-        if let Some(uid) = attrs.uid {
-            inode.attr.uid = uid;
-        }
-        if let Some(gid) = attrs.gid {
-            inode.attr.gid = gid;
-        }
-        if let Some(atime) = attrs.atime {
-            match atime {
-                SetTime::ServerTime => {
-                    inode.attr.atime_sec = now_s;
-                    inode.attr.atime_nsec = now_ns;
-                }
-                SetTime::ClientTime(s, ns) => {
-                    inode.attr.atime_sec = s;
-                    inode.attr.atime_nsec = ns;
-                }
-            }
-        }
-        if let Some(mtime) = attrs.mtime {
-            match mtime {
-                SetTime::ServerTime => {
-                    inode.attr.mtime_sec = now_s;
-                    inode.attr.mtime_nsec = now_ns;
-                }
-                SetTime::ClientTime(s, ns) => {
-                    inode.attr.mtime_sec = s;
-                    inode.attr.mtime_nsec = ns;
-                }
-            }
-        }
-        if let Some(crtime) = attrs.crtime {
-            match crtime {
-                SetTime::ServerTime => {
-                    inode.attr.crtime_sec = now_s;
-                    inode.attr.crtime_nsec = now_ns;
-                }
-                SetTime::ClientTime(s, ns) => {
-                    inode.attr.crtime_sec = s;
-                    inode.attr.crtime_nsec = ns;
-                }
-            }
-        }
-
-        inode.attr.ctime_sec = now_s;
-        inode.attr.ctime_nsec = now_ns;
-        inode.attr.change_id = self.next_change();
-
-        Ok(inode.attr.clone())
+        let inode = inner.inodes.get(&id).ok_or(NfsError::Stale)?;
+        Ok(NodeInfo {
+            kind: inode.kind,
+            size: Self::inode_size(inode),
+        })
     }
 
     async fn lookup(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
@@ -183,19 +92,18 @@ impl NfsFileSystem for MemFs {
 
     async fn lookup_parent(&self, id: FileId) -> NfsResult<FileId> {
         if id == 1 {
-            return Ok(1); // Root is its own parent
+            return Ok(1);
         }
+
         let inner = self.inner.read().await;
-        // Search all directories for this id
         for (dir_id, inode) in &inner.inodes {
             if let InodeData::Directory(entries) = &inode.data {
-                for (_, child_id) in entries {
-                    if *child_id == id {
-                        return Ok(*dir_id);
-                    }
+                if entries.values().any(|child| *child == id) {
+                    return Ok(*dir_id);
                 }
             }
         }
+
         Err(NfsError::Noent)
     }
 
@@ -204,17 +112,13 @@ impl NfsFileSystem for MemFs {
         let inode = inner.inodes.get(&dir_id).ok_or(NfsError::Stale)?;
         match &inode.data {
             InodeData::Directory(entries) => {
-                let mut result = Vec::with_capacity(entries.len());
-                for (name, child_id) in entries {
-                    if let Some(child) = inner.inodes.get(child_id) {
-                        result.push(DirEntry {
-                            fileid: *child_id,
-                            name: name.clone(),
-                            attr: child.attr.clone(),
-                        });
-                    }
-                }
-                // Sort for deterministic order
+                let mut result: Vec<DirEntry> = entries
+                    .iter()
+                    .map(|(name, fileid)| DirEntry {
+                        fileid: *fileid,
+                        name: name.clone(),
+                    })
+                    .collect();
                 result.sort_by(|a, b| a.name.cmp(&b.name));
                 Ok(result)
             }
@@ -232,9 +136,7 @@ impl NfsFileSystem for MemFs {
                     return Ok((vec![], true));
                 }
                 let end = (offset + count as usize).min(data.len());
-                let chunk = data[offset..end].to_vec();
-                let eof = end >= data.len();
-                Ok((chunk, eof))
+                Ok((data[offset..end].to_vec(), end == data.len()))
             }
             _ => Err(NfsError::Inval),
         }
@@ -251,58 +153,28 @@ impl NfsFileSystem for MemFs {
                     file_data.resize(end, 0);
                 }
                 file_data[offset..end].copy_from_slice(data);
-                inode.attr.size = file_data.len() as u64;
-                inode.attr.used = file_data.len() as u64;
-                let (s, ns) = Self::now();
-                inode.attr.mtime_sec = s;
-                inode.attr.mtime_nsec = ns;
-                inode.attr.ctime_sec = s;
-                inode.attr.ctime_nsec = ns;
-                inode.attr.change_id = self.next_change();
                 Ok(data.len() as u32)
             }
             _ => Err(NfsError::Inval),
         }
     }
 
-    async fn create(&self, dir_id: FileId, name: &str, attrs: &SetFileAttr) -> NfsResult<FileId> {
-        let new_id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let (now_s, now_ns) = Self::now();
-        let mode = attrs.mode.unwrap_or(0o644);
-
-        let (cr_s, cr_ns) = match attrs.crtime {
-            Some(SetTime::ClientTime(s, ns)) => (s, ns),
-            _ => (now_s, now_ns),
-        };
-
-        let file_attr = FileAttr {
-            fileid: new_id,
-            file_type: FileType::Regular,
-            size: 0,
-            used: 0,
-            mode,
-            nlink: 1,
-            uid: attrs.uid.unwrap_or(0),
-            gid: attrs.gid.unwrap_or(0),
-            owner: "root".into(),
-            owner_group: "root".into(),
-            atime_sec: now_s,
-            atime_nsec: now_ns,
-            mtime_sec: now_s,
-            mtime_nsec: now_ns,
-            ctime_sec: now_s,
-            ctime_nsec: now_ns,
-            crtime_sec: cr_s,
-            crtime_nsec: cr_ns,
-            change_id: self.next_change(),
-            rdev_major: 0,
-            rdev_minor: 0,
-            archive: false,
-            hidden: false,
-            system: false,
-        };
-
+    async fn truncate(&self, id: FileId, size: u64) -> NfsResult<()> {
         let mut inner = self.inner.write().await;
+        let inode = inner.inodes.get_mut(&id).ok_or(NfsError::Stale)?;
+        match &mut inode.data {
+            InodeData::File(file_data) => {
+                file_data.resize(size as usize, 0);
+                Ok(())
+            }
+            _ => Err(NfsError::Inval),
+        }
+    }
+
+    async fn create_file(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
+        let new_id = self.next_id();
+        let mut inner = self.inner.write().await;
+
         let dir = inner.inodes.get_mut(&dir_id).ok_or(NfsError::Stale)?;
         match &mut dir.data {
             InodeData::Directory(entries) => {
@@ -310,10 +182,6 @@ impl NfsFileSystem for MemFs {
                     return Err(NfsError::Exist);
                 }
                 entries.insert(name.to_string(), new_id);
-                dir.attr.change_id = self.next_change();
-                let (s, ns) = Self::now();
-                dir.attr.mtime_sec = s;
-                dir.attr.mtime_nsec = ns;
             }
             _ => return Err(NfsError::Notdir),
         }
@@ -321,112 +189,19 @@ impl NfsFileSystem for MemFs {
         inner.inodes.insert(
             new_id,
             Inode {
-                attr: file_attr,
+                kind: NodeKind::File,
                 data: InodeData::File(Vec::new()),
+                xattrs: HashMap::new(),
             },
         );
 
         Ok(new_id)
     }
 
-    async fn mkdir(&self, dir_id: FileId, name: &str, attrs: &SetFileAttr) -> NfsResult<FileId> {
-        let new_id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let (now_s, now_ns) = Self::now();
-        let mode = attrs.mode.unwrap_or(0o755);
-
-        let dir_attr = FileAttr {
-            fileid: new_id,
-            file_type: FileType::Directory,
-            size: 4096,
-            used: 4096,
-            mode,
-            nlink: 2,
-            uid: attrs.uid.unwrap_or(0),
-            gid: attrs.gid.unwrap_or(0),
-            owner: "root".into(),
-            owner_group: "root".into(),
-            atime_sec: now_s,
-            atime_nsec: now_ns,
-            mtime_sec: now_s,
-            mtime_nsec: now_ns,
-            ctime_sec: now_s,
-            ctime_nsec: now_ns,
-            crtime_sec: now_s,
-            crtime_nsec: now_ns,
-            change_id: self.next_change(),
-            rdev_major: 0,
-            rdev_minor: 0,
-            archive: false,
-            hidden: false,
-            system: false,
-        };
-
+    async fn create_dir(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
+        let new_id = self.next_id();
         let mut inner = self.inner.write().await;
-        let parent = inner.inodes.get_mut(&dir_id).ok_or(NfsError::Stale)?;
-        match &mut parent.data {
-            InodeData::Directory(entries) => {
-                if entries.contains_key(name) {
-                    return Err(NfsError::Exist);
-                }
-                entries.insert(name.to_string(), new_id);
-                parent.attr.nlink += 1;
-                parent.attr.change_id = self.next_change();
-                let (s, ns) = Self::now();
-                parent.attr.mtime_sec = s;
-                parent.attr.mtime_nsec = ns;
-            }
-            _ => return Err(NfsError::Notdir),
-        }
 
-        inner.inodes.insert(
-            new_id,
-            Inode {
-                attr: dir_attr,
-                data: InodeData::Directory(HashMap::new()),
-            },
-        );
-
-        Ok(new_id)
-    }
-
-    async fn symlink(
-        &self,
-        dir_id: FileId,
-        name: &str,
-        target: &str,
-        attrs: &SetFileAttr,
-    ) -> NfsResult<FileId> {
-        let new_id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let (now_s, now_ns) = Self::now();
-
-        let link_attr = FileAttr {
-            fileid: new_id,
-            file_type: FileType::Symlink,
-            size: target.len() as u64,
-            used: target.len() as u64,
-            mode: attrs.mode.unwrap_or(0o777),
-            nlink: 1,
-            uid: attrs.uid.unwrap_or(0),
-            gid: attrs.gid.unwrap_or(0),
-            owner: "root".into(),
-            owner_group: "root".into(),
-            atime_sec: now_s,
-            atime_nsec: now_ns,
-            mtime_sec: now_s,
-            mtime_nsec: now_ns,
-            ctime_sec: now_s,
-            ctime_nsec: now_ns,
-            crtime_sec: now_s,
-            crtime_nsec: now_ns,
-            change_id: self.next_change(),
-            rdev_major: 0,
-            rdev_minor: 0,
-            archive: false,
-            hidden: false,
-            system: false,
-        };
-
-        let mut inner = self.inner.write().await;
         let dir = inner.inodes.get_mut(&dir_id).ok_or(NfsError::Stale)?;
         match &mut dir.data {
             InodeData::Directory(entries) => {
@@ -434,7 +209,6 @@ impl NfsFileSystem for MemFs {
                     return Err(NfsError::Exist);
                 }
                 entries.insert(name.to_string(), new_id);
-                dir.attr.change_id = self.next_change();
             }
             _ => return Err(NfsError::Notdir),
         }
@@ -442,8 +216,127 @@ impl NfsFileSystem for MemFs {
         inner.inodes.insert(
             new_id,
             Inode {
-                attr: link_attr,
+                kind: NodeKind::Directory,
+                data: InodeData::Directory(HashMap::new()),
+                xattrs: HashMap::new(),
+            },
+        );
+
+        Ok(new_id)
+    }
+
+    async fn remove(&self, dir_id: FileId, name: &str) -> NfsResult<()> {
+        let mut inner = self.inner.write().await;
+
+        let child_id = {
+            let dir = inner.inodes.get(&dir_id).ok_or(NfsError::Stale)?;
+            match &dir.data {
+                InodeData::Directory(entries) => *entries.get(name).ok_or(NfsError::Noent)?,
+                _ => return Err(NfsError::Notdir),
+            }
+        };
+
+        if let Some(child) = inner.inodes.get(&child_id) {
+            if let InodeData::Directory(entries) = &child.data {
+                if !entries.is_empty() {
+                    return Err(NfsError::Notempty);
+                }
+            }
+        }
+
+        let dir = inner.inodes.get_mut(&dir_id).unwrap();
+        if let InodeData::Directory(entries) = &mut dir.data {
+            entries.remove(name);
+        }
+
+        if !Self::has_remaining_links(&inner, child_id) {
+            inner.inodes.remove(&child_id);
+        }
+
+        Ok(())
+    }
+
+    async fn rename(
+        &self,
+        from_dir: FileId,
+        from_name: &str,
+        to_dir: FileId,
+        to_name: &str,
+    ) -> NfsResult<()> {
+        let mut inner = self.inner.write().await;
+
+        let child_id = {
+            let dir = inner.inodes.get(&from_dir).ok_or(NfsError::Stale)?;
+            match &dir.data {
+                InodeData::Directory(entries) => *entries.get(from_name).ok_or(NfsError::Noent)?,
+                _ => return Err(NfsError::Notdir),
+            }
+        };
+
+        {
+            let dir = inner.inodes.get_mut(&from_dir).ok_or(NfsError::Stale)?;
+            if let InodeData::Directory(entries) = &mut dir.data {
+                entries.remove(from_name);
+            }
+        }
+
+        let removed_target = {
+            let tgt = inner.inodes.get_mut(&to_dir).ok_or(NfsError::Stale)?;
+            match &mut tgt.data {
+                InodeData::Directory(entries) => entries.insert(to_name.to_string(), child_id),
+                _ => return Err(NfsError::Notdir),
+            }
+        };
+
+        if let Some(old_id) = removed_target {
+            if !Self::has_remaining_links(&inner, old_id) {
+                inner.inodes.remove(&old_id);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn symlinks(&self) -> Option<&dyn NfsSymlinks> {
+        Some(self)
+    }
+
+    fn hard_links(&self) -> Option<&dyn NfsHardLinks> {
+        Some(self)
+    }
+
+    fn named_attrs(&self) -> Option<&dyn NfsNamedAttrs> {
+        Some(self)
+    }
+
+    fn syncer(&self) -> Option<&dyn NfsSync> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl NfsSymlinks for MemFs {
+    async fn symlink(&self, dir_id: FileId, name: &str, target: &str) -> NfsResult<FileId> {
+        let new_id = self.next_id();
+        let mut inner = self.inner.write().await;
+
+        let dir = inner.inodes.get_mut(&dir_id).ok_or(NfsError::Stale)?;
+        match &mut dir.data {
+            InodeData::Directory(entries) => {
+                if entries.contains_key(name) {
+                    return Err(NfsError::Exist);
+                }
+                entries.insert(name.to_string(), new_id);
+            }
+            _ => return Err(NfsError::Notdir),
+        }
+
+        inner.inodes.insert(
+            new_id,
+            Inode {
+                kind: NodeKind::Symlink,
                 data: InodeData::Symlink(target.to_string()),
+                xattrs: HashMap::new(),
             },
         );
 
@@ -458,102 +351,17 @@ impl NfsFileSystem for MemFs {
             _ => Err(NfsError::Inval),
         }
     }
+}
 
-    async fn remove(&self, dir_id: FileId, name: &str) -> NfsResult<()> {
-        let mut inner = self.inner.write().await;
-
-        let child_id = {
-            let dir = inner.inodes.get(&dir_id).ok_or(NfsError::Stale)?;
-            match &dir.data {
-                InodeData::Directory(entries) => *entries.get(name).ok_or(NfsError::Noent)?,
-                _ => return Err(NfsError::Notdir),
-            }
-        };
-
-        // Check if child is a non-empty directory
-        if let Some(child) = inner.inodes.get(&child_id) {
-            if let InodeData::Directory(entries) = &child.data {
-                if !entries.is_empty() {
-                    return Err(NfsError::Notempty);
-                }
-            }
-        }
-
-        // Remove from parent
-        let dir = inner.inodes.get_mut(&dir_id).unwrap();
-        if let InodeData::Directory(entries) = &mut dir.data {
-            entries.remove(name);
-        }
-        dir.attr.change_id = self.next_change();
-        let (s, ns) = Self::now();
-        dir.attr.mtime_sec = s;
-        dir.attr.mtime_nsec = ns;
-
-        // Remove inode
-        inner.inodes.remove(&child_id);
-
-        Ok(())
-    }
-
-    async fn rename(
-        &self,
-        from_dir: FileId,
-        from_name: &str,
-        to_dir: FileId,
-        to_name: &str,
-    ) -> NfsResult<()> {
-        let mut inner = self.inner.write().await;
-
-        // Get source file id
-        let child_id = {
-            let dir = inner.inodes.get(&from_dir).ok_or(NfsError::Stale)?;
-            match &dir.data {
-                InodeData::Directory(entries) => *entries.get(from_name).ok_or(NfsError::Noent)?,
-                _ => return Err(NfsError::Notdir),
-            }
-        };
-
-        // Remove from source dir
-        {
-            let dir = inner.inodes.get_mut(&from_dir).ok_or(NfsError::Stale)?;
-            if let InodeData::Directory(entries) = &mut dir.data {
-                entries.remove(from_name);
-            }
-            dir.attr.change_id = self.next_change();
-        }
-
-        // If target exists, remove it
-        {
-            let tgt_dir = inner.inodes.get(&to_dir).ok_or(NfsError::Stale)?;
-            if let InodeData::Directory(entries) = &tgt_dir.data {
-                if let Some(&old_id) = entries.get(to_name) {
-                    inner.inodes.remove(&old_id);
-                }
-            }
-        }
-
-        // Add to target dir
-        {
-            let tgt_dir = inner.inodes.get_mut(&to_dir).ok_or(NfsError::Stale)?;
-            if let InodeData::Directory(entries) = &mut tgt_dir.data {
-                entries.insert(to_name.to_string(), child_id);
-            }
-            tgt_dir.attr.change_id = self.next_change();
-        }
-
-        Ok(())
-    }
-
+#[async_trait]
+impl NfsHardLinks for MemFs {
     async fn link(&self, id: FileId, dir_id: FileId, name: &str) -> NfsResult<()> {
         let mut inner = self.inner.write().await;
-
-        // Verify source exists
         let inode = inner.inodes.get(&id).ok_or(NfsError::Stale)?;
-        if inode.attr.file_type == FileType::Directory {
-            return Err(NfsError::Isdir); // Can't hard link directories
+        if inode.kind == NodeKind::Directory {
+            return Err(NfsError::Isdir);
         }
 
-        // Add to target directory
         let dir = inner.inodes.get_mut(&dir_id).ok_or(NfsError::Stale)?;
         match &mut dir.data {
             InodeData::Directory(entries) => {
@@ -561,20 +369,64 @@ impl NfsFileSystem for MemFs {
                     return Err(NfsError::Exist);
                 }
                 entries.insert(name.to_string(), id);
-                dir.attr.change_id = self.next_change();
+                Ok(())
             }
-            _ => return Err(NfsError::Notdir),
+            _ => Err(NfsError::Notdir),
         }
+    }
+}
 
-        // Increment link count
+#[async_trait]
+impl NfsNamedAttrs for MemFs {
+    async fn list_xattrs(&self, id: FileId) -> NfsResult<Vec<String>> {
+        let inner = self.inner.read().await;
+        let inode = inner.inodes.get(&id).ok_or(NfsError::Stale)?;
+        let mut names: Vec<String> = inode.xattrs.keys().cloned().collect();
+        names.sort();
+        Ok(names)
+    }
+
+    async fn get_xattr(&self, id: FileId, name: &str) -> NfsResult<Vec<u8>> {
+        let inner = self.inner.read().await;
+        let inode = inner.inodes.get(&id).ok_or(NfsError::Stale)?;
+        inode.xattrs.get(name).cloned().ok_or(NfsError::Noent)
+    }
+
+    async fn set_xattr(
+        &self,
+        id: FileId,
+        name: &str,
+        value: &[u8],
+        mode: XattrSetMode,
+    ) -> NfsResult<()> {
+        let mut inner = self.inner.write().await;
         let inode = inner.inodes.get_mut(&id).ok_or(NfsError::Stale)?;
-        inode.attr.nlink += 1;
-
+        let exists = inode.xattrs.contains_key(name);
+        match mode {
+            XattrSetMode::CreateOrReplace => {}
+            XattrSetMode::CreateOnly if exists => return Err(NfsError::Exist),
+            XattrSetMode::ReplaceOnly if !exists => return Err(NfsError::Noent),
+            XattrSetMode::CreateOnly | XattrSetMode::ReplaceOnly => {}
+        }
+        inode.xattrs.insert(name.to_string(), value.to_vec());
         Ok(())
     }
 
+    async fn remove_xattr(&self, id: FileId, name: &str) -> NfsResult<()> {
+        let mut inner = self.inner.write().await;
+        let inode = inner.inodes.get_mut(&id).ok_or(NfsError::Stale)?;
+        inode
+            .xattrs
+            .remove(name)
+            .map(|_| ())
+            .ok_or(NfsError::Noent)
+    }
+}
+
+#[async_trait]
+impl NfsSync for MemFs {
     async fn commit(&self, _id: FileId) -> NfsResult<()> {
-        Ok(()) // In-memory; always committed
+        Ok(())
     }
 }
 
@@ -591,10 +443,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_and_read() {
         let fs = MemFs::new();
-        let id = fs
-            .create(1, "test.txt", &SetFileAttr::default())
-            .await
-            .unwrap();
+        let id = fs.create_file(1, "test.txt").await.unwrap();
         let written = fs.write(id, 0, b"hello world").await.unwrap();
         assert_eq!(written, 11);
         let (data, eof) = fs.read(id, 0, 1024).await.unwrap();
@@ -605,10 +454,7 @@ mod tests {
     #[tokio::test]
     async fn test_mkdir_and_readdir() {
         let fs = MemFs::new();
-        let dir_id = fs
-            .mkdir(1, "subdir", &SetFileAttr::default())
-            .await
-            .unwrap();
+        let dir_id = fs.create_dir(1, "subdir").await.unwrap();
         let entries = fs.readdir(1).await.unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "subdir");
@@ -618,10 +464,7 @@ mod tests {
     #[tokio::test]
     async fn test_remove() {
         let fs = MemFs::new();
-        let _id = fs
-            .create(1, "to_delete.txt", &SetFileAttr::default())
-            .await
-            .unwrap();
+        let _id = fs.create_file(1, "to_delete.txt").await.unwrap();
         fs.remove(1, "to_delete.txt").await.unwrap();
         assert!(fs.lookup(1, "to_delete.txt").await.is_err());
     }
@@ -629,11 +472,24 @@ mod tests {
     #[tokio::test]
     async fn test_rename() {
         let fs = MemFs::new();
-        fs.create(1, "old.txt", &SetFileAttr::default())
-            .await
-            .unwrap();
+        fs.create_file(1, "old.txt").await.unwrap();
         fs.rename(1, "old.txt", 1, "new.txt").await.unwrap();
         assert!(fs.lookup(1, "old.txt").await.is_err());
         assert!(fs.lookup(1, "new.txt").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_named_attrs_roundtrip() {
+        let fs = MemFs::new();
+        let id = fs.create_file(1, "notes.txt").await.unwrap();
+
+        fs.set_xattr(id, "user.demo", b"value", XattrSetMode::CreateOnly)
+            .await
+            .unwrap();
+        assert_eq!(fs.get_xattr(id, "user.demo").await.unwrap(), b"value");
+        assert_eq!(fs.list_xattrs(id).await.unwrap(), vec!["user.demo".to_string()]);
+
+        fs.remove_xattr(id, "user.demo").await.unwrap();
+        assert!(matches!(fs.get_xattr(id, "user.demo").await, Err(NfsError::Noent)));
     }
 }
