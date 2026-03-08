@@ -121,7 +121,7 @@ impl StateManager {
         if args.sequence != client.sequence_id {
             return Err(NfsStat4::SeqMisordered);
         }
-        client.sequence_id += 1;
+        client.sequence_id = client.sequence_id.wrapping_add(1);
         client.confirmed = true;
 
         let mut sessionid = [0u8; 16];
@@ -193,8 +193,8 @@ impl StateManager {
         let highest_slot = (session.slots.len() - 1) as u32;
         let slot = &mut session.slots[slot_idx];
 
-        if args.sequenceid == slot.sequence_id + 1 {
-            // New request — advance slot.
+        if args.sequenceid == slot.sequence_id.wrapping_add(1) {
+            // New request — advance slot (wrapping per RFC 8881 §18.46.3).
             slot.sequence_id = args.sequenceid;
             slot.cached_reply = None;
             Ok(SequenceResult::NewRequest {

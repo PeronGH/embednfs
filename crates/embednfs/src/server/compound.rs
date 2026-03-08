@@ -91,6 +91,7 @@ impl<F: FileSystem> NfsServer<F> {
         let mut current_fh: Option<NfsFh4> = None;
         let mut saved_fh: Option<NfsFh4> = None;
         let mut current_stateid: Option<Stateid4> = None;
+        let mut saved_stateid: Option<Stateid4> = None;
         let mut resarray = Vec::with_capacity(total_ops);
         let mut overall_status = NfsStat4::Ok;
         let mut cache_slot: Option<(Sessionid4, u32)> = None;
@@ -162,6 +163,7 @@ impl<F: FileSystem> NfsServer<F> {
                     &mut current_fh,
                     &mut saved_fh,
                     &mut current_stateid,
+                    &mut saved_stateid,
                     leading_sequence_clientid,
                 )
                 .await
@@ -195,6 +197,7 @@ impl<F: FileSystem> NfsServer<F> {
         current_fh: &mut Option<NfsFh4>,
         saved_fh: &mut Option<NfsFh4>,
         current_stateid: &mut Option<Stateid4>,
+        saved_stateid: &mut Option<Stateid4>,
         session_clientid: Option<Clientid4>,
     ) -> NfsResop4 {
         match op {
@@ -207,12 +210,33 @@ impl<F: FileSystem> NfsServer<F> {
                 res
             }
             NfsArgop4::Commit(args) => self.op_commit(&args, current_fh).await,
-            NfsArgop4::Create(args) => self.op_create(&args, current_fh).await,
+            NfsArgop4::Create(args) => {
+                let res = self.op_create(&args, current_fh).await;
+                // CREATE changes current_fh but returns no stateid (RFC 8881 §16.2.3.1.2).
+                if res_status(&res) == NfsStat4::Ok {
+                    *current_stateid = None;
+                }
+                res
+            }
             NfsArgop4::Getattr(args) => self.op_getattr(&args, current_fh).await,
             NfsArgop4::Getfh => self.op_getfh(current_fh).await,
             NfsArgop4::Link(args) => self.op_link(&args, current_fh, saved_fh).await,
-            NfsArgop4::Lookup(args) => self.op_lookup(&args, current_fh).await,
-            NfsArgop4::Lookupp => self.op_lookupp(current_fh).await,
+            NfsArgop4::Lookup(args) => {
+                let res = self.op_lookup(&args, current_fh).await;
+                // LOOKUP changes current_fh; reset stateid (RFC 8881 §16.2.3.1.2).
+                if res_status(&res) == NfsStat4::Ok {
+                    *current_stateid = None;
+                }
+                res
+            }
+            NfsArgop4::Lookupp => {
+                let res = self.op_lookupp(current_fh).await;
+                // LOOKUPP changes current_fh; reset stateid (RFC 8881 §16.2.3.1.2).
+                if res_status(&res) == NfsStat4::Ok {
+                    *current_stateid = None;
+                }
+                res
+            }
             NfsArgop4::Open(args) => {
                 let res = self
                     .op_open(&args, current_fh, session_clientid)
@@ -224,14 +248,18 @@ impl<F: FileSystem> NfsServer<F> {
             }
             NfsArgop4::Putfh(args) => {
                 *current_fh = Some(args.object);
+                // PUTFH sets filehandle but returns no stateid (RFC 8881 §16.2.3.1.2).
+                *current_stateid = None;
                 NfsResop4::Putfh(NfsStat4::Ok)
             }
             NfsArgop4::Putpubfh => {
                 *current_fh = Some(self.handles.lock().unwrap().get_or_create("/"));
+                *current_stateid = None;
                 NfsResop4::Putpubfh(NfsStat4::Ok)
             }
             NfsArgop4::Putrootfh => {
                 *current_fh = Some(self.handles.lock().unwrap().get_or_create("/"));
+                *current_stateid = None;
                 NfsResop4::Putrootfh(NfsStat4::Ok)
             }
             NfsArgop4::Read(args) => {
@@ -245,6 +273,8 @@ impl<F: FileSystem> NfsServer<F> {
             NfsArgop4::Restorefh => {
                 if let Some(fh) = saved_fh.clone() {
                     *current_fh = Some(fh);
+                    // Restore saved stateid as well (RFC 8881 §16.2.3.1.2).
+                    *current_stateid = *saved_stateid;
                     NfsResop4::Restorefh(NfsStat4::Ok)
                 } else {
                     NfsResop4::Restorefh(NfsStat4::Restorefh)
@@ -253,6 +283,8 @@ impl<F: FileSystem> NfsServer<F> {
             NfsArgop4::Savefh => {
                 if let Some(fh) = current_fh.clone() {
                     *saved_fh = Some(fh);
+                    // Save current stateid as well (RFC 8881 §16.2.3.1.2).
+                    *saved_stateid = *current_stateid;
                     NfsResop4::Savefh(NfsStat4::Ok)
                 } else {
                     NfsResop4::Savefh(NfsStat4::Nofilehandle)
@@ -324,9 +356,10 @@ impl<F: FileSystem> NfsServer<F> {
             NfsArgop4::Verify(vattr) => self.op_verify(&vattr, current_fh, false).await,
             NfsArgop4::Nverify(vattr) => self.op_verify(&vattr, current_fh, true).await,
             NfsArgop4::OpenDowngrade(args) => {
+                let share_access = args.share_access & !OPEN4_SHARE_ACCESS_WANT_DELEG_MASK;
                 match self
                     .state
-                    .open_downgrade(&args.open_stateid, args.share_access, args.share_deny)
+                    .open_downgrade(&args.open_stateid, share_access, args.share_deny)
                     .await
                 {
                     Ok(stateid) => {

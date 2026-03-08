@@ -60,6 +60,10 @@ impl<F: FileSystem> NfsServer<F> {
         // Derive clientid from session (RFC 8881 §18.16.3).
         let clientid = session_clientid.unwrap_or(args.owner.clientid);
 
+        // Strip the WANT_DELEG hint bits from share_access (RFC 8881 §18.16.3).
+        let share_access = args.share_access & !OPEN4_SHARE_ACCESS_WANT_DELEG_MASK;
+        let share_deny = args.share_deny;
+
         let (path, created) = match &args.claim {
             OpenClaim4::Null(name) => {
                 let path = match join_path(&dir_path, name) {
@@ -106,13 +110,13 @@ impl<F: FileSystem> NfsServer<F> {
             .await
         {
             self.state
-                .upgrade_open_state(&other, args.share_access, args.share_deny)
+                .upgrade_open_state(&other, share_access, share_deny)
                 .await
         } else {
             // Check for share conflicts with existing opens.
             if let Err(status) = self
                 .state
-                .check_share_conflict(fileid, args.share_access, args.share_deny)
+                .check_share_conflict(fileid, share_access, share_deny)
                 .await
             {
                 return NfsResop4::Open(status, None);
@@ -122,8 +126,8 @@ impl<F: FileSystem> NfsServer<F> {
                     fileid,
                     clientid,
                     &args.owner.owner,
-                    args.share_access,
-                    args.share_deny,
+                    share_access,
+                    share_deny,
                 )
                 .await
         };

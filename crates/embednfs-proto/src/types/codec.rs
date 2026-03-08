@@ -530,7 +530,11 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
                 claim,
             }))
         }
-        OP_OPEN_CONFIRM => Ok(NfsArgop4::MustNotImplement(MustNotImplementOp4::OpenConfirm)),
+        OP_OPEN_CONFIRM => {
+            let _stateid = Stateid4::decode(src)?;
+            let _seqid = u32::decode(src)?;
+            Ok(NfsArgop4::MustNotImplement(MustNotImplementOp4::OpenConfirm))
+        }
         OP_OPEN_DOWNGRADE => Ok(NfsArgop4::OpenDowngrade(OpenDowngradeArgs4 {
             open_stateid: Stateid4::decode(src)?,
             seqid: u32::decode(src)?,
