@@ -464,7 +464,7 @@ impl StateManager {
     ) -> Result<CreateSessionRes4, NfsStat4> {
         let mut inner = self.inner.write().await;
 
-        let replaced_clientid = {
+        let (replaced_clientid, client_sequence_id) = {
             let client = inner
                 .clients
                 .get_mut(&args.clientid)
@@ -475,18 +475,12 @@ impl StateManager {
             }
             client.sequence_id += 1;
             client.confirmed = true;
-            client.replaced_clientid.take()
+            (client.replaced_clientid.take(), client.sequence_id)
         };
 
         if let Some(old_clientid) = replaced_clientid {
             Self::drop_client_state(&mut inner, old_clientid);
         }
-
-        let client_sequence_id = inner
-            .clients
-            .get(&args.clientid)
-            .map(|client| client.sequence_id)
-            .ok_or(NfsStat4::StaleClientid)?;
 
         let mut sessionid = [0u8; 16];
         sessionid[..8].copy_from_slice(&args.clientid.to_be_bytes());

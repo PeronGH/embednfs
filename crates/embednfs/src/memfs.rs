@@ -243,7 +243,9 @@ impl NfsFileSystem for MemFs {
             return Err(NfsError::Notempty);
         }
 
-        let dir = inner.inodes.get_mut(&dir_id).ok_or(NfsError::Stale)?;
+        // `dir_id` was resolved from the same locked inode table above, so it cannot
+        // disappear before we mutate the directory entry set.
+        let dir = inner.inodes.get_mut(&dir_id).unwrap();
         if let InodeData::Directory(entries) = &mut dir.data {
             entries.remove(name);
         }
@@ -273,7 +275,9 @@ impl NfsFileSystem for MemFs {
         };
 
         {
-            let dir = inner.inodes.get_mut(&from_dir).ok_or(NfsError::Stale)?;
+            // `from_dir` was resolved from the same locked inode table above, so it
+            // cannot disappear before we remove the old directory entry.
+            let dir = inner.inodes.get_mut(&from_dir).unwrap();
             if let InodeData::Directory(entries) = &mut dir.data {
                 entries.remove(from_name);
             }
