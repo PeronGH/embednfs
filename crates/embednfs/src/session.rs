@@ -87,7 +87,6 @@ struct ClientState {
 struct SessionState {
     clientid: Clientid4,
     slots: Vec<SlotState>,
-    fore_chan_attrs: ChannelAttrs4,
 }
 
 #[derive(Clone)]
@@ -488,7 +487,6 @@ impl StateManager {
             SessionState {
                 clientid: args.clientid,
                 slots,
-                fore_chan_attrs: fore_chan.clone(),
             },
         );
 
@@ -723,15 +721,6 @@ impl StateManager {
                 }
             })
             .collect()
-    }
-
-    /// Get the max request size for a session.
-    pub async fn get_session_max_request(&self, sessionid: &Sessionid4) -> Option<u32> {
-        let inner = self.inner.read().await;
-        inner
-            .sessions
-            .get(sessionid)
-            .map(|s| s.fore_chan_attrs.maxresponsesize)
     }
 
     /// Look up the client ID associated with a session.
