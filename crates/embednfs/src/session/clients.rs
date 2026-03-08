@@ -59,7 +59,6 @@ impl StateManager {
                             confirmed: false,
                             sequence_id: 1,
                             cached_create_session: None,
-                            v40_confirm_verifier: None,
                         },
                     );
                     clientid
@@ -76,7 +75,6 @@ impl StateManager {
                             confirmed: false,
                             sequence_id: 1,
                             cached_create_session: None,
-                            v40_confirm_verifier: None,
                         },
                     );
                     clientid
@@ -92,7 +90,6 @@ impl StateManager {
                         confirmed: false,
                         sequence_id: 1,
                         cached_create_session: None,
-                        v40_confirm_verifier: None,
                     },
                 );
                 clientid
@@ -345,165 +342,5 @@ impl StateManager {
     pub async fn session_clientid(&self, sessionid: &Sessionid4) -> Option<Clientid4> {
         let inner = self.inner.read().await;
         inner.sessions.get(sessionid).map(|session| session.clientid)
-    }
-
-    // ---- NFSv4.0 operations ----
-
-    /// Handle SETCLIENTID (RFC 7530 §16.33).
-    ///
-    /// Allocates a client ID and returns a confirmation verifier.
-    pub async fn set_client_id(
-        &self,
-        args: &SetClientIdArgs4,
-    ) -> Result<SetClientIdRes4, NfsStat4> {
-        let mut inner = self.inner.write().await;
-
-        // Look for an existing client with the same ownerid.
-        let existing = inner
-            .clients
-            .values()
-            .find(|client| client.owner.ownerid == args.client.ownerid)
-            .map(|c| (c.clientid, c.owner.verifier, c.confirmed));
-
-        let clientid = match existing {
-            Some((existing_id, existing_verifier, confirmed)) => {
-                if existing_verifier == args.client.verifier && confirmed {
-                    // Case 1 (RFC 7530 §16.33.5): same ownerid, same verifier, confirmed.
-                    // Return existing clientid with a new confirm verifier.
-                    existing_id
-                } else if existing_verifier != args.client.verifier && confirmed {
-                    // Case 3: client restart. Allocate new clientid (don't purge yet —
-                    // that happens at SETCLIENTID_CONFIRM).
-                    let clientid = self.next_clientid.fetch_add(1, Ordering::Relaxed);
-                    inner.clients.insert(
-                        clientid,
-                        ClientState {
-                            clientid,
-                            owner: args.client.clone(),
-                            confirmed: false,
-                            sequence_id: 1,
-                            cached_create_session: None,
-                            v40_confirm_verifier: None,
-                        },
-                    );
-                    clientid
-                } else {
-                    // Unconfirmed: replace record.
-                    inner.clients.remove(&existing_id);
-                    let clientid = self.next_clientid.fetch_add(1, Ordering::Relaxed);
-                    inner.clients.insert(
-                        clientid,
-                        ClientState {
-                            clientid,
-                            owner: args.client.clone(),
-                            confirmed: false,
-                            sequence_id: 1,
-                            cached_create_session: None,
-                            v40_confirm_verifier: None,
-                        },
-                    );
-                    clientid
-                }
-            }
-            None => {
-                // New client.
-                let clientid = self.next_clientid.fetch_add(1, Ordering::Relaxed);
-                inner.clients.insert(
-                    clientid,
-                    ClientState {
-                        clientid,
-                        owner: args.client.clone(),
-                        confirmed: false,
-                        sequence_id: 1,
-                        cached_create_session: None,
-                        v40_confirm_verifier: None,
-                    },
-                );
-                clientid
-            }
-        };
-
-        // Generate a confirmation verifier from the clientid.
-        let confirm_verifier = clientid.to_be_bytes();
-        let client = inner.clients.get_mut(&clientid).unwrap();
-        client.v40_confirm_verifier = Some(confirm_verifier);
-
-        Ok(SetClientIdRes4 {
-            clientid,
-            setclientid_confirm: confirm_verifier,
-        })
-    }
-
-    /// Handle SETCLIENTID_CONFIRM (RFC 7530 §16.34).
-    pub async fn set_client_id_confirm(
-        &self,
-        args: &SetClientIdConfirmArgs4,
-    ) -> Result<(), NfsStat4> {
-        let mut inner = self.inner.write().await;
-        let client = inner
-            .clients
-            .get_mut(&args.clientid)
-            .ok_or(NfsStat4::StaleClientid)?;
-
-        // Check the confirmation verifier matches.
-        match client.v40_confirm_verifier {
-            Some(v) if v == args.setclientid_confirm => {}
-            _ => return Err(NfsStat4::StaleClientid),
-        }
-
-        if client.confirmed {
-            // Already confirmed, just succeed (idempotent).
-            return Ok(());
-        }
-
-        // If there's an old confirmed client with the same ownerid, purge it.
-        let ownerid = client.owner.ownerid.clone();
-        let new_clientid = client.clientid;
-        let old_clientids: Vec<Clientid4> = inner
-            .clients
-            .iter()
-            .filter(|(id, c)| **id != new_clientid && c.owner.ownerid == ownerid && c.confirmed)
-            .map(|(id, _)| *id)
-            .collect();
-        for old_id in old_clientids {
-            Self::purge_client_state_inner(&mut inner, old_id);
-        }
-
-        let client = inner.clients.get_mut(&new_clientid).unwrap();
-        client.confirmed = true;
-        client.v40_confirm_verifier = None;
-        Ok(())
-    }
-
-    /// Handle RENEW (RFC 7530 §16.27).
-    pub async fn renew(&self, clientid: Clientid4) -> Result<(), NfsStat4> {
-        let inner = self.inner.read().await;
-        if !inner.clients.contains_key(&clientid) {
-            return Err(NfsStat4::StaleClientid);
-        }
-        // We don't implement lease expiry, so this is a no-op.
-        Ok(())
-    }
-
-    /// Handle OPEN_CONFIRM (RFC 7530 §16.18).
-    ///
-    /// In NFSv4.0, after OPEN the client must send OPEN_CONFIRM to confirm
-    /// the open stateid.
-    pub async fn open_confirm(
-        &self,
-        stateid: &Stateid4,
-        _seqid: Seqid4,
-    ) -> Result<Stateid4, NfsStat4> {
-        let mut inner = self.inner.write().await;
-        let open = inner
-            .open_files
-            .get_mut(&stateid.other)
-            .ok_or(NfsStat4::BadStateid)?;
-        // Advance the stateid sequence to confirm.
-        open.stateid_seq = open.stateid_seq.wrapping_add(1);
-        Ok(Stateid4 {
-            seqid: open.stateid_seq,
-            other: stateid.other,
-        })
     }
 }

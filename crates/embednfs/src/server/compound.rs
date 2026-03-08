@@ -32,7 +32,7 @@ impl<F: FileSystem> NfsServer<F> {
             op_names
         );
 
-        if args.minorversion > 1 {
+        if args.minorversion != 1 {
             return CompoundResult::Fresh {
                 result: Compound4Res {
                     status: NfsStat4::MinorVersMismatch,
@@ -42,8 +42,6 @@ impl<F: FileSystem> NfsServer<F> {
                 cache_slot: None,
             };
         }
-
-        let is_v40 = args.minorversion == 0;
 
         let total_ops = args.argarray.len();
         let first_op = args.argarray.first();
@@ -57,40 +55,36 @@ impl<F: FileSystem> NfsServer<F> {
             None => None,
         };
 
-        // NFSv4.1 requires SEQUENCE as the first op (with some exceptions).
-        // NFSv4.0 has no SEQUENCE op — all ops are allowed without it.
-        if !is_v40 {
-            if let Some(first_op) = first_op
-                && !starts_with_sequence
-            {
-                if allows_compound_without_sequence(first_op) {
-                    if total_ops != 1 {
-                        let res = error_res_for_op(first_op, NfsStat4::NotOnlyOp);
-                        return CompoundResult::Fresh {
-                            result: Compound4Res {
-                                status: NfsStat4::NotOnlyOp,
-                                tag: args.tag,
-                                resarray: vec![res],
-                            },
-                            cache_slot: None,
-                        };
-                    }
-                } else {
-                    let status = if matches!(first_op, NfsArgop4::Illegal) {
-                        NfsStat4::OpIllegal
-                    } else {
-                        NfsStat4::OpNotInSession
-                    };
-                    let res = error_res_for_op(first_op, status);
+        if let Some(first_op) = first_op
+            && !starts_with_sequence
+        {
+            if allows_compound_without_sequence(first_op) {
+                if total_ops != 1 {
+                    let res = error_res_for_op(first_op, NfsStat4::NotOnlyOp);
                     return CompoundResult::Fresh {
                         result: Compound4Res {
-                            status,
+                            status: NfsStat4::NotOnlyOp,
                             tag: args.tag,
                             resarray: vec![res],
                         },
                         cache_slot: None,
                     };
                 }
+            } else {
+                let status = if matches!(first_op, NfsArgop4::Illegal) {
+                    NfsStat4::OpIllegal
+                } else {
+                    NfsStat4::OpNotInSession
+                };
+                let res = error_res_for_op(first_op, status);
+                return CompoundResult::Fresh {
+                    result: Compound4Res {
+                        status,
+                        tag: args.tag,
+                        resarray: vec![res],
+                    },
+                    cache_slot: None,
+                };
             }
         }
 
@@ -141,22 +135,11 @@ impl<F: FileSystem> NfsServer<F> {
                     break;
                 }
 
-                // In NFSv4.1 compounds, reject v4.0-only ops that appear after SEQUENCE.
-                if !is_v40 {
-                    let is_v40_only = matches!(
-                        &op,
-                        NfsArgop4::SetClientId(_)
-                            | NfsArgop4::SetClientIdConfirm(_)
-                            | NfsArgop4::OpenConfirm(_)
-                            | NfsArgop4::Renew(_)
-                            | NfsArgop4::ReleaseLockowner(_)
-                    );
-                    if is_v40_only {
-                        let res = error_res_for_op(&op, NfsStat4::Notsupp);
-                        resarray.push(res);
-                        overall_status = NfsStat4::Notsupp;
-                        break;
-                    }
+                if let NfsArgop4::MustNotImplement(opcode) = &op {
+                    let res = NfsResop4::MustNotImplement(*opcode, NfsStat4::Notsupp);
+                    resarray.push(res);
+                    overall_status = NfsStat4::Notsupp;
+                    break;
                 }
             }
 
@@ -186,7 +169,6 @@ impl<F: FileSystem> NfsServer<F> {
                     &mut current_stateid,
                     &mut saved_stateid,
                     leading_sequence_clientid,
-                    is_v40,
                 )
                 .await
             };
@@ -221,7 +203,6 @@ impl<F: FileSystem> NfsServer<F> {
         current_stateid: &mut Option<Stateid4>,
         saved_stateid: &mut Option<Stateid4>,
         session_clientid: Option<Clientid4>,
-        is_v40: bool,
     ) -> NfsResop4 {
         match op {
             NfsArgop4::Access(args) => self.op_access(&args, current_fh).await,
@@ -261,9 +242,8 @@ impl<F: FileSystem> NfsServer<F> {
                 res
             }
             NfsArgop4::Open(args) => {
-                let v40_clientid = if is_v40 { Some(args.owner.clientid) } else { None };
                 let res = self
-                    .op_open(&args, current_fh, session_clientid.or(v40_clientid))
+                    .op_open(&args, current_fh, session_clientid)
                     .await;
                 if let NfsResop4::Open(NfsStat4::Ok, Some(ref open_res)) = res {
                     *current_stateid = Some(open_res.stateid);
@@ -371,34 +351,7 @@ impl<F: FileSystem> NfsServer<F> {
                 NfsResop4::TestStateid(NfsStat4::Ok, results)
             }
             NfsArgop4::DelegReturn(_) => NfsResop4::DelegReturn(NfsStat4::Ok),
-            NfsArgop4::SetClientId(args) => match self.state.set_client_id(&args).await {
-                Ok(res) => NfsResop4::SetClientId(NfsStat4::Ok, Some(res)),
-                Err(status) => NfsResop4::SetClientId(status, None),
-            },
-            NfsArgop4::SetClientIdConfirm(args) => {
-                match self.state.set_client_id_confirm(&args).await {
-                    Ok(()) => NfsResop4::SetClientIdConfirm(NfsStat4::Ok),
-                    Err(status) => NfsResop4::SetClientIdConfirm(status),
-                }
-            }
-            NfsArgop4::OpenConfirm(args) => {
-                match self
-                    .state
-                    .open_confirm(&args.open_stateid, args.seqid)
-                    .await
-                {
-                    Ok(stateid) => {
-                        *current_stateid = Some(stateid);
-                        NfsResop4::OpenConfirm(NfsStat4::Ok, Some(stateid))
-                    }
-                    Err(status) => NfsResop4::OpenConfirm(status, None),
-                }
-            }
-            NfsArgop4::Renew(args) => match self.state.renew(args.clientid).await {
-                Ok(()) => NfsResop4::Renew(NfsStat4::Ok),
-                Err(status) => NfsResop4::Renew(status),
-            },
-            NfsArgop4::ReleaseLockowner(_) => NfsResop4::ReleaseLockowner(NfsStat4::Ok),
+            NfsArgop4::MustNotImplement(op) => NfsResop4::MustNotImplement(op, NfsStat4::Notsupp),
             NfsArgop4::Lock(args) => self.op_lock(&args, current_fh).await,
             NfsArgop4::Lockt(args) => self.op_lockt(&args, current_fh).await,
             NfsArgop4::Locku(args) => self.op_locku(&args, current_fh).await,

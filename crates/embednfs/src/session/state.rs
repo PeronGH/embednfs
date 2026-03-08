@@ -41,8 +41,6 @@ pub(super) struct ClientState {
     pub sequence_id: Sequenceid4,
     /// Cached CREATE_SESSION result for replay (RFC 8881 §18.36.4).
     pub cached_create_session: Option<CreateSessionRes4>,
-    /// NFSv4.0: server-generated verifier for SETCLIENTID_CONFIRM.
-    pub v40_confirm_verifier: Option<Verifier4>,
 }
 
 pub(super) struct SessionState {

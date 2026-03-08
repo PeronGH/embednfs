@@ -13,3 +13,6 @@ embednfs-proto = { path = "../embednfs-proto" }
 thiserror = "2.0.18"
 tokio = { version = "1.50.0", features = ["full"] }
 tracing = "0.1.44"
+
+[dev-dependencies]
+nfs4_client = "0.1.0"
