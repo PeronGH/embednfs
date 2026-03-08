@@ -57,8 +57,12 @@ impl<F: FileSystem> NfsServer<F> {
             Err(status) => return NfsResop4::Open(status, None),
         };
 
-        // Derive clientid from session (RFC 8881 §18.16.3).
-        let clientid = session_clientid.unwrap_or(args.owner.clientid);
+        // Derive clientid from session — server MUST ignore args.owner.clientid
+        // (RFC 8881 §18.16.3).
+        let clientid = match session_clientid {
+            Some(id) => id,
+            None => return NfsResop4::Open(NfsStat4::BadStateid, None),
+        };
 
         // Strip the WANT_DELEG hint bits from share_access (RFC 8881 §18.16.3).
         let share_access = args.share_access & !OPEN4_SHARE_ACCESS_WANT_DELEG_MASK;

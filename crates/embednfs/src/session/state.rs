@@ -39,6 +39,8 @@ pub(super) struct ClientState {
     pub owner: ClientOwner4,
     pub confirmed: bool,
     pub sequence_id: Sequenceid4,
+    /// Cached CREATE_SESSION result for replay (RFC 8881 §18.36.4).
+    pub cached_create_session: Option<CreateSessionRes4>,
 }
 
 pub(super) struct SessionState {

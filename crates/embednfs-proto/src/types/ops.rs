@@ -669,7 +669,7 @@ impl XdrEncode for ServerOwner4 {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CreateSessionRes4 {
     pub sessionid: Sessionid4,
     pub sequenceid: Sequenceid4,

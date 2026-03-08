@@ -21,7 +21,19 @@ impl StateManager {
     /// Handle EXCHANGE_ID (RFC 8881 §18.35).
     ///
     /// Compares both `co_ownerid` and `co_verifier` to detect client restarts.
-    pub async fn exchange_id(&self, args: &ExchangeIdArgs4) -> ExchangeIdRes4 {
+    pub async fn exchange_id(&self, args: &ExchangeIdArgs4) -> Result<ExchangeIdRes4, NfsStat4> {
+        // Validate flags (RFC 8881 §18.35.3): reject undefined bits.
+        let valid_flags = EXCHGID4_FLAG_SUPP_MOVED_REFER
+            | EXCHGID4_FLAG_SUPP_MOVED_MIGR
+            | EXCHGID4_FLAG_BIND_PRINC_STATEID
+            | EXCHGID4_FLAG_USE_NON_PNFS
+            | EXCHGID4_FLAG_USE_PNFS_MDS
+            | EXCHGID4_FLAG_USE_PNFS_DS
+            | EXCHGID4_FLAG_UPD_CONFIRMED_REC_A;
+        if args.flags & !valid_flags != 0 {
+            return Err(NfsStat4::Inval);
+        }
+
         let mut inner = self.inner.write().await;
 
         let clientid = {
@@ -46,6 +58,7 @@ impl StateManager {
                             owner: args.clientowner.clone(),
                             confirmed: false,
                             sequence_id: 1,
+                            cached_create_session: None,
                         },
                     );
                     clientid
@@ -61,6 +74,7 @@ impl StateManager {
                             owner: args.clientowner.clone(),
                             confirmed: false,
                             sequence_id: 1,
+                            cached_create_session: None,
                         },
                     );
                     clientid
@@ -75,6 +89,7 @@ impl StateManager {
                         owner: args.clientowner.clone(),
                         confirmed: false,
                         sequence_id: 1,
+                        cached_create_session: None,
                     },
                 );
                 clientid
@@ -89,7 +104,7 @@ impl StateManager {
             0
         };
 
-        ExchangeIdRes4 {
+        Ok(ExchangeIdRes4 {
             clientid,
             sequenceid: client.sequence_id,
             flags: pnfs_role | confirmed_flag,
@@ -104,10 +119,13 @@ impl StateManager {
                     nseconds: 0,
                 },
             }],
-        }
+        })
     }
 
-    /// Handle CREATE_SESSION.
+    /// Handle CREATE_SESSION (RFC 8881 §18.36).
+    ///
+    /// Supports replay: if the same `csa_sequence` arrives again after the
+    /// sequence_id was already advanced, return the cached result.
     pub async fn create_session(
         &self,
         args: &CreateSessionArgs4,
@@ -117,6 +135,14 @@ impl StateManager {
             .clients
             .get_mut(&args.clientid)
             .ok_or(NfsStat4::StaleClientid)?;
+
+        // Replay detection: sequence is one behind and we have a cached result.
+        if args.sequence == client.sequence_id.wrapping_sub(1) {
+            if let Some(ref cached) = client.cached_create_session {
+                return Ok(cached.clone());
+            }
+            return Err(NfsStat4::SeqMisordered);
+        }
 
         if args.sequence != client.sequence_id {
             return Err(NfsStat4::SeqMisordered);
@@ -165,13 +191,19 @@ impl StateManager {
             },
         );
 
-        Ok(CreateSessionRes4 {
+        let res = CreateSessionRes4 {
             sessionid,
             sequenceid: args.sequence,
             flags: 0,
             fore_chan_attrs: fore_chan,
             back_chan_attrs: back_chan,
-        })
+        };
+
+        // Cache result for replay (RFC 8881 §18.36.4).
+        let client = inner.clients.get_mut(&args.clientid).expect("client exists");
+        client.cached_create_session = Some(res.clone());
+
+        Ok(res)
     }
 
     /// Handle SEQUENCE (RFC 8881 §18.46).

@@ -105,7 +105,11 @@ impl<F: FileSystem> NfsServer<F> {
                     break;
                 }
 
-                if let NfsArgop4::BindConnToSession(_) = &op {
+                // BIND_CONN_TO_SESSION is only allowed after SEQUENCE (RFC 8881 §18.34).
+                // Without a leading SEQUENCE it must be the sole op (handled above).
+                if let NfsArgop4::BindConnToSession(_) = &op
+                    && !starts_with_sequence
+                {
                     let res = NfsResop4::BindConnToSession(NfsStat4::NotOnlyOp, None);
                     resarray.push(res);
                     overall_status = NfsStat4::NotOnlyOp;
@@ -302,10 +306,10 @@ impl<F: FileSystem> NfsServer<F> {
                 self.op_write(&args, current_fh, current_stateid, session_clientid)
                     .await
             }
-            NfsArgop4::ExchangeId(args) => {
-                let res = self.state.exchange_id(&args).await;
-                NfsResop4::ExchangeId(NfsStat4::Ok, Some(res))
-            }
+            NfsArgop4::ExchangeId(args) => match self.state.exchange_id(&args).await {
+                Ok(res) => NfsResop4::ExchangeId(NfsStat4::Ok, Some(res)),
+                Err(status) => NfsResop4::ExchangeId(status, None),
+            },
             NfsArgop4::CreateSession(args) => match self.state.create_session(&args).await {
                 Ok(res) => NfsResop4::CreateSession(NfsStat4::Ok, Some(res)),
                 Err(status) => NfsResop4::CreateSession(status, None),
