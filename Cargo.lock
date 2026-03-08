@@ -84,7 +84,6 @@ name = "embednfs-cli"
 version = "0.1.0"
 dependencies = [
  "embednfs",
- "embednfs-proto",
  "tokio",
  "tracing",
  "tracing-subscriber",
