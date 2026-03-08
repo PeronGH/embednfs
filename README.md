@@ -1,5 +1,8 @@
 # embednfs
 
+[![crates.io](https://img.shields.io/crates/v/embednfs)](https://crates.io/crates/embednfs)
+[![crates.io](https://img.shields.io/crates/v/embednfs-proto)](https://crates.io/crates/embednfs-proto)
+
 An embeddable NFSv4.1 server library in Rust. You implement a small filesystem trait; the library handles the wire protocol, sessions, filehandles, locking, and TCP serving.
 
 The implementation target is Apple/macOS NFSv4.1 client compatibility first, with a localhost FUSE-replacement use case. The public API is intentionally opinionated and minimal.
