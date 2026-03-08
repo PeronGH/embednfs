@@ -1,4 +1,4 @@
-# nfsserve4-rs — NFSv4.1 Server Library in Rust
+# embednfs — Embeddable NFSv4.1 Server Library in Rust
 
 ## Goal
 
@@ -7,6 +7,19 @@ Build a production-quality, high-performance Rust NFSv4.1 server library. The us
 This is not a toy or proof-of-concept. It should be correct, fast, and suitable for real workloads. Zero-copy where possible, minimal allocations on the hot path, and designed to saturate the I/O capabilities of the underlying filesystem implementation.
 
 Licensed MIT. Rust edition 2024. Determine the implementation scope yourself based on what the spec requires, what real clients actually need, and what matters for the localhost FUSE-replacement use case. Cut what doesn't serve that use case; don't cut corners on what does.
+
+## Commands
+
+```bash
+cargo clippy --workspace
+cargo test --workspace
+cargo run -p embednfs-cli --release
+
+# macOS
+mount_nfs -o vers=4.1,tcp,port=2049 127.0.0.1:/ /tmp/embednfs
+# Linux
+mount -t nfs4 -o vers=4.1,proto=tcp,port=2049 127.0.0.1:/ /mnt/embednfs
+```
 
 ## How to Work
 
@@ -30,7 +43,7 @@ Never implement a large chunk speculatively. Every piece of protocol handling sh
 
 ### Testing
 
-Use a userspace NFSv4.1 client library for automated testing — something that doesn't require root or kernel mounts. Also test with the kernel NFS client when useful. Find existing NFSv4 protocol test suites and borrow from them.
+Integration tests exercise the full RPC path over TCP using ephemeral port binding — no root or kernel mounts required. Also test with the kernel NFS client when useful.
 
 ## Coding Standards
 
@@ -44,11 +57,11 @@ The filesystem trait is the most important API surface. The library handles all 
 
 ### Dependencies
 
-Never hand-edit `Cargo.toml`. Use `cargo add`/`cargo remove`/`cargo init` for everything. Start with tokio for async I/O; add crates as needed.
+Never hand-edit `Cargo.toml`. Use `cargo add`/`cargo remove`/`cargo init` for everything.
 
 ### Commits
 
-Use conventional commits (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`). Commit every meaningful change — roughly every 100-200 lines of new code. Each commit should compile and pass existing tests.
+Use conventional commits (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`). Commit every meaningful change — roughly every 100-200 lines of new code. Each commit should compile, pass `cargo clippy --workspace`, and pass existing tests.
 
 ### Correctness Over Momentum
 
