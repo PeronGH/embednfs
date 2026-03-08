@@ -745,6 +745,14 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
         let status = match object {
             ServerObject::Fs(id) => {
+                // RFC 8881 §18.3.3: COMMIT on a non-regular-file is invalid.
+                match self.fs.stat(id).await {
+                    Ok(info) if info.kind == NodeKind::Directory => {
+                        return NfsResop4::Commit(NfsStat4::Inval, [0u8; 8]);
+                    }
+                    Err(e) => return NfsResop4::Commit(e.to_nfsstat4(), [0u8; 8]),
+                    _ => {}
+                }
                 if let Some(syncer) = self.fs.syncer() {
                     syncer.commit(id).await.map_err(|e| e.to_nfsstat4())
                 } else {
@@ -1179,7 +1187,17 @@ impl<F: NfsFileSystem> NfsServer<F> {
         };
 
         let result = match object {
-            ServerObject::Fs(id) => self.fs.read(id, args.offset, args.count).await,
+            ServerObject::Fs(id) => {
+                // RFC 8881 §18.22.3: READ on a directory must return NFS4ERR_ISDIR.
+                match self.fs.stat(id).await {
+                    Ok(info) if info.kind == NodeKind::Directory => {
+                        return NfsResop4::Read(NfsStat4::Isdir, None);
+                    }
+                    Err(e) => return NfsResop4::Read(e.to_nfsstat4(), None),
+                    _ => {}
+                }
+                self.fs.read(id, args.offset, args.count).await
+            }
             ServerObject::NamedAttrFile { parent, name } => {
                 self.xattr_read_slice(parent, &name, args.offset, args.count).await
             }

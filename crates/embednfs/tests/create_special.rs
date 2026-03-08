@@ -429,9 +429,7 @@ async fn test_commit_no_fh() {
     assert_eq!(status, NfsStat4::Nofilehandle as u32);
 }
 
-/// COMMIT on root directory succeeds (server treats it as a no-op flush).
-/// Note: RFC 8881 says COMMIT on a directory is implementation-defined;
-/// our server delegates to NfsSync which is object-agnostic.
+/// COMMIT on a directory returns NFS4ERR_INVAL (RFC 8881 §18.3.3).
 #[tokio::test]
 async fn test_commit_on_directory() {
     let port = start_server().await;
@@ -445,5 +443,5 @@ async fn test_commit_on_directory() {
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, _) = parse_compound_header(&mut resp);
-    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(status, NfsStat4::Inval as u32);
 }

@@ -267,9 +267,7 @@ async fn test_read_beyond_eof() {
     assert!(data.is_empty());
 }
 
-/// pynfs RD2: READ on a directory returns an error.
-/// The RFC recommends NFS4ERR_ISDIR but our MemFs returns NFS4ERR_INVAL
-/// since the FS layer rejects reads on non-file objects generically.
+/// pynfs RD2: READ on a directory returns NFS4ERR_ISDIR (RFC 8881 §18.22.3).
 #[tokio::test]
 async fn test_read_directory_returns_error() {
     let port = start_server().await;
@@ -290,8 +288,7 @@ async fn test_read_directory_returns_error() {
     let (opnum, op_status) = parse_op_header(&mut resp);
     assert_eq!(opnum, OP_READ);
     assert_eq!(status, op_status);
-    // MemFs returns INVAL for read on non-file objects
-    assert_eq!(op_status, NfsStat4::Inval as u32);
+    assert_eq!(op_status, NfsStat4::Isdir as u32);
 }
 
 // ===== WRITE (pynfs WRT) =====
