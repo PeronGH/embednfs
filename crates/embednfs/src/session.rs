@@ -78,10 +78,10 @@ struct StateInner {
 #[derive(Debug)]
 struct ClientState {
     clientid: Clientid4,
-    #[allow(dead_code)]
     owner: ClientOwner4,
     confirmed: bool,
     sequence_id: Sequenceid4,
+    replaced_clientid: Option<Clientid4>,
 }
 
 struct SessionState {
@@ -379,32 +379,56 @@ impl StateManager {
     pub async fn exchange_id(&self, args: &ExchangeIdArgs4) -> ExchangeIdRes4 {
         let mut inner = self.inner.write().await;
 
-        let clientid = {
-            let existing = inner
+        let clientid = if let Some(existing) = inner
+            .clients
+            .values()
+            .find(|client| client.owner.ownerid == args.clientowner.ownerid)
+            .and_then(|client| {
+                (client.owner.verifier == args.clientowner.verifier).then_some(client.clientid)
+            }) {
+            existing
+        } else {
+            let old_clientid = inner
                 .clients
                 .values()
-                .find(|c| c.owner.ownerid == args.clientowner.ownerid);
-            if let Some(c) = existing {
-                c.clientid
-            } else {
-                let id = self.next_clientid.fetch_add(1, Ordering::Relaxed);
-                inner.clients.insert(
-                    id,
-                    ClientState {
-                        clientid: id,
-                        owner: args.clientowner.clone(),
-                        confirmed: false,
-                        sequence_id: 1,
-                    },
-                );
-                id
+                .find(|client| {
+                    client.owner.ownerid == args.clientowner.ownerid
+                        && client.owner.verifier != args.clientowner.verifier
+                        && client.confirmed
+                })
+                .map(|client| client.clientid);
+
+            let stale_unconfirmed: Vec<_> = inner
+                .clients
+                .values()
+                .filter(|client| {
+                    client.owner.ownerid == args.clientowner.ownerid
+                        && client.owner.verifier != args.clientowner.verifier
+                        && !client.confirmed
+                })
+                .map(|client| client.clientid)
+                .collect();
+            for stale_clientid in stale_unconfirmed {
+                Self::drop_client_state(&mut inner, stale_clientid);
             }
+
+            let id = self.next_clientid.fetch_add(1, Ordering::Relaxed);
+            inner.clients.insert(
+                id,
+                ClientState {
+                    clientid: id,
+                    owner: args.clientowner.clone(),
+                    confirmed: false,
+                    sequence_id: 1,
+                    replaced_clientid: old_clientid,
+                },
+            );
+            id
         };
 
         let client = inner.clients.get(&clientid).unwrap();
         let seq = client.sequence_id;
         let confirmed = client.confirmed;
-        let _client_pnfs = args.flags & EXCHGID4_FLAG_MASK_PNFS;
         let pnfs_role = EXCHGID4_FLAG_USE_NON_PNFS;
         let confirmed_flag = if confirmed {
             EXCHGID4_FLAG_CONFIRMED_R
@@ -437,16 +461,25 @@ impl StateManager {
     ) -> Result<CreateSessionRes4, NfsStat4> {
         let mut inner = self.inner.write().await;
 
-        let client = inner
-            .clients
-            .get_mut(&args.clientid)
-            .ok_or(NfsStat4::StaleClientid)?;
+        let replaced_clientid = {
+            let client = inner
+                .clients
+                .get_mut(&args.clientid)
+                .ok_or(NfsStat4::StaleClientid)?;
 
-        if args.sequence != client.sequence_id {
-            return Err(NfsStat4::SeqMisordered);
+            if args.sequence != client.sequence_id {
+                return Err(NfsStat4::SeqMisordered);
+            }
+            client.sequence_id += 1;
+            client.confirmed = true;
+            client.replaced_clientid.take()
+        };
+
+        if let Some(old_clientid) = replaced_clientid {
+            Self::drop_client_state(&mut inner, old_clientid);
         }
-        client.sequence_id += 1;
-        client.confirmed = true;
+
+        let client = inner.clients.get(&args.clientid).unwrap();
 
         let mut sessionid = [0u8; 16];
         sessionid[..8].copy_from_slice(&args.clientid.to_be_bytes());
@@ -612,14 +645,11 @@ impl StateManager {
     /// Handle DESTROY_CLIENTID.
     pub async fn destroy_clientid(&self, clientid: Clientid4) -> Result<(), NfsStat4> {
         let mut inner = self.inner.write().await;
-        inner.sessions.retain(|_, s| s.clientid != clientid);
-        inner.open_files.retain(|_, s| s.clientid != clientid);
-        inner.lock_files.retain(|_, s| s.owner.clientid != clientid);
-        inner
-            .clients
-            .remove(&clientid)
-            .ok_or(NfsStat4::StaleClientid)?;
-        Ok(())
+        if Self::drop_client_state(&mut inner, clientid) {
+            Ok(())
+        } else {
+            Err(NfsStat4::StaleClientid)
+        }
     }
 
     /// Handle BIND_CONN_TO_SESSION.
@@ -765,6 +795,13 @@ impl StateManager {
 
     fn same_lock_owner(a: &StateOwner4, b: &StateOwner4) -> bool {
         a.clientid == b.clientid && a.owner == b.owner
+    }
+
+    fn drop_client_state(inner: &mut StateInner, clientid: Clientid4) -> bool {
+        inner.sessions.retain(|_, session| session.clientid != clientid);
+        inner.open_files.retain(|_, state| state.clientid != clientid);
+        inner.lock_files.retain(|_, state| state.owner.clientid != clientid);
+        inner.clients.remove(&clientid).is_some()
     }
 
     pub(crate) async fn find_lock_conflict(
@@ -944,6 +981,30 @@ impl Default for StateManager {
 mod tests {
     use super::*;
 
+    fn exchange_id_args(ownerid: &[u8], verifier: Verifier4) -> ExchangeIdArgs4 {
+        ExchangeIdArgs4 {
+            clientowner: ClientOwner4 {
+                verifier,
+                ownerid: ownerid.to_vec(),
+            },
+            flags: EXCHGID4_FLAG_USE_NON_PNFS,
+            state_protect: StateProtect4A::None,
+            client_impl_id: vec![],
+        }
+    }
+
+    fn create_session_args(clientid: Clientid4, sequence: Sequenceid4) -> CreateSessionArgs4 {
+        CreateSessionArgs4 {
+            clientid,
+            sequence,
+            flags: 0,
+            fore_chan_attrs: ChannelAttrs4::default(),
+            back_chan_attrs: ChannelAttrs4::default(),
+            cb_program: 0,
+            sec_parms: vec![],
+        }
+    }
+
     async fn setup_open_state(
         state: &StateManager,
         object: ServerObject,
@@ -984,6 +1045,73 @@ mod tests {
             .test_stateids(&[open_stateid, lock_stateid, unknown])
             .await;
         assert_eq!(results, vec![NfsStat4::Ok, NfsStat4::Ok, NfsStat4::BadStateid]);
+    }
+
+    #[tokio::test]
+    async fn test_exchange_id_reuses_existing_client_when_verifier_matches() {
+        let state = StateManager::new();
+        let args = exchange_id_args(b"owner", [0x11; 8]);
+
+        let first = state.exchange_id(&args).await;
+        state
+            .create_session(&create_session_args(first.clientid, first.sequenceid))
+            .await
+            .unwrap();
+
+        let second = state.exchange_id(&args).await;
+
+        assert_eq!(second.clientid, first.clientid);
+        assert_eq!(second.flags & EXCHGID4_FLAG_CONFIRMED_R, EXCHGID4_FLAG_CONFIRMED_R);
+    }
+
+    #[tokio::test]
+    async fn test_exchange_id_reboot_drops_old_state_after_new_create_session() {
+        let state = StateManager::new();
+        let original = state.exchange_id(&exchange_id_args(b"owner", [0x11; 8])).await;
+        let original_session = state
+            .create_session(&create_session_args(original.clientid, original.sequenceid))
+            .await
+            .unwrap();
+
+        let object = ServerObject::Fs(1);
+        let open_stateid = setup_open_state(&state, object.clone(), original.clientid).await;
+        let owner = StateOwner4 {
+            clientid: original.clientid,
+            owner: b"lock-owner".to_vec(),
+        };
+        let lock_stateid = state
+            .create_lock_state(
+                &open_stateid,
+                &owner,
+                object,
+                NfsLockType4::WriteLt,
+                0,
+                10,
+            )
+            .await
+            .unwrap();
+
+        let rebooted = state.exchange_id(&exchange_id_args(b"owner", [0x22; 8])).await;
+        assert_ne!(rebooted.clientid, original.clientid);
+        assert_eq!(
+            state.session_clientid(&original_session.sessionid).await,
+            Some(original.clientid)
+        );
+        assert_eq!(
+            state.test_stateids(&[open_stateid, lock_stateid]).await,
+            vec![NfsStat4::Ok, NfsStat4::Ok]
+        );
+
+        state
+            .create_session(&create_session_args(rebooted.clientid, rebooted.sequenceid))
+            .await
+            .unwrap();
+
+        assert_eq!(state.session_clientid(&original_session.sessionid).await, None);
+        assert_eq!(
+            state.test_stateids(&[open_stateid, lock_stateid]).await,
+            vec![NfsStat4::BadStateid, NfsStat4::BadStateid]
+        );
     }
 
     #[tokio::test]
