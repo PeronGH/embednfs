@@ -433,7 +433,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 Err(status) => NfsResop4::FreeStateid(status),
             },
             NfsArgop4::TestStateid(args) => {
-                let results = vec![NfsStat4::Ok; args.stateids.len()];
+                let results = self.state.test_stateids(&args.stateids).await;
                 NfsResop4::TestStateid(NfsStat4::Ok, results)
             }
             NfsArgop4::DelegReturn(_) => NfsResop4::DelegReturn(NfsStat4::Ok),
@@ -512,8 +512,8 @@ impl<F: NfsFileSystem> NfsServer<F> {
             ServerObject::Fs(id) => {
                 let info = self.fs.stat(*id).await?;
                 let file_type = Self::object_from_info(*id, info);
-                let has_named_attrs = if let Some(named) = self.fs.named_attrs() {
-                    !named.list_xattrs(*id).await?.is_empty()
+                let has_named_attrs = if self.fs.named_attrs().is_some() {
+                    self.xattr_count(*id, file_type).await? > 0
                 } else {
                     false
                 };
@@ -524,8 +524,9 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 if self.fs.named_attrs().is_none() {
                     return Err(NfsError::Notsupp);
                 }
-                let _ = self.fs.stat(*parent).await?;
-                let count = self.fs.named_attrs().unwrap().list_xattrs(*parent).await?.len() as u64;
+                let info = self.fs.stat(*parent).await?;
+                let parent_type = Self::object_from_info(*parent, info);
+                let count = self.xattr_count(*parent, parent_type).await?;
                 let meta = self
                     .state
                     .ensure_meta(object, ServerFileType::NamedAttrDir)
@@ -549,6 +550,21 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 ))
             }
         }
+    }
+
+    async fn xattr_count(&self, parent: FileId, file_type: ServerFileType) -> NfsResult<u64> {
+        let object = ServerObject::Fs(parent);
+        if let Some(count) = self.state.named_attr_count(&object).await {
+            return Ok(count);
+        }
+
+        let named = self.fs.named_attrs().ok_or(NfsError::Notsupp)?;
+        let count = named.list_xattrs(parent).await?.len() as u64;
+        let _ = self
+            .state
+            .set_named_attr_count(&object, file_type, count)
+            .await;
+        Ok(count)
     }
 
     async fn resolve_object(&self, fh: &Option<NfsFh4>) -> Result<ServerObject, NfsStat4> {
@@ -627,6 +643,18 @@ impl<F: NfsFileSystem> NfsServer<F> {
             .set_xattr(parent, name, &value, XattrSetMode::CreateOrReplace)
             .await?;
         Ok(data.len() as u32)
+    }
+
+    async fn refresh_xattr_summary(&self, parent: FileId) -> NfsResult<u64> {
+        let named = self.fs.named_attrs().ok_or(NfsError::Notsupp)?;
+        let info = self.fs.stat(parent).await?;
+        let file_type = Self::object_from_info(parent, info);
+        let count = named.list_xattrs(parent).await?.len() as u64;
+        let _ = self
+            .state
+            .set_named_attr_count(&ServerObject::Fs(parent), file_type, count)
+            .await;
+        Ok(count)
     }
 
     // ===== Individual operation handlers =====
@@ -997,6 +1025,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
                             {
                                 return NfsResop4::Open(e.to_nfsstat4(), None);
                             }
+                            let _ = self.refresh_xattr_summary(*parent).await;
                             let _ = self
                                 .state
                                 .apply_setattr(&object, ServerFileType::NamedAttr, &set_attrs)
@@ -1254,37 +1283,48 @@ impl<F: NfsFileSystem> NfsServer<F> {
             Err(e) => return NfsResop4::Remove(e.to_nfsstat4(), None),
         };
 
-        let result = match dir_object.clone() {
-            ServerObject::Fs(dir_id) => self.fs.remove(dir_id, &args.target).await.map(|_| {
-                self.state.touch_metadata(&dir_object, ServerFileType::Directory)
-            }),
+        let status = match dir_object.clone() {
+            ServerObject::Fs(dir_id) => match self.fs.remove(dir_id, &args.target).await {
+                Ok(()) => {
+                    let _ = self
+                        .state
+                        .touch_metadata(&dir_object, ServerFileType::Directory)
+                        .await;
+                    NfsStat4::Ok
+                }
+                Err(e) => e.to_nfsstat4(),
+            },
             ServerObject::NamedAttrDir(parent) => {
                 let named = match self.fs.named_attrs() {
                     Some(named) => named,
                     None => return NfsResop4::Remove(NfsStat4::Notsupp, None),
                 };
-                named.remove_xattr(parent, &args.target).await.map(|_| {
-                    self.state.touch_metadata(&dir_object, ServerFileType::NamedAttrDir)
-                })
+                match named.remove_xattr(parent, &args.target).await {
+                    Ok(()) => {
+                        let _ = self.refresh_xattr_summary(parent).await;
+                        let _ = self
+                            .state
+                            .touch_metadata(&dir_object, ServerFileType::NamedAttrDir)
+                            .await;
+                        self.parent_change_after_xattr_mutation(parent).await;
+                        NfsStat4::Ok
+                    }
+                    Err(e) => e.to_nfsstat4(),
+                }
             }
-            ServerObject::NamedAttrFile { .. } => Err(NfsError::Notdir),
+            ServerObject::NamedAttrFile { .. } => NfsStat4::Notdir,
         };
 
-        match result {
-            Ok(touch_fut) => {
-                let _ = touch_fut.await;
-                if let ServerObject::NamedAttrDir(parent) = dir_object {
-                    self.parent_change_after_xattr_mutation(parent).await;
-                }
-                let dir_attr_after = self.build_attr(&dir_object).await.unwrap_or(dir_attr_before.clone());
-                let cinfo = ChangeInfo4 {
-                    atomic: true,
-                    before: dir_attr_before.change_id,
-                    after: dir_attr_after.change_id,
-                };
-                NfsResop4::Remove(NfsStat4::Ok, Some(cinfo))
-            }
-            Err(e) => NfsResop4::Remove(e.to_nfsstat4(), None),
+        if status == NfsStat4::Ok {
+            let dir_attr_after = self.build_attr(&dir_object).await.unwrap_or(dir_attr_before.clone());
+            let cinfo = ChangeInfo4 {
+                atomic: true,
+                before: dir_attr_before.change_id,
+                after: dir_attr_after.change_id,
+            };
+            NfsResop4::Remove(NfsStat4::Ok, Some(cinfo))
+        } else {
+            NfsResop4::Remove(status, None)
         }
     }
 

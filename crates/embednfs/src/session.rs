@@ -29,15 +29,21 @@ pub(crate) struct SynthMeta {
     pub archive: bool,
     pub hidden: bool,
     pub system: bool,
+    pub named_attr_count: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct LockRange {
+    locktype: NfsLockType4,
+    offset: u64,
+    length: u64,
 }
 
 #[derive(Debug)]
 struct LockFileState {
     object: ServerObject,
     owner: StateOwner4,
-    locktype: NfsLockType4,
-    offset: u64,
-    length: u64,
+    ranges: Vec<LockRange>,
     active: bool,
     stateid_seq: u32,
 }
@@ -228,6 +234,7 @@ impl StateManager {
             archive: false,
             hidden: false,
             system: false,
+            named_attr_count: None,
         };
         inner.metadata.insert(object.clone(), meta.clone());
         meta
@@ -255,6 +262,27 @@ impl StateManager {
         meta.ctime_sec = now_s;
         meta.ctime_nsec = now_ns;
         meta.change_id = self.next_changeid.fetch_add(1, Ordering::Relaxed);
+        inner.metadata.insert(object.clone(), meta.clone());
+        meta
+    }
+
+    pub(crate) async fn named_attr_count(&self, object: &ServerObject) -> Option<u64> {
+        let inner = self.inner.read().await;
+        inner
+            .metadata
+            .get(object)
+            .and_then(|meta| meta.named_attr_count)
+    }
+
+    pub(crate) async fn set_named_attr_count(
+        &self,
+        object: &ServerObject,
+        file_type: ServerFileType,
+        count: u64,
+    ) -> SynthMeta {
+        let mut inner = self.inner.write().await;
+        let mut meta = self.ensure_meta_locked(&mut inner, object, file_type);
+        meta.named_attr_count = Some(count);
         inner.metadata.insert(object.clone(), meta.clone());
         meta
     }
@@ -677,7 +705,24 @@ impl StateManager {
     pub async fn free_stateid(&self, stateid: &Stateid4) -> Result<(), NfsStat4> {
         let mut inner = self.inner.write().await;
         inner.open_files.remove(&stateid.other);
+        inner.lock_files.remove(&stateid.other);
         Ok(())
+    }
+
+    pub async fn test_stateids(&self, stateids: &[Stateid4]) -> Vec<NfsStat4> {
+        let inner = self.inner.read().await;
+        stateids
+            .iter()
+            .map(|stateid| {
+                if inner.open_files.contains_key(&stateid.other)
+                    || inner.lock_files.contains_key(&stateid.other)
+                {
+                    NfsStat4::Ok
+                } else {
+                    NfsStat4::BadStateid
+                }
+            })
+            .collect()
     }
 
     /// Get the max request size for a session.
@@ -707,6 +752,22 @@ impl StateManager {
         let a_end = Self::lock_end(a_offset, a_length);
         let b_end = Self::lock_end(b_offset, b_length);
         (a_offset as u128) < b_end && (b_offset as u128) < a_end
+    }
+
+    fn range_from_bounds(locktype: NfsLockType4, start: u64, end: u128) -> Option<LockRange> {
+        if start as u128 >= end {
+            return None;
+        }
+
+        Some(LockRange {
+            locktype,
+            offset: start,
+            length: if end == u128::MAX {
+                0
+            } else {
+                (end - start as u128) as u64
+            },
+        })
     }
 
     fn is_write_lock(locktype: NfsLockType4) -> bool {
@@ -740,18 +801,20 @@ impl StateManager {
             if Self::same_lock_owner(&state.owner, owner) {
                 continue;
             }
-            if !Self::locks_overlap(state.offset, state.length, offset, length) {
-                continue;
+            for range in &state.ranges {
+                if !Self::locks_overlap(range.offset, range.length, offset, length) {
+                    continue;
+                }
+                if !Self::is_write_lock(range.locktype) && !Self::is_write_lock(locktype) {
+                    continue;
+                }
+                return Some(LockDenied4 {
+                    offset: range.offset,
+                    length: range.length,
+                    locktype: range.locktype,
+                    owner: state.owner.clone(),
+                });
             }
-            if !Self::is_write_lock(state.locktype) && !Self::is_write_lock(locktype) {
-                continue;
-            }
-            return Some(LockDenied4 {
-                offset: state.offset,
-                length: state.length,
-                locktype: state.locktype,
-                owner: state.owner.clone(),
-            });
         }
         None
     }
@@ -785,9 +848,11 @@ impl StateManager {
             LockFileState {
                 object,
                 owner: owner.clone(),
-                locktype,
-                offset,
-                length,
+                ranges: vec![LockRange {
+                    locktype,
+                    offset,
+                    length,
+                }],
                 active: true,
                 stateid_seq: 1,
             },
@@ -809,9 +874,11 @@ impl StateManager {
             .lock_files
             .get_mut(&lock_stateid.other)
             .ok_or(NfsStat4::BadStateid)?;
-        state.locktype = locktype;
-        state.offset = offset;
-        state.length = length;
+        state.ranges.push(LockRange {
+            locktype,
+            offset,
+            length,
+        });
         state.active = true;
         state.stateid_seq += 1;
         Ok(Stateid4 {
@@ -833,7 +900,11 @@ impl StateManager {
             .get_mut(&lock_stateid.other)
             .ok_or(NfsStat4::BadStateid)?;
 
-        if !Self::locks_overlap(state.offset, state.length, offset, length) {
+        if !state
+            .ranges
+            .iter()
+            .any(|range| Self::locks_overlap(range.offset, range.length, offset, length))
+        {
             state.stateid_seq += 1;
             return Ok(Stateid4 {
                 seqid: state.stateid_seq,
@@ -842,27 +913,30 @@ impl StateManager {
         }
 
         let unlock_end = Self::lock_end(offset, length);
-        let state_end = Self::lock_end(state.offset, state.length);
-        if offset <= state.offset && unlock_end >= state_end {
-            state.active = false;
-            state.stateid_seq += 1;
-            return Ok(Stateid4 {
-                seqid: state.stateid_seq,
-                other: lock_stateid.other,
-            });
-        }
+        let mut next_ranges = Vec::with_capacity(state.ranges.len() + 1);
+        for range in &state.ranges {
+            if !Self::locks_overlap(range.offset, range.length, offset, length) {
+                next_ranges.push(LockRange {
+                    locktype: range.locktype,
+                    offset: range.offset,
+                    length: range.length,
+                });
+                continue;
+            }
 
-        if offset <= state.offset {
-            let new_start = unlock_end as u64;
-            state.length = if state.length == 0 {
-                0
-            } else {
-                (state_end.saturating_sub(new_start as u128)) as u64
-            };
-            state.offset = new_start;
-        } else {
-            state.length = offset.saturating_sub(state.offset);
+            let range_end = Self::lock_end(range.offset, range.length);
+            if let Some(left) = Self::range_from_bounds(range.locktype, range.offset, offset as u128) {
+                next_ranges.push(left);
+            }
+            if unlock_end != u128::MAX
+                && let Some(right) =
+                    Self::range_from_bounds(range.locktype, unlock_end as u64, range_end)
+            {
+                next_ranges.push(right);
+            }
         }
+        state.ranges = next_ranges;
+        state.active = !state.ranges.is_empty();
         state.stateid_seq += 1;
         Ok(Stateid4 {
             seqid: state.stateid_seq,
@@ -874,5 +948,137 @@ impl StateManager {
 impl Default for StateManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn setup_open_state(
+        state: &StateManager,
+        object: ServerObject,
+        clientid: Clientid4,
+    ) -> Stateid4 {
+        state
+            .create_open_state(object, clientid, OPEN4_SHARE_ACCESS_BOTH, OPEN4_SHARE_DENY_NONE)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_test_stateids_recognizes_open_and_lock_stateids() {
+        let state = StateManager::new();
+        let object = ServerObject::Fs(1);
+        let open_stateid = setup_open_state(&state, object.clone(), 11).await;
+        let owner = StateOwner4 {
+            clientid: 11,
+            owner: b"lock-owner".to_vec(),
+        };
+        let lock_stateid = state
+            .create_lock_state(
+                &open_stateid,
+                &owner,
+                object,
+                NfsLockType4::WriteLt,
+                0,
+                10,
+            )
+            .await
+            .unwrap();
+
+        let unknown = Stateid4 {
+            seqid: 1,
+            other: [0x55; 12],
+        };
+        let results = state
+            .test_stateids(&[open_stateid, lock_stateid, unknown])
+            .await;
+        assert_eq!(results, vec![NfsStat4::Ok, NfsStat4::Ok, NfsStat4::BadStateid]);
+    }
+
+    #[tokio::test]
+    async fn test_existing_lock_owner_tracks_multiple_ranges() {
+        let state = StateManager::new();
+        let object = ServerObject::Fs(7);
+        let open_stateid = setup_open_state(&state, object.clone(), 22).await;
+        let owner = StateOwner4 {
+            clientid: 22,
+            owner: b"owner".to_vec(),
+        };
+
+        let lock_stateid = state
+            .create_lock_state(
+                &open_stateid,
+                &owner,
+                object.clone(),
+                NfsLockType4::WriteLt,
+                0,
+                10,
+            )
+            .await
+            .unwrap();
+        state
+            .update_lock_state(&lock_stateid, NfsLockType4::WriteLt, 20, 10)
+            .await
+            .unwrap();
+
+        let inner = state.inner.read().await;
+        let lock = inner.lock_files.get(&lock_stateid.other).unwrap();
+        assert!(lock.active);
+        assert_eq!(lock.ranges.len(), 2);
+        assert_eq!(lock.ranges[0].offset, 0);
+        assert_eq!(lock.ranges[1].offset, 20);
+    }
+
+    #[tokio::test]
+    async fn test_unlock_splits_range_and_conflict_checks_all_ranges() {
+        let state = StateManager::new();
+        let object = ServerObject::Fs(9);
+        let open1 = setup_open_state(&state, object.clone(), 31).await;
+        let owner1 = StateOwner4 {
+            clientid: 31,
+            owner: b"owner1".to_vec(),
+        };
+        let lock_stateid = state
+            .create_lock_state(
+                &open1,
+                &owner1,
+                object.clone(),
+                NfsLockType4::WriteLt,
+                0,
+                100,
+            )
+            .await
+            .unwrap();
+
+        state.unlock_state(&lock_stateid, 40, 20).await.unwrap();
+
+        let inner = state.inner.read().await;
+        let lock = inner.lock_files.get(&lock_stateid.other).unwrap();
+        assert!(lock.active);
+        assert_eq!(lock.ranges.len(), 2);
+        assert_eq!(lock.ranges[0].offset, 0);
+        assert_eq!(lock.ranges[0].length, 40);
+        assert_eq!(lock.ranges[1].offset, 60);
+        assert_eq!(lock.ranges[1].length, 40);
+        drop(inner);
+
+        let owner2 = StateOwner4 {
+            clientid: 32,
+            owner: b"owner2".to_vec(),
+        };
+        let denied_left = state
+            .find_lock_conflict(&object, &owner2, NfsLockType4::WriteLt, 10, 5, None)
+            .await;
+        assert!(denied_left.is_some());
+        let denied_middle = state
+            .find_lock_conflict(&object, &owner2, NfsLockType4::WriteLt, 45, 5, None)
+            .await;
+        assert!(denied_middle.is_none());
+        let denied_right = state
+            .find_lock_conflict(&object, &owner2, NfsLockType4::WriteLt, 70, 5, None)
+            .await;
+        assert!(denied_right.is_some());
     }
 }

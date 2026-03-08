@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::{BufMut, Bytes, BytesMut};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -283,6 +284,16 @@ fn encode_setattr_flags(archive: bool, hidden: bool, system: bool) -> Vec<u8> {
     buf.to_vec()
 }
 
+fn encode_test_stateid(stateids: &[Stateid4]) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_TEST_STATEID.encode(&mut buf);
+    (stateids.len() as u32).encode(&mut buf);
+    for stateid in stateids {
+        stateid.encode(&mut buf);
+    }
+    buf.to_vec()
+}
+
 fn encode_open_confirm() -> Vec<u8> {
     let mut buf = BytesMut::new();
     OP_OPEN_CONFIRM.encode(&mut buf);
@@ -362,6 +373,11 @@ fn parse_getfh(resp: &mut Bytes) -> Vec<u8> {
     decode_opaque(resp).unwrap()
 }
 
+fn parse_test_stateid_results(resp: &mut Bytes) -> Vec<u32> {
+    let count = u32::decode(resp).unwrap() as usize;
+    (0..count).map(|_| u32::decode(resp).unwrap()).collect()
+}
+
 fn skip_exchange_id_res(resp: &mut Bytes) -> (u64, u32) {
     let clientid = u64::decode(resp).unwrap();
     let sequenceid = u32::decode(resp).unwrap();
@@ -438,6 +454,11 @@ struct BlockingRemoveFs {
     release: Arc<Notify>,
 }
 
+struct CountingNamedAttrFs {
+    inner: MemFs,
+    list_count: Arc<AtomicUsize>,
+}
+
 #[async_trait::async_trait]
 impl NfsFileSystem for BlockingRemoveFs {
     fn root(&self) -> FileId {
@@ -510,6 +531,105 @@ impl NfsFileSystem for BlockingRemoveFs {
 
     fn syncer(&self) -> Option<&dyn embednfs::NfsSync> {
         self.inner.syncer()
+    }
+}
+
+#[async_trait::async_trait]
+impl NfsFileSystem for CountingNamedAttrFs {
+    fn root(&self) -> FileId {
+        self.inner.root()
+    }
+
+    async fn stat(&self, id: FileId) -> NfsResult<NodeInfo> {
+        self.inner.stat(id).await
+    }
+
+    async fn lookup(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
+        self.inner.lookup(dir_id, name).await
+    }
+
+    async fn lookup_parent(&self, id: FileId) -> NfsResult<FileId> {
+        self.inner.lookup_parent(id).await
+    }
+
+    async fn readdir(&self, dir_id: FileId) -> NfsResult<Vec<DirEntry>> {
+        self.inner.readdir(dir_id).await
+    }
+
+    async fn read(&self, id: FileId, offset: u64, count: u32) -> NfsResult<(Vec<u8>, bool)> {
+        self.inner.read(id, offset, count).await
+    }
+
+    async fn write(&self, id: FileId, offset: u64, data: &[u8]) -> NfsResult<u32> {
+        self.inner.write(id, offset, data).await
+    }
+
+    async fn truncate(&self, id: FileId, size: u64) -> NfsResult<()> {
+        self.inner.truncate(id, size).await
+    }
+
+    async fn create_file(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
+        self.inner.create_file(dir_id, name).await
+    }
+
+    async fn create_dir(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
+        self.inner.create_dir(dir_id, name).await
+    }
+
+    async fn remove(&self, dir_id: FileId, name: &str) -> NfsResult<()> {
+        self.inner.remove(dir_id, name).await
+    }
+
+    async fn rename(
+        &self,
+        from_dir: FileId,
+        from_name: &str,
+        to_dir: FileId,
+        to_name: &str,
+    ) -> NfsResult<()> {
+        self.inner.rename(from_dir, from_name, to_dir, to_name).await
+    }
+
+    fn symlinks(&self) -> Option<&dyn embednfs::NfsSymlinks> {
+        self.inner.symlinks()
+    }
+
+    fn hard_links(&self) -> Option<&dyn embednfs::NfsHardLinks> {
+        self.inner.hard_links()
+    }
+
+    fn named_attrs(&self) -> Option<&dyn NfsNamedAttrs> {
+        Some(self)
+    }
+
+    fn syncer(&self) -> Option<&dyn embednfs::NfsSync> {
+        self.inner.syncer()
+    }
+}
+
+#[async_trait::async_trait]
+impl NfsNamedAttrs for CountingNamedAttrFs {
+    async fn list_xattrs(&self, id: FileId) -> NfsResult<Vec<String>> {
+        self.list_count.fetch_add(1, Ordering::Relaxed);
+        self.inner.list_xattrs(id).await
+    }
+
+    async fn get_xattr(&self, id: FileId, name: &str) -> NfsResult<Vec<u8>> {
+        self.inner.get_xattr(id, name).await
+    }
+
+    async fn set_xattr(
+        &self,
+        id: FileId,
+        name: &str,
+        value: &[u8],
+        mode: XattrSetMode,
+    ) -> NfsResult<()> {
+        self.inner.set_xattr(id, name, value, mode).await
+    }
+
+    async fn remove_xattr(&self, id: FileId, name: &str) -> NfsResult<()> {
+        self.inner.remove_xattr(id, name).await
     }
 }
 
@@ -953,6 +1073,114 @@ async fn test_setattr_flags_round_trip() {
     assert!(bool::decode(&mut vals).unwrap());
     assert!(bool::decode(&mut vals).unwrap());
     assert!(bool::decode(&mut vals).unwrap());
+}
+
+#[tokio::test]
+async fn test_test_stateid_reports_known_and_unknown_stateids() {
+    let port = start_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let open_op = encode_open_create("stateid.txt");
+    let compound = encode_compound("open-for-teststateid", &[&seq_op, &rootfh_op, &open_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let open_stateid = skip_open_res(&mut resp);
+
+    let bogus = Stateid4 {
+        seqid: 1,
+        other: [0x77; 12],
+    };
+    let seq_op = encode_sequence(&sessionid, 2, 0);
+    let test_stateid_op = encode_test_stateid(&[open_stateid, bogus]);
+    let compound = encode_compound("teststateid", &[&seq_op, &test_stateid_op]);
+    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 2);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_TEST_STATEID);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let results = parse_test_stateid_results(&mut resp);
+    assert_eq!(
+        results,
+        vec![NfsStat4::Ok as u32, NfsStat4::BadStateid as u32]
+    );
+}
+
+#[tokio::test]
+async fn test_getattr_file_named_attr_summary_is_cached() {
+    let inner = fs_with_xattr("cached.txt", "user.demo", b"value").await;
+    let list_count = Arc::new(AtomicUsize::new(0));
+    let fs = CountingNamedAttrFs {
+        inner,
+        list_count: list_count.clone(),
+    };
+    let port = start_server_with_fs(fs).await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let sessionid = setup_session(&mut stream).await;
+
+    for (xid, seq) in [(3, 1), (4, 2)] {
+        let seq_op = encode_sequence(&sessionid, seq, 0);
+        let rootfh_op = encode_putrootfh();
+        let lookup_op = encode_lookup("cached.txt");
+        let getattr_op = encode_getattr(&[FATTR4_NAMED_ATTR]);
+        let compound = encode_compound("getattr-file-cache", &[&seq_op, &rootfh_op, &lookup_op, &getattr_op]);
+        let mut resp = send_rpc(&mut stream, xid, 1, &compound).await;
+        parse_rpc_reply(&mut resp);
+        let (status, _, _) = parse_compound_header(&mut resp);
+        assert_eq!(status, NfsStat4::Ok as u32);
+    }
+
+    assert_eq!(list_count.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn test_getattr_named_attr_dir_summary_is_cached() {
+    let inner = fs_with_xattr("cached.txt", "user.demo", b"value").await;
+    let list_count = Arc::new(AtomicUsize::new(0));
+    let fs = CountingNamedAttrFs {
+        inner,
+        list_count: list_count.clone(),
+    };
+    let port = start_server_with_fs(fs).await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let sessionid = setup_session(&mut stream).await;
+
+    for (xid, seq) in [(3, 1), (4, 2)] {
+        let seq_op = encode_sequence(&sessionid, seq, 0);
+        let rootfh_op = encode_putrootfh();
+        let lookup_op = encode_lookup("cached.txt");
+        let openattr_op = encode_openattr(false);
+        let getattr_op = encode_getattr(&[FATTR4_TYPE, FATTR4_SIZE]);
+        let compound = encode_compound(
+            "getattr-attrdir-cache",
+            &[&seq_op, &rootfh_op, &lookup_op, &openattr_op, &getattr_op],
+        );
+        let mut resp = send_rpc(&mut stream, xid, 1, &compound).await;
+        parse_rpc_reply(&mut resp);
+        let (status, _, _) = parse_compound_header(&mut resp);
+        assert_eq!(status, NfsStat4::Ok as u32);
+    }
+
+    assert_eq!(list_count.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]
