@@ -373,8 +373,8 @@ async fn test_link_no_saved_fh() {
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, _) = parse_compound_header(&mut resp);
-    // Should fail — LINK needs saved FH as the source object
-    assert_ne!(status, NfsStat4::Ok as u32);
+    // RFC 8881 §18.9.3: LINK without a saved FH returns NFS4ERR_NOFILEHANDLE
+    assert_eq!(status, NfsStat4::Nofilehandle as u32);
 }
 
 // ===== COMMIT (pynfs CMT) =====
