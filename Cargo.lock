@@ -80,22 +80,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "embednfs-cli"
-version = "0.1.0"
-dependencies = [
- "embednfs",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "embednfs-proto"
 version = "0.1.0"
 dependencies = [
  "bytes",
  "num-derive",
  "num-traits",
+]
+
+[[package]]
+name = "embednfsd"
+version = "0.1.0"
+dependencies = [
+ "embednfs",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

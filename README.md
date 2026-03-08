@@ -22,7 +22,7 @@ This is a Cargo workspace with three crates:
 
 - **`embednfs-proto`** — XDR encoding/decoding and NFSv4.1 protocol types
 - **`embednfs`** — Embeddable server library with the filesystem traits and COMPOUND handler
-- **`embednfs-cli`** — CLI/demo binary for running the server locally
+- **`embednfsd`** — NFSv4.1 server daemon powered by embednfs
 
 ## Quick Start
 

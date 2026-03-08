@@ -15,7 +15,7 @@ Licensed MIT. Rust edition 2024. Determine the implementation scope yourself bas
 ```bash
 cargo clippy --workspace
 cargo test --workspace
-cargo run -p embednfs-cli --release
+cargo run -p embednfsd --release
 
 # macOS
 mount_nfs -o vers=4.1,tcp,port=2049 127.0.0.1:/ /tmp/embednfs
