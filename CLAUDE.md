@@ -2,13 +2,13 @@
 
 ## Goal
 
-Build a production-quality, high-performance Rust NFSv4.1 server library. The user implements a small, opinionated filesystem trait; the library handles the wire protocol, state management, and serves it over TCP. The primary use case is embedding as a localhost NFS server — a FUSE replacement that needs no kernel modules. Apple/macOS NFSv4.1 client compatibility is the main implementation target, and Linux compatibility should be preserved where it comes for free.
+Build a production-quality, high-performance Rust NFSv4.1 server library. The user implements a small, opinionated filesystem trait; the library handles the wire protocol, state management, locking, synthetic NFS-only objects, and serves it over TCP. The primary use case is embedding as a localhost NFS server — a FUSE replacement that needs no kernel modules. Apple/macOS NFSv4.1 client compatibility is the main implementation target, and Linux compatibility should be preserved where it comes for free.
 
 This is not a toy or proof-of-concept. It should be correct, fast, and suitable for real workloads. Zero-copy where possible, minimal allocations on the hot path, and designed to saturate the I/O capabilities of the underlying filesystem implementation.
 
 Strictly NFSv4.1 only (RFC 8881). Do not implement NFSv4.0 compatibility or mix NFSv4.0 semantics — they are different protocols. COMPOUND requests with `minorversion != 1` must be rejected. Do not use NFSv4.0-only libraries, tools, or test clients.
 
-Licensed MIT. Rust edition 2024. Determine the implementation scope yourself based on what the spec requires, what real clients actually need, and what matters for the localhost FUSE-replacement use case. Keep the public trait as simple as it can be and as complex as it needs to be. Prefer a minimal core trait plus optional capability extensions over one large catch-all interface.
+Licensed MIT. Rust edition 2024. Determine the implementation scope yourself based on what the spec requires, what real clients actually need, and what matters for the localhost FUSE-replacement use case. Keep the public trait as simple as it can be and as complex as it needs to be. Prefer a minimal core trait plus optional capability extensions over one large catch-all interface. Implement what Apple/macOS actually expects; do not keep extra protocol surface unless it is effectively free and low-complexity.
 
 ## Commands
 
@@ -45,7 +45,7 @@ Never implement a large chunk speculatively. Every piece of protocol handling sh
 
 ### Testing
 
-Integration tests exercise the full RPC path over TCP using ephemeral port binding — no root or kernel mounts required. Also test with the kernel NFS client when useful.
+Integration tests exercise the full RPC path over TCP using ephemeral port binding — no root or kernel mounts required. Also test with the kernel NFS client when useful. For macOS-facing behavior, prefer real `mount_nfs` validation over inference when possible, including Finder/file-copy/xattr workflows if the change could affect them.
 
 ## Coding Standards
 
@@ -56,6 +56,12 @@ Cargo workspace. Separate the XDR/protocol types from the server logic from the 
 ### Abstraction
 
 The filesystem trait is the most important API surface. The library handles all NFSv4.1 state internally — the trait implementor should not think about protocol details.
+
+Keep the API model layered:
+
+- The required core trait should feel like a lowest-common-denominator local filesystem, not a POSIX mirror.
+- Advanced features such as named attributes, symlinks, hard links, and explicit sync should be optional capability extensions.
+- NFS-specific synthetic objects such as named-attribute directories/files should stay internal to the server, not leak into the public trait.
 
 ### Dependencies
 
