@@ -7,6 +7,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use tokio::sync::RwLock;
 
+const MAX_FORE_CHAN_SLOTS: u32 = 64;
+const MAX_REQUEST_SIZE: u32 = 1_049_620;
+const MAX_CACHED_RESPONSE: u32 = 6144;
+const SYNTH_FILEID_BASE: u64 = 1u64 << 63;
+
 /// Server-owned metadata tracked for each visible object.
 #[derive(Debug, Clone)]
 pub(crate) struct SynthMeta {
@@ -128,8 +133,9 @@ impl StateManager {
         let boot_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
+        let verifier_value = boot_time.as_secs().rotate_left(32) ^ u64::from(boot_time.subsec_nanos());
         let mut write_verifier = [0u8; 8];
-        write_verifier[..8].copy_from_slice(&boot_time.as_nanos().to_be_bytes()[..8]);
+        write_verifier.copy_from_slice(&verifier_value.to_be_bytes());
 
         let server_owner = ServerOwner4 {
             minor_id: 0,
@@ -150,7 +156,7 @@ impl StateManager {
             next_clientid: AtomicU64::new(1),
             next_stateid: AtomicU32::new(1),
             next_changeid: AtomicU64::new(2),
-            next_synth_fileid: AtomicU64::new(1 << 63),
+            next_synth_fileid: AtomicU64::new(SYNTH_FILEID_BASE),
             write_verifier,
             server_owner,
         }
@@ -367,9 +373,11 @@ impl StateManager {
             }
         }
 
-        meta.ctime_sec = now_s;
-        meta.ctime_nsec = now_ns;
-        meta.change_id = self.next_changeid.fetch_add(1, Ordering::Relaxed);
+        if !attrs.is_empty() {
+            meta.ctime_sec = now_s;
+            meta.ctime_nsec = now_ns;
+            meta.change_id = self.next_changeid.fetch_add(1, Ordering::Relaxed);
+        }
         inner.metadata.insert(object.clone(), meta.clone());
         meta
     }
@@ -484,7 +492,7 @@ impl StateManager {
         sessionid[..8].copy_from_slice(&args.clientid.to_be_bytes());
         sessionid[8..16].copy_from_slice(&(client.sequence_id as u64).to_be_bytes());
 
-        let max_slots = args.fore_chan_attrs.maxrequests.min(64) as usize;
+        let max_slots = args.fore_chan_attrs.maxrequests.min(MAX_FORE_CHAN_SLOTS) as usize;
         let slots = vec![
             SlotState {
                 sequence_id: 1,
@@ -496,10 +504,13 @@ impl StateManager {
 
         let fore_chan = ChannelAttrs4 {
             headerpadsize: 0,
-            maxrequestsize: args.fore_chan_attrs.maxrequestsize.min(1049620),
-            maxresponsesize: args.fore_chan_attrs.maxresponsesize.min(1049620),
-            maxresponsesize_cached: args.fore_chan_attrs.maxresponsesize_cached.min(6144),
-            maxoperations: args.fore_chan_attrs.maxoperations.min(64),
+            maxrequestsize: args.fore_chan_attrs.maxrequestsize.min(MAX_REQUEST_SIZE),
+            maxresponsesize: args.fore_chan_attrs.maxresponsesize.min(MAX_REQUEST_SIZE),
+            maxresponsesize_cached: args
+                .fore_chan_attrs
+                .maxresponsesize_cached
+                .min(MAX_CACHED_RESPONSE),
+            maxoperations: args.fore_chan_attrs.maxoperations.min(MAX_FORE_CHAN_SLOTS),
             maxrequests: max_slots as u32,
             rdma_ird: vec![],
         };

@@ -7,6 +7,9 @@ use bytes::BytesMut;
 use embednfs_proto::xdr::*;
 use embednfs_proto::*;
 
+const NFS_LEASE_TIME_SECS: u32 = 90;
+const MODE_PERM_MASK: u32 = 0o7777;
+
 /// Encode file attributes according to the requested bitmap.
 pub(crate) fn encode_fattr4(
     attr: &ServerFileAttr,
@@ -151,7 +154,7 @@ pub(crate) fn encode_fattr4(
     // FATTR4_LEASE_TIME (10) - mandatory
     if request.is_set(FATTR4_LEASE_TIME) {
         result_bitmap.set(FATTR4_LEASE_TIME);
-        90u32.encode(&mut vals); // 90 second lease
+        NFS_LEASE_TIME_SECS.encode(&mut vals);
     }
 
     // FATTR4_RDATTR_ERROR (11) - mandatory
@@ -274,7 +277,7 @@ pub(crate) fn encode_fattr4(
     // FATTR4_MODE (33)
     if request.is_set(FATTR4_MODE) {
         result_bitmap.set(FATTR4_MODE);
-        (attr.mode & 0o7777).encode(&mut vals);
+        (attr.mode & MODE_PERM_MASK).encode(&mut vals);
     }
 
     // FATTR4_NO_TRUNC (34)
@@ -450,7 +453,7 @@ pub(crate) fn decode_setattr(fattr: &Fattr4) -> Result<SetAttrRequest, NfsStat4>
 
     if fattr.attrmask.is_set(FATTR4_MODE) {
         let mode = u32::decode(&mut src).map_err(|_| NfsStat4::BadXdr)?;
-        result.mode = Some(mode & 0o7777);
+        result.mode = Some(mode & MODE_PERM_MASK);
     }
 
     if fattr.attrmask.is_set(FATTR4_OWNER) {

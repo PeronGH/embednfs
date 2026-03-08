@@ -16,6 +16,11 @@ use crate::fs::*;
 use crate::internal::{ServerFileAttr, ServerFileType, ServerObject};
 use crate::session::{SequenceReplay, StateManager, SynthMeta};
 
+const RPC_LAST_FRAGMENT: u32 = 0x8000_0000;
+const RPC_FRAG_LEN_MASK: u32 = 0x7fff_ffff;
+const MAX_FRAGMENT_SIZE: usize = 2 * 1024 * 1024;
+const CONN_BUF_SIZE: usize = 65_536;
+
 /// The NFS server.
 pub struct NfsServer<F: NfsFileSystem> {
     fs: Arc<F>,
@@ -67,8 +72,8 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
     async fn handle_connection(self: &Arc<Self>, stream: TcpStream) -> std::io::Result<()> {
         let (mut reader, writer) = stream.into_split();
-        let mut writer = BufWriter::with_capacity(65536, writer);
-        let mut read_buf = vec![0u8; 65536];
+        let mut writer = BufWriter::with_capacity(CONN_BUF_SIZE, writer);
+        let mut read_buf = vec![0u8; CONN_BUF_SIZE];
 
         loop {
             let mut header = [0u8; 4];
@@ -78,10 +83,16 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 Err(e) => return Err(e),
             }
             let header_val = u32::from_be_bytes(header);
-            let _last_fragment = (header_val & 0x80000000) != 0;
-            let frag_len = (header_val & 0x7FFFFFFF) as usize;
+            let last_fragment = (header_val & RPC_LAST_FRAGMENT) != 0;
+            let frag_len = (header_val & RPC_FRAG_LEN_MASK) as usize;
 
-            if frag_len > 2 * 1024 * 1024 {
+            // TODO: Support RFC 5531 multi-fragment record assembly if non-localhost
+            // transport support becomes a target.
+            if !last_fragment {
+                trace!("received non-terminal RPC fragment; multi-fragment assembly is deferred");
+            }
+
+            if frag_len > MAX_FRAGMENT_SIZE {
                 warn!("Fragment too large: {frag_len}");
                 return Ok(());
             }
@@ -93,7 +104,11 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
             let response = self.process_rpc_message(&read_buf[..frag_len]).await;
 
-            let resp_len = (response.len() as u32) | 0x80000000;
+            let resp_len = u32::try_from(response.len())
+                .ok()
+                .filter(|len| *len <= RPC_FRAG_LEN_MASK)
+                .expect("response exceeds RPC fragment limit");
+            let resp_len = resp_len | RPC_LAST_FRAGMENT;
             writer.write_all(&resp_len.to_be_bytes()).await?;
             writer.write_all(&response).await?;
             writer.flush().await?;
@@ -466,8 +481,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
         }
     }
 
-    fn object_from_info(id: FileId, info: NodeInfo) -> ServerFileType {
-        let _ = id;
+    fn object_from_info(info: NodeInfo) -> ServerFileType {
         match info.kind {
             NodeKind::File => ServerFileType::Regular,
             NodeKind::Directory => ServerFileType::Directory,
@@ -514,7 +528,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
         match object {
             ServerObject::Fs(id) => {
                 let info = self.fs.stat(*id).await?;
-                let file_type = Self::object_from_info(*id, info);
+                let file_type = Self::object_from_info(info);
                 let has_named_attrs = if self.fs.named_attrs().is_some() {
                     self.xattr_count(*id, file_type).await? > 0
                 } else {
@@ -528,7 +542,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
                     return Err(NfsError::Notsupp);
                 }
                 let info = self.fs.stat(*parent).await?;
-                let parent_type = Self::object_from_info(*parent, info);
+                let parent_type = Self::object_from_info(info);
                 let count = self.xattr_count(*parent, parent_type).await?;
                 let meta = self
                     .state
@@ -563,23 +577,22 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
         let named = self.fs.named_attrs().ok_or(NfsError::Notsupp)?;
         let count = named.list_xattrs(parent).await?.len() as u64;
-        let _ = self
-            .state
+        self.state
             .set_named_attr_count(&object, file_type, count)
             .await;
         Ok(count)
     }
 
-    async fn resolve_object(&self, fh: &Option<NfsFh4>) -> Result<ServerObject, NfsStat4> {
-        let fh = fh.as_ref().ok_or(NfsStat4::Nofilehandle)?;
-        self.state.fh_to_object(fh).await.ok_or(NfsStat4::Stale)
+    async fn resolve_object(&self, fh: &Option<NfsFh4>) -> Result<(NfsFh4, ServerObject), NfsStat4> {
+        let fh = fh.clone().ok_or(NfsStat4::Nofilehandle)?;
+        let object = self.state.fh_to_object(&fh).await.ok_or(NfsStat4::Stale)?;
+        Ok((fh, object))
     }
 
     async fn parent_change_after_xattr_mutation(&self, parent: FileId) {
         if let Ok(info) = self.fs.stat(parent).await {
-            let file_type = Self::object_from_info(parent, info);
-            let _ = self
-                .state
+            let file_type = Self::object_from_info(info);
+            self.state
                 .touch_metadata(&ServerObject::Fs(parent), file_type)
                 .await;
         }
@@ -651,10 +664,9 @@ impl<F: NfsFileSystem> NfsServer<F> {
     async fn refresh_xattr_summary(&self, parent: FileId) -> NfsResult<u64> {
         let named = self.fs.named_attrs().ok_or(NfsError::Notsupp)?;
         let info = self.fs.stat(parent).await?;
-        let file_type = Self::object_from_info(parent, info);
+        let file_type = Self::object_from_info(info);
         let count = named.list_xattrs(parent).await?.len() as u64;
-        let _ = self
-            .state
+        self.state
             .set_named_attr_count(&ServerObject::Fs(parent), file_type, count)
             .await;
         Ok(count)
@@ -682,8 +694,8 @@ impl<F: NfsFileSystem> NfsServer<F> {
     // ===== Individual operation handlers =====
 
     async fn op_access(&self, args: &AccessArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
-        let object = match self.resolve_object(current_fh).await {
-            Ok(object) => object,
+        let (_, object) = match self.resolve_object(current_fh).await {
+            Ok(resolved) => resolved,
             Err(status) => return NfsResop4::Access(status, 0, 0),
         };
 
@@ -716,8 +728,8 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn op_commit(&self, _args: &CommitArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
-        let object = match self.resolve_object(current_fh).await {
-            Ok(object) => object,
+        let (_, object) = match self.resolve_object(current_fh).await {
+            Ok(resolved) => resolved,
             Err(status) => return NfsResop4::Commit(status, [0u8; 8]),
         };
 
@@ -740,8 +752,8 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn op_create(&self, args: &CreateArgs4, current_fh: &mut Option<NfsFh4>) -> NfsResop4 {
-        let dir_object = match self.resolve_object(current_fh).await {
-            Ok(object) => object,
+        let (_, dir_object) = match self.resolve_object(current_fh).await {
+            Ok(resolved) => resolved,
             Err(status) => return NfsResop4::Create(status, None, Bitmap4::new()),
         };
 
@@ -755,7 +767,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
             Ok(_) => return NfsResop4::Create(NfsStat4::Notdir, None, Bitmap4::new()),
             Err(e) => return NfsResop4::Create(e.to_nfsstat4(), None, Bitmap4::new()),
         };
-        let dir_type = Self::object_from_info(dir_id, dir_info);
+        let dir_type = Self::object_from_info(dir_info);
         let dir_attr_before = match self.build_attr(&dir_object).await {
             Ok(attr) => attr,
             Err(e) => return NfsResop4::Create(e.to_nfsstat4(), None, Bitmap4::new()),
@@ -796,18 +808,17 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn op_getattr(&self, args: &GetattrArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
-        let object = match self.resolve_object(current_fh).await {
-            Ok(object) => object,
+        let (fh, object) = match self.resolve_object(current_fh).await {
+            Ok(resolved) => resolved,
             Err(status) => return NfsResop4::Getattr(status, None),
         };
-        let fh = current_fh.as_ref().unwrap();
 
         match self.build_attr(&object).await {
             Ok(attr) => {
                 let fattr = attrs::encode_fattr4(
                     &attr,
                     &args.attr_request,
-                    fh,
+                    &fh,
                     &self.fs.fs_info(),
                     self.supports_named_attrs(),
                 );
@@ -830,12 +841,12 @@ impl<F: NfsFileSystem> NfsServer<F> {
         current_fh: &Option<NfsFh4>,
         saved_fh: &Option<NfsFh4>,
     ) -> NfsResop4 {
-        let source = match self.resolve_object(saved_fh).await {
-            Ok(object) => object,
+        let (_, source) = match self.resolve_object(saved_fh).await {
+            Ok(resolved) => resolved,
             Err(status) => return NfsResop4::Link(status, None),
         };
-        let target_dir = match self.resolve_object(current_fh).await {
-            Ok(object) => object,
+        let (_, target_dir) = match self.resolve_object(current_fh).await {
+            Ok(resolved) => resolved,
             Err(status) => return NfsResop4::Link(status, None),
         };
 
@@ -849,7 +860,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
             Ok(_) => return NfsResop4::Link(NfsStat4::Notdir, None),
             Err(e) => return NfsResop4::Link(e.to_nfsstat4(), None),
         };
-        let dir_type = Self::object_from_info(dir_id, dir_info);
+        let dir_type = Self::object_from_info(dir_info);
         let dir_attr_before = match self.build_attr(&target_dir).await {
             Ok(attr) => attr,
             Err(e) => return NfsResop4::Link(e.to_nfsstat4(), None),
@@ -872,8 +883,8 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn op_lookup(&self, args: &LookupArgs4, current_fh: &mut Option<NfsFh4>) -> NfsResop4 {
-        let object = match self.resolve_object(current_fh).await {
-            Ok(object) => object,
+        let (_, object) = match self.resolve_object(current_fh).await {
+            Ok(resolved) => resolved,
             Err(status) => return NfsResop4::Lookup(status),
         };
 
@@ -912,8 +923,8 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn op_lookupp(&self, current_fh: &mut Option<NfsFh4>) -> NfsResop4 {
-        let object = match self.resolve_object(current_fh).await {
-            Ok(object) => object,
+        let (_, object) = match self.resolve_object(current_fh).await {
+            Ok(resolved) => resolved,
             Err(status) => return NfsResop4::Lookupp(status),
         };
 
@@ -936,8 +947,8 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn op_open(&self, args: &OpenArgs4, current_fh: &mut Option<NfsFh4>) -> NfsResop4 {
-        let container = match self.resolve_object(current_fh).await {
-            Ok(object) => object,
+        let (_, container) = match self.resolve_object(current_fh).await {
+            Ok(resolved) => resolved,
             Err(status) => return NfsResop4::Open(status, None),
         };
         let before_attr = self.build_attr(&container).await;
@@ -946,12 +957,14 @@ impl<F: NfsFileSystem> NfsServer<F> {
         let mut created_before_change = None;
         let object = match (&container, &args.claim) {
             (ServerObject::Fs(dir_id), OpenClaim4::Null(name)) => {
-                let dir_info = match self.fs.stat(*dir_id).await {
-                    Ok(info) if info.kind == NodeKind::Directory => info,
+                match self.fs.stat(*dir_id).await {
+                    Ok(NodeInfo {
+                        kind: NodeKind::Directory,
+                        ..
+                    }) => {}
                     Ok(_) => return NfsResop4::Open(NfsStat4::Notdir, None),
                     Err(e) => return NfsResop4::Open(e.to_nfsstat4(), None),
-                };
-                let _ = dir_info;
+                }
 
                 match self.fs.lookup(*dir_id, name).await {
                     Ok(id) => {
@@ -1139,8 +1152,8 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn op_read(&self, args: &ReadArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
-        let object = match self.resolve_object(current_fh).await {
-            Ok(object) => object,
+        let (_, object) = match self.resolve_object(current_fh).await {
+            Ok(resolved) => resolved,
             Err(status) => return NfsResop4::Read(status, None),
         };
 
@@ -1159,8 +1172,8 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn op_readdir(&self, args: &ReaddirArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
-        let object = match self.resolve_object(current_fh).await {
-            Ok(object) => object,
+        let (_, object) = match self.resolve_object(current_fh).await {
+            Ok(resolved) => resolved,
             Err(status) => return NfsResop4::Readdir(status, None),
         };
 
@@ -1282,8 +1295,8 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn op_readlink(&self, current_fh: &Option<NfsFh4>) -> NfsResop4 {
-        let object = match self.resolve_object(current_fh).await {
-            Ok(object) => object,
+        let (_, object) = match self.resolve_object(current_fh).await {
+            Ok(resolved) => resolved,
             Err(status) => return NfsResop4::Readlink(status, None),
         };
 
@@ -1302,8 +1315,8 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn op_remove(&self, args: &RemoveArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
-        let dir_object = match self.resolve_object(current_fh).await {
-            Ok(object) => object,
+        let (_, dir_object) = match self.resolve_object(current_fh).await {
+            Ok(resolved) => resolved,
             Err(status) => return NfsResop4::Remove(status, None),
         };
 
@@ -1360,12 +1373,12 @@ impl<F: NfsFileSystem> NfsServer<F> {
         current_fh: &Option<NfsFh4>,
         saved_fh: &Option<NfsFh4>,
     ) -> NfsResop4 {
-        let src_object = match self.resolve_object(saved_fh).await {
-            Ok(object) => object,
+        let (_, src_object) = match self.resolve_object(saved_fh).await {
+            Ok(resolved) => resolved,
             Err(status) => return NfsResop4::Rename(status, None, None),
         };
-        let tgt_object = match self.resolve_object(current_fh).await {
-            Ok(object) => object,
+        let (_, tgt_object) = match self.resolve_object(current_fh).await {
+            Ok(resolved) => resolved,
             Err(status) => return NfsResop4::Rename(status, None, None),
         };
 
@@ -1412,8 +1425,8 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn op_setattr(&self, args: &SetattrArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
-        let object = match self.resolve_object(current_fh).await {
-            Ok(object) => object,
+        let (_, object) = match self.resolve_object(current_fh).await {
+            Ok(resolved) => resolved,
             Err(status) => return NfsResop4::Setattr(status, Bitmap4::new()),
         };
 
@@ -1431,10 +1444,10 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 }
                 match self.fs.stat(id).await {
                     Ok(info) => {
-                        let file_type = Self::object_from_info(id, info);
-                        let _ = self.state.apply_setattr(&object, file_type, &set_attrs).await;
+                        let file_type = Self::object_from_info(info);
+                        self.state.apply_setattr(&object, file_type, &set_attrs).await;
                         if set_attrs.size.is_some() {
-                            let _ = self.state.touch_data(&object, file_type).await;
+                            self.state.touch_data(&object, file_type).await;
                         }
                         NfsStat4::Ok
                     }
@@ -1447,12 +1460,11 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 {
                     return NfsResop4::Setattr(e.to_nfsstat4(), Bitmap4::new());
                 }
-                let _ = self
-                    .state
+                self.state
                     .apply_setattr(&object, ServerFileType::NamedAttr, &set_attrs)
                     .await;
                 if set_attrs.size.is_some() {
-                    let _ = self.state.touch_data(&object, ServerFileType::NamedAttr).await;
+                    self.state.touch_data(&object, ServerFileType::NamedAttr).await;
                 }
                 NfsStat4::Ok
             }
@@ -1460,8 +1472,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 if set_attrs.size.is_some() {
                     NfsStat4::Isdir
                 } else {
-                    let _ = self
-                        .state
+                    self.state
                         .apply_setattr(&object, ServerFileType::NamedAttrDir, &set_attrs)
                         .await;
                     NfsStat4::Ok
@@ -1477,8 +1488,8 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn op_write(&self, args: &WriteArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
-        let object = match self.resolve_object(current_fh).await {
-            Ok(object) => object,
+        let (_, object) = match self.resolve_object(current_fh).await {
+            Ok(resolved) => resolved,
             Err(status) => return NfsResop4::Write(status, None),
         };
 
@@ -1494,13 +1505,13 @@ impl<F: NfsFileSystem> NfsServer<F> {
             Ok(count) => {
                 let file_type = match object {
                     ServerObject::Fs(id) => match self.fs.stat(id).await {
-                        Ok(info) => Self::object_from_info(id, info),
+                        Ok(info) => Self::object_from_info(info),
                         Err(_) => ServerFileType::Regular,
                     },
                     ServerObject::NamedAttrFile { .. } => ServerFileType::NamedAttr,
                     ServerObject::NamedAttrDir(_) => ServerFileType::NamedAttrDir,
                 };
-                let _ = self.state.touch_data(&object, file_type).await;
+                self.state.touch_data(&object, file_type).await;
                 NfsResop4::Write(
                     NfsStat4::Ok,
                     Some(WriteRes4 {
@@ -1515,8 +1526,8 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn op_lock(&self, args: &LockArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
-        let object = match self.resolve_object(current_fh).await {
-            Ok(object) => object,
+        let (_, object) = match self.resolve_object(current_fh).await {
+            Ok(resolved) => resolved,
             Err(status) => return NfsResop4::Lock(status, None, None),
         };
 
@@ -1598,8 +1609,8 @@ impl<F: NfsFileSystem> NfsServer<F> {
     }
 
     async fn op_lockt(&self, args: &LocktArgs4, current_fh: &Option<NfsFh4>) -> NfsResop4 {
-        let object = match self.resolve_object(current_fh).await {
-            Ok(object) => object,
+        let (_, object) = match self.resolve_object(current_fh).await {
+            Ok(resolved) => resolved,
             Err(status) => return NfsResop4::Lockt(status, None),
         };
         let object_attr = match self.build_attr(&object).await {
@@ -1648,16 +1659,15 @@ impl<F: NfsFileSystem> NfsServer<F> {
         if self.fs.named_attrs().is_none() {
             return NfsResop4::OpenAttr(NfsStat4::Notsupp);
         }
-        let object = match self.resolve_object(current_fh).await {
-            Ok(object) => object,
+        let (_, object) = match self.resolve_object(current_fh).await {
+            Ok(resolved) => resolved,
             Err(status) => return NfsResop4::OpenAttr(status),
         };
         let attrdir = match object {
             ServerObject::Fs(id) => ServerObject::NamedAttrDir(id),
             _ => return NfsResop4::OpenAttr(NfsStat4::Inval),
         };
-        let _ = self
-            .state
+        self.state
             .ensure_meta(&attrdir, ServerFileType::NamedAttrDir)
             .await;
         *current_fh = Some(self.state.object_to_fh(&attrdir).await);
@@ -1679,11 +1689,10 @@ impl<F: NfsFileSystem> NfsServer<F> {
             }
         };
 
-        let object = match self.resolve_object(current_fh).await {
-            Ok(object) => object,
+        let (fh, object) = match self.resolve_object(current_fh).await {
+            Ok(resolved) => resolved,
             Err(status) => return make_res(status),
         };
-        let fh = current_fh.as_ref().unwrap();
 
         let attr = match self.build_attr(&object).await {
             Ok(attr) => attr,
@@ -1693,7 +1702,7 @@ impl<F: NfsFileSystem> NfsServer<F> {
         let server_fattr = attrs::encode_fattr4(
             &attr,
             &client_fattr.attrmask,
-            fh,
+            &fh,
             &self.fs.fs_info(),
             self.supports_named_attrs(),
         );

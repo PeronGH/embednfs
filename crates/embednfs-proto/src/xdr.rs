@@ -10,6 +10,7 @@ pub enum XdrError {
     Overflow,
     InvalidEnum(u32),
     InvalidBool(u32),
+    InvalidUtf8,
     StringTooLong(usize),
     OpaqueTooLong(usize),
     Io(io::Error),
@@ -22,6 +23,7 @@ impl std::fmt::Display for XdrError {
             XdrError::Overflow => write!(f, "XDR overflow: buffer too small"),
             XdrError::InvalidEnum(v) => write!(f, "XDR invalid enum value: {v}"),
             XdrError::InvalidBool(v) => write!(f, "XDR invalid bool value: {v}"),
+            XdrError::InvalidUtf8 => write!(f, "XDR invalid UTF-8"),
             XdrError::StringTooLong(n) => write!(f, "XDR string too long: {n}"),
             XdrError::OpaqueTooLong(n) => write!(f, "XDR opaque too long: {n}"),
             XdrError::Io(e) => write!(f, "XDR I/O error: {e}"),
@@ -213,7 +215,7 @@ impl XdrEncode for String {
 impl XdrDecode for String {
     fn decode(src: &mut Bytes) -> XdrResult<Self> {
         let data = decode_opaque(src)?;
-        String::from_utf8(data).map_err(|_| XdrError::InvalidEnum(0))
+        String::from_utf8(data).map_err(|_| XdrError::InvalidUtf8)
     }
 }
 
@@ -292,5 +294,14 @@ mod tests {
         let mut bytes = buf.freeze();
         let decoded = String::decode(&mut bytes).unwrap();
         assert_eq!(decoded, "hello");
+    }
+
+    #[test]
+    fn test_string_decode_rejects_invalid_utf8() {
+        let mut buf = BytesMut::new();
+        encode_opaque(&mut buf, &[0xff, 0xfe]);
+        let mut bytes = buf.freeze();
+        let err = String::decode(&mut bytes).unwrap_err();
+        assert!(matches!(err, XdrError::InvalidUtf8));
     }
 }

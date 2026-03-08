@@ -143,7 +143,7 @@ pub enum NfsStat4 {
 
 impl NfsStat4 {
     pub fn from_u32(v: u32) -> Self {
-        // Safety: we handle all known values, default to Serverfault
+        // Unknown status codes are mapped to Serverfault.
         match v {
             0 => NfsStat4::Ok,
             1 => NfsStat4::Perm,

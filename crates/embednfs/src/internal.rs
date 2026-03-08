@@ -71,3 +71,17 @@ pub(crate) struct SetAttrRequest {
     pub mtime: Option<SetTime>,
     pub crtime: Option<SetTime>,
 }
+
+impl SetAttrRequest {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.archive.is_none()
+            && self.hidden.is_none()
+            && self.mode.is_none()
+            && self.uid.is_none()
+            && self.gid.is_none()
+            && self.system.is_none()
+            && self.atime.is_none()
+            && self.mtime.is_none()
+            && self.crtime.is_none()
+    }
+}
