@@ -2,7 +2,16 @@
 
 An embeddable NFSv4.1 server library in Rust. You implement a small filesystem trait; the library handles the wire protocol, sessions, filehandles, locking, and TCP serving.
 
-The implementation target is Apple/macOS NFSv4.1 client compatibility first. Linux compatibility is preserved where it comes for free, but the public API is intentionally opinionated and minimal.
+The implementation target is Apple/macOS NFSv4.1 client compatibility first, with a localhost FUSE-replacement use case. The public API is intentionally opinionated and minimal.
+
+## Support Boundary
+
+This project currently makes two important non-promises:
+
+- It does **not** guarantee correct or robust behavior over a real network. The target deployment is localhost. Running it over non-localhost transport may work in some cases, but that is not a supported or validated use case.
+- It does **not** guarantee correct behavior for non-macOS clients. The implementation and live validation target the macOS kernel NFSv4.1 client and Finder workflows. Other clients may work, but they are not a compatibility target.
+
+In short: the supported target is **macOS over localhost**.
 
 ## Architecture
 
@@ -21,23 +30,21 @@ use embednfs::{MemFs, NfsServer};
 async fn main() -> std::io::Result<()> {
     let fs = MemFs::new();
     let server = NfsServer::new(fs);
-    server.listen("0.0.0.0:2049").await
+    server.listen("127.0.0.1:2049").await
 }
 ```
 
 Then mount:
 
 ```bash
-# Linux
-mkdir -p /mnt/embednfs
-mount -t nfs4 -o vers=4.1,proto=tcp,port=2049 127.0.0.1:/ /mnt/embednfs
-
 # macOS
 mkdir -p /tmp/embednfs
 mount_nfs -o vers=4.1,tcp,port=2049 127.0.0.1:/ /tmp/embednfs
 ```
 
 Note: on macOS, `vers=4` means NFSv4.0. Use `vers=4.1` explicitly.
+
+Non-macOS clients are not a supported compatibility target, even if they happen to mount successfully.
 
 ## Filesystem API
 
