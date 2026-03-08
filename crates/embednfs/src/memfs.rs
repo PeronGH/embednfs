@@ -97,10 +97,10 @@ impl NfsFileSystem for MemFs {
 
         let inner = self.inner.read().await;
         for (dir_id, inode) in &inner.inodes {
-            if let InodeData::Directory(entries) = &inode.data {
-                if entries.values().any(|child| *child == id) {
-                    return Ok(*dir_id);
-                }
+            if let InodeData::Directory(entries) = &inode.data
+                && entries.values().any(|child| *child == id)
+            {
+                return Ok(*dir_id);
             }
         }
 
@@ -236,12 +236,11 @@ impl NfsFileSystem for MemFs {
             }
         };
 
-        if let Some(child) = inner.inodes.get(&child_id) {
-            if let InodeData::Directory(entries) = &child.data {
-                if !entries.is_empty() {
-                    return Err(NfsError::Notempty);
-                }
-            }
+        if let Some(child) = inner.inodes.get(&child_id)
+            && let InodeData::Directory(entries) = &child.data
+            && !entries.is_empty()
+        {
+            return Err(NfsError::Notempty);
         }
 
         let dir = inner.inodes.get_mut(&dir_id).unwrap();
@@ -288,10 +287,10 @@ impl NfsFileSystem for MemFs {
             }
         };
 
-        if let Some(old_id) = removed_target {
-            if !Self::has_remaining_links(&inner, old_id) {
-                inner.inodes.remove(&old_id);
-            }
+        if let Some(old_id) = removed_target
+            && !Self::has_remaining_links(&inner, old_id)
+        {
+            inner.inodes.remove(&old_id);
         }
 
         Ok(())

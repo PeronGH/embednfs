@@ -191,30 +191,30 @@ impl<F: NfsFileSystem> NfsServer<F> {
             None => None,
         };
 
-        if let Some(first_op) = first_op {
-            if !starts_with_sequence {
-                if allows_compound_without_sequence(first_op) {
-                    if total_ops != 1 {
-                        let res = error_res_for_op(first_op, NfsStat4::NotOnlyOp);
-                        return Compound4Res {
-                            status: NfsStat4::NotOnlyOp,
-                            tag: args.tag,
-                            resarray: vec![res],
-                        };
-                    }
-                } else {
-                    let status = if matches!(first_op, NfsArgop4::Illegal) {
-                        NfsStat4::OpIllegal
-                    } else {
-                        NfsStat4::OpNotInSession
-                    };
-                    let res = error_res_for_op(first_op, status);
+        if let Some(first_op) = first_op
+            && !starts_with_sequence
+        {
+            if allows_compound_without_sequence(first_op) {
+                if total_ops != 1 {
+                    let res = error_res_for_op(first_op, NfsStat4::NotOnlyOp);
                     return Compound4Res {
-                        status,
+                        status: NfsStat4::NotOnlyOp,
                         tag: args.tag,
                         resarray: vec![res],
                     };
                 }
+            } else {
+                let status = if matches!(first_op, NfsArgop4::Illegal) {
+                    NfsStat4::OpIllegal
+                } else {
+                    NfsStat4::OpNotInSession
+                };
+                let res = error_res_for_op(first_op, status);
+                return Compound4Res {
+                    status,
+                    tag: args.tag,
+                    resarray: vec![res],
+                };
             }
         }
 
@@ -239,24 +239,24 @@ impl<F: NfsFileSystem> NfsServer<F> {
                     break;
                 }
 
-                if let NfsArgop4::DestroySession(args) = &op {
-                    if leading_sequence_sessionid == Some(args.sessionid) && idx + 1 != total_ops {
-                        let res = NfsResop4::DestroySession(NfsStat4::NotOnlyOp);
-                        resarray.push(res);
-                        overall_status = NfsStat4::NotOnlyOp;
-                        break;
-                    }
+                if let NfsArgop4::DestroySession(args) = &op
+                    && leading_sequence_sessionid == Some(args.sessionid)
+                    && idx + 1 != total_ops
+                {
+                    let res = NfsResop4::DestroySession(NfsStat4::NotOnlyOp);
+                    resarray.push(res);
+                    overall_status = NfsStat4::NotOnlyOp;
+                    break;
                 }
 
                 if let (Some(clientid), NfsArgop4::DestroyClientid(args)) =
                     (leading_sequence_clientid, &op)
+                    && args.clientid == clientid
                 {
-                    if args.clientid == clientid {
-                        let res = NfsResop4::DestroyClientid(NfsStat4::ClientidBusy);
-                        resarray.push(res);
-                        overall_status = NfsStat4::ClientidBusy;
-                        break;
-                    }
+                    let res = NfsResop4::DestroyClientid(NfsStat4::ClientidBusy);
+                    resarray.push(res);
+                    overall_status = NfsStat4::ClientidBusy;
+                    break;
                 }
 
                 if let NfsArgop4::MustNotImplement(opcode) = &op {
@@ -864,10 +864,10 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
                 match self.fs.lookup(*dir_id, name).await {
                     Ok(id) => {
-                        if let Openflag4::Create(how) = &args.openhow {
-                            if Self::create_mode_requires_nonexistence(how) {
-                                return NfsResop4::Open(NfsStat4::Exist, None);
-                            }
+                        if let Openflag4::Create(how) = &args.openhow
+                            && Self::create_mode_requires_nonexistence(how)
+                        {
+                            return NfsResop4::Open(NfsStat4::Exist, None);
                         }
                         ServerObject::Fs(id)
                     }
@@ -885,10 +885,10 @@ impl<F: NfsFileSystem> NfsServer<F> {
                                     }
                                     Createhow4::Exclusive(_) => Default::default(),
                                 };
-                                if let Some(size) = set_attrs.size {
-                                    if let Err(e) = self.fs.truncate(id, size).await {
-                                        return NfsResop4::Open(e.to_nfsstat4(), None);
-                                    }
+                                if let Some(size) = set_attrs.size
+                                    && let Err(e) = self.fs.truncate(id, size).await
+                                {
+                                    return NfsResop4::Open(e.to_nfsstat4(), None);
                                 }
                                 let _ = self
                                     .state
@@ -914,10 +914,10 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 };
                 match named.get_xattr(*parent, name).await {
                     Ok(_) => {
-                        if let Openflag4::Create(how) = &args.openhow {
-                            if Self::create_mode_requires_nonexistence(how) {
-                                return NfsResop4::Open(NfsStat4::Exist, None);
-                            }
+                        if let Openflag4::Create(how) = &args.openhow
+                            && Self::create_mode_requires_nonexistence(how)
+                        {
+                            return NfsResop4::Open(NfsStat4::Exist, None);
                         }
                         ServerObject::NamedAttrFile {
                             parent: *parent,
@@ -1314,10 +1314,10 @@ impl<F: NfsFileSystem> NfsServer<F> {
 
         let status = match object.clone() {
             ServerObject::Fs(id) => {
-                if let Some(size) = set_attrs.size {
-                    if let Err(e) = self.fs.truncate(id, size).await {
-                        return NfsResop4::Setattr(e.to_nfsstat4(), Bitmap4::new());
-                    }
+                if let Some(size) = set_attrs.size
+                    && let Err(e) = self.fs.truncate(id, size).await
+                {
+                    return NfsResop4::Setattr(e.to_nfsstat4(), Bitmap4::new());
                 }
                 match self.fs.stat(id).await {
                     Ok(info) => {
@@ -1332,10 +1332,10 @@ impl<F: NfsFileSystem> NfsServer<F> {
                 }
             }
             ServerObject::NamedAttrFile { parent, name } => {
-                if let Some(size) = set_attrs.size {
-                    if let Err(e) = self.xattr_resize(parent, &name, size).await {
-                        return NfsResop4::Setattr(e.to_nfsstat4(), Bitmap4::new());
-                    }
+                if let Some(size) = set_attrs.size
+                    && let Err(e) = self.xattr_resize(parent, &name, size).await
+                {
+                    return NfsResop4::Setattr(e.to_nfsstat4(), Bitmap4::new());
                 }
                 let _ = self
                     .state

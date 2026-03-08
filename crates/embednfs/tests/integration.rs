@@ -166,12 +166,54 @@ fn encode_openattr(createdir: bool) -> Vec<u8> {
     buf.to_vec()
 }
 
+fn encode_secinfo_no_name(style: u32) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_SECINFO_NO_NAME.encode(&mut buf);
+    style.encode(&mut buf);
+    buf.to_vec()
+}
+
+fn encode_open_create(name: &str) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_OPEN.encode(&mut buf);
+    0u32.encode(&mut buf); // seqid
+    OPEN4_SHARE_ACCESS_BOTH.encode(&mut buf);
+    OPEN4_SHARE_DENY_NONE.encode(&mut buf);
+    1u64.encode(&mut buf); // clientid
+    encode_opaque(&mut buf, b"test-open-owner");
+    1u32.encode(&mut buf); // OPEN4_CREATE
+    0u32.encode(&mut buf); // UNCHECKED4
+    Bitmap4::new().encode(&mut buf); // empty attrs
+    encode_opaque(&mut buf, &[]); // empty attr values
+    0u32.encode(&mut buf); // CLAIM_NULL
+    name.to_string().encode(&mut buf);
+    buf.to_vec()
+}
+
+fn encode_close(stateid: &Stateid4) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_CLOSE.encode(&mut buf);
+    0u32.encode(&mut buf); // seqid
+    stateid.encode(&mut buf);
+    buf.to_vec()
+}
+
 fn encode_read(offset: u64, count: u32) -> Vec<u8> {
     let mut buf = BytesMut::new();
     OP_READ.encode(&mut buf);
     Stateid4::default().encode(&mut buf);
     offset.encode(&mut buf);
     count.encode(&mut buf);
+    buf.to_vec()
+}
+
+fn encode_write(stateid: &Stateid4, offset: u64, data: &[u8]) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_WRITE.encode(&mut buf);
+    stateid.encode(&mut buf);
+    offset.encode(&mut buf);
+    FILE_SYNC4.encode(&mut buf);
+    encode_opaque(&mut buf, data);
     buf.to_vec()
 }
 
@@ -240,7 +282,9 @@ fn parse_op_header(resp: &mut Bytes) -> (u32, u32) {
     (opnum, status)
 }
 
-fn parse_readdir_body(resp: &mut Bytes) -> (usize, [u8; 8], Vec<(u64, String, Fattr4)>, bool) {
+type ReaddirEntry = (u64, String, Fattr4);
+
+fn parse_readdir_body(resp: &mut Bytes) -> (usize, [u8; 8], Vec<ReaddirEntry>, bool) {
     let body_len_before = resp.len();
     let cookieverf_data = decode_fixed_opaque(resp, 8).unwrap();
     let mut cookieverf = [0u8; 8];
@@ -256,6 +300,33 @@ fn parse_readdir_body(resp: &mut Bytes) -> (usize, [u8; 8], Vec<(u64, String, Fa
     let eof = bool::decode(resp).unwrap();
 
     (body_len_before - resp.len(), cookieverf, entries, eof)
+}
+
+fn parse_stateid(resp: &mut Bytes) -> Stateid4 {
+    Stateid4::decode(resp).unwrap()
+}
+
+fn skip_change_info(resp: &mut Bytes) {
+    let _ = bool::decode(resp).unwrap();
+    let _ = u64::decode(resp).unwrap();
+    let _ = u64::decode(resp).unwrap();
+}
+
+fn skip_bitmap(resp: &mut Bytes) {
+    let _ = Bitmap4::decode(resp).unwrap();
+}
+
+fn skip_open_res(resp: &mut Bytes) -> Stateid4 {
+    let stateid = parse_stateid(resp);
+    skip_change_info(resp);
+    let _ = u32::decode(resp).unwrap(); // rflags
+    skip_bitmap(resp); // attrset
+    let _ = u32::decode(resp).unwrap(); // delegation type
+    stateid
+}
+
+fn parse_getfh(resp: &mut Bytes) -> Vec<u8> {
+    decode_opaque(resp).unwrap()
 }
 
 fn skip_exchange_id_res(resp: &mut Bytes) -> (u64, u32) {
@@ -577,6 +648,36 @@ async fn test_reclaim_complete() {
 }
 
 #[tokio::test]
+async fn test_secinfo_no_name_on_root() {
+    let port = start_server().await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let secinfo_op = encode_secinfo_no_name(0);
+    let compound = encode_compound("secinfo-no-name", &[&seq_op, &rootfh_op, &secinfo_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 3);
+
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_SECINFO_NO_NAME);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let count = u32::decode(&mut resp).unwrap();
+    assert!(count >= 1);
+}
+
+#[tokio::test]
 async fn test_openattr_on_file_returns_attrdir() {
     let fs = fs_with_xattr("notes.txt", "user.demo", b"value").await;
     let port = start_server_with_fs(fs).await;
@@ -699,6 +800,124 @@ async fn test_named_attr_lookup_and_read() {
     let data = decode_opaque(&mut resp).unwrap();
     assert!(eof);
     assert_eq!(data, b"value");
+}
+
+#[tokio::test]
+async fn test_named_attr_open_create_write_close_and_remove() {
+    let fs = MemFs::new();
+    let file_id = fs.create_file(1, "notes.txt").await.unwrap();
+    let _ = file_id;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_file_op = encode_lookup("notes.txt");
+    let openattr_op = encode_openattr(true);
+    let open_xattr_op = encode_open_create("user.created");
+    let getfh_op = encode_getfh();
+    let compound = encode_compound(
+        "named-attr-open-create",
+        &[&seq_op, &rootfh_op, &lookup_file_op, &openattr_op, &open_xattr_op, &getfh_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 6);
+
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_OPEN);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let stateid = skip_open_res(&mut resp);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_GETFH);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let xattr_fh = parse_getfh(&mut resp);
+
+    let seq_op = encode_sequence(&sessionid, 2, 0);
+    let putfh_op = encode_putfh(&xattr_fh);
+    let write_op = encode_write(&stateid, 0, b"hello-xattr");
+    let close_op = encode_close(&stateid);
+    let compound = encode_compound(
+        "named-attr-write-close",
+        &[&seq_op, &putfh_op, &write_op, &close_op],
+    );
+    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 4);
+
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_PUTFH);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_WRITE);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let written = u32::decode(&mut resp).unwrap();
+    assert_eq!(written, 11);
+    let _ = u32::decode(&mut resp).unwrap(); // committed
+    let _ = decode_fixed_opaque(&mut resp, 8).unwrap();
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_CLOSE);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let _ = parse_stateid(&mut resp);
+
+    let seq_op = encode_sequence(&sessionid, 3, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_file_op = encode_lookup("notes.txt");
+    let openattr_op = encode_openattr(false);
+    let readdir_op = encode_readdir_custom(0, [0u8; 8], 4096, 8192, &[FATTR4_FILEID, FATTR4_TYPE]);
+    let compound = encode_compound(
+        "named-attr-readdir-after-write",
+        &[&seq_op, &rootfh_op, &lookup_file_op, &openattr_op, &readdir_op],
+    );
+    let mut resp = send_rpc(&mut stream, 5, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (_, _, entries, _) = parse_readdir_body(&mut resp);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].1, "user.created");
+
+    let seq_op = encode_sequence(&sessionid, 4, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_file_op = encode_lookup("notes.txt");
+    let openattr_op = encode_openattr(false);
+    let remove_op = encode_remove("user.created");
+    let compound = encode_compound(
+        "named-attr-remove",
+        &[&seq_op, &rootfh_op, &lookup_file_op, &openattr_op, &remove_op],
+    );
+    let mut resp = send_rpc(&mut stream, 6, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 5);
 }
 
 #[tokio::test]
