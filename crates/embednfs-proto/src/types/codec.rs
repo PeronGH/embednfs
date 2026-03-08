@@ -298,8 +298,35 @@ impl XdrEncode for NfsResop4 {
                 OP_DELEGRETURN.encode(dst);
                 status.encode(dst);
             }
-            NfsResop4::MustNotImplement(op, status) => {
-                op.opcode().encode(dst);
+            NfsResop4::SetClientId(status, res) => {
+                OP_SETCLIENTID.encode(dst);
+                status.encode(dst);
+                if *status == NfsStat4::Ok
+                    && let Some(res) = res
+                {
+                    res.clientid.encode(dst);
+                    dst.extend_from_slice(&res.setclientid_confirm);
+                }
+            }
+            NfsResop4::SetClientIdConfirm(status) => {
+                OP_SETCLIENTID_CONFIRM.encode(dst);
+                status.encode(dst);
+            }
+            NfsResop4::OpenConfirm(status, stateid) => {
+                OP_OPEN_CONFIRM.encode(dst);
+                status.encode(dst);
+                if *status == NfsStat4::Ok
+                    && let Some(stateid) = stateid
+                {
+                    stateid.encode(dst);
+                }
+            }
+            NfsResop4::Renew(status) => {
+                OP_RENEW.encode(dst);
+                status.encode(dst);
+            }
+            NfsResop4::ReleaseLockowner(status) => {
+                OP_RELEASE_LOCKOWNER.encode(dst);
                 status.encode(dst);
             }
             NfsResop4::Lock(status, stateid, denied) => {
@@ -531,9 +558,10 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             }))
         }
         OP_OPEN_CONFIRM => {
-            let _stateid = Stateid4::decode(src)?;
-            let _seqid = u32::decode(src)?;
-            Ok(NfsArgop4::MustNotImplement(MustNotImplementOp4::OpenConfirm))
+            Ok(NfsArgop4::OpenConfirm(OpenConfirmArgs4 {
+                open_stateid: Stateid4::decode(src)?,
+                seqid: u32::decode(src)?,
+            }))
         }
         OP_OPEN_DOWNGRADE => Ok(NfsArgop4::OpenDowngrade(OpenDowngradeArgs4 {
             open_stateid: Stateid4::decode(src)?,
@@ -665,30 +693,45 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             let vdata = decode_fixed_opaque(src, 8)?;
             let mut verifier = [0u8; 8];
             verifier.copy_from_slice(&vdata);
-            let _ownerid = decode_opaque(src)?;
-            let _cb_program = u32::decode(src)?;
-            let _cb_netid = String::decode(src)?;
-            let _cb_addr = String::decode(src)?;
-            let _callback_ident = u32::decode(src)?;
-            Ok(NfsArgop4::MustNotImplement(MustNotImplementOp4::SetClientId))
+            let ownerid = decode_opaque(src)?;
+            let cb_program = u32::decode(src)?;
+            let cb_netid = String::decode(src)?;
+            let cb_addr = String::decode(src)?;
+            let callback_ident = u32::decode(src)?;
+            Ok(NfsArgop4::SetClientId(SetClientIdArgs4 {
+                client: ClientOwner4 {
+                    verifier,
+                    ownerid,
+                },
+                callback: CbClient4 {
+                    cb_program,
+                    cb_location: Netaddr4 {
+                        netid: cb_netid,
+                        addr: cb_addr,
+                    },
+                },
+                callback_ident,
+            }))
         }
         OP_SETCLIENTID_CONFIRM => {
-            let _clientid = u64::decode(src)?;
-            let _verifier = decode_fixed_opaque(src, 8)?;
-            Ok(NfsArgop4::MustNotImplement(
-                MustNotImplementOp4::SetClientIdConfirm,
-            ))
+            let clientid = u64::decode(src)?;
+            let vdata = decode_fixed_opaque(src, 8)?;
+            let mut verifier = [0u8; 8];
+            verifier.copy_from_slice(&vdata);
+            Ok(NfsArgop4::SetClientIdConfirm(SetClientIdConfirmArgs4 {
+                clientid,
+                setclientid_confirm: verifier,
+            }))
         }
         OP_RENEW => {
-            let _clientid = u64::decode(src)?;
-            Ok(NfsArgop4::MustNotImplement(MustNotImplementOp4::Renew))
+            let clientid = u64::decode(src)?;
+            Ok(NfsArgop4::Renew(RenewArgs4 { clientid }))
         }
         OP_RELEASE_LOCKOWNER => {
-            let _clientid = u64::decode(src)?;
-            let _owner = decode_opaque(src)?;
-            Ok(NfsArgop4::MustNotImplement(
-                MustNotImplementOp4::ReleaseLockowner,
-            ))
+            let lock_owner = StateOwner4::decode(src)?;
+            Ok(NfsArgop4::ReleaseLockowner(ReleaseLockOwnerArgs4 {
+                lock_owner,
+            }))
         }
         OP_LOCK => {
             let locktype = NfsLockType4::decode(src)?;

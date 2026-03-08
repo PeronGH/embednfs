@@ -64,7 +64,8 @@ async fn test_minor_version_mismatch_rejects_non_v41() {
         .unwrap();
     let rootfh_op = encode_putrootfh();
 
-    for (xid, minorversion) in [(1, 0u32), (2, 2u32)] {
+    // Minorversion 2+ should be rejected; minorversion 0 is now accepted (NFSv4.0).
+    for (xid, minorversion) in [(2, 2u32), (3, 3u32)] {
         let compound = encode_compound_minor("bad-minor", minorversion, &[&rootfh_op]);
         let mut resp = send_rpc(&mut stream, xid, 1, &compound).await;
         let (_, accept_stat) = parse_rpc_reply(&mut resp);

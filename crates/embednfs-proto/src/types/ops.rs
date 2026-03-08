@@ -98,7 +98,11 @@ pub enum NfsArgop4 {
     FreeStateid(FreeStateidArgs4),
     TestStateid(TestStateidArgs4),
     DelegReturn(DelegReturnArgs4),
-    MustNotImplement(MustNotImplementOp4),
+    SetClientId(SetClientIdArgs4),
+    SetClientIdConfirm(SetClientIdConfirmArgs4),
+    OpenConfirm(OpenConfirmArgs4),
+    Renew(RenewArgs4),
+    ReleaseLockowner(ReleaseLockOwnerArgs4),
     Lock(LockArgs4),
     Lockt(LocktArgs4),
     Locku(LockuArgs4),
@@ -119,25 +123,51 @@ pub enum NfsArgop4 {
     Illegal,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MustNotImplementOp4 {
-    OpenConfirm,
-    Renew,
-    SetClientId,
-    SetClientIdConfirm,
-    ReleaseLockowner,
+#[derive(Debug)]
+pub struct SetClientIdArgs4 {
+    pub client: ClientOwner4,
+    pub callback: CbClient4,
+    pub callback_ident: u32,
 }
 
-impl MustNotImplementOp4 {
-    pub fn opcode(self) -> u32 {
-        match self {
-            Self::OpenConfirm => OP_OPEN_CONFIRM,
-            Self::Renew => OP_RENEW,
-            Self::SetClientId => OP_SETCLIENTID,
-            Self::SetClientIdConfirm => OP_SETCLIENTID_CONFIRM,
-            Self::ReleaseLockowner => OP_RELEASE_LOCKOWNER,
-        }
-    }
+#[derive(Debug)]
+pub struct CbClient4 {
+    pub cb_program: u32,
+    pub cb_location: Netaddr4,
+}
+
+#[derive(Debug)]
+pub struct Netaddr4 {
+    pub netid: String,
+    pub addr: String,
+}
+
+#[derive(Debug)]
+pub struct SetClientIdConfirmArgs4 {
+    pub clientid: Clientid4,
+    pub setclientid_confirm: Verifier4,
+}
+
+#[derive(Debug)]
+pub struct OpenConfirmArgs4 {
+    pub open_stateid: Stateid4,
+    pub seqid: Seqid4,
+}
+
+#[derive(Debug)]
+pub struct RenewArgs4 {
+    pub clientid: Clientid4,
+}
+
+#[derive(Debug)]
+pub struct ReleaseLockOwnerArgs4 {
+    pub lock_owner: StateOwner4,
+}
+
+#[derive(Debug)]
+pub struct SetClientIdRes4 {
+    pub clientid: Clientid4,
+    pub setclientid_confirm: Verifier4,
 }
 
 #[derive(Debug)]
@@ -575,7 +605,11 @@ pub enum NfsResop4 {
     FreeStateid(NfsStat4),
     TestStateid(NfsStat4, Vec<NfsStat4>),
     DelegReturn(NfsStat4),
-    MustNotImplement(MustNotImplementOp4, NfsStat4),
+    SetClientId(NfsStat4, Option<SetClientIdRes4>),
+    SetClientIdConfirm(NfsStat4),
+    OpenConfirm(NfsStat4, Option<Stateid4>),
+    Renew(NfsStat4),
+    ReleaseLockowner(NfsStat4),
     Lock(NfsStat4, Option<Stateid4>, Option<LockDenied4>),
     Lockt(NfsStat4, Option<LockDenied4>),
     Locku(NfsStat4, Option<Stateid4>),

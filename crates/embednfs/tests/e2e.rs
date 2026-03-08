@@ -1,134 +1,130 @@
-//! End-to-end tests using the nfs4_client crate (a real NFSv4.1 client).
+//! End-to-end tests using libnfs (a battle-tested NFSv4 C client library).
 //!
-//! These tests validate the server against a properly implemented,
-//! independent NFSv4.1 client — not hand-rolled RPC encoding.
+//! These tests compile and run a C program that exercises the server using
+//! libnfs, validating the full protocol stack against a real, independent
+//! NFSv4 client implementation.
 
-use std::net::TcpStream;
+use std::process::Command;
+use std::sync::Once;
 use std::time::Duration;
 
-use embednfs::{FileSystem, MemFs, NfsServer};
-use nfs4_client::Client;
+use embednfs::{MemFs, NfsServer};
 
-async fn start_server() -> u16 {
-    start_server_with_fs(MemFs::new()).await
+static COMPILE_ONCE: Once = Once::new();
+static mut COMPILE_SUCCESS: bool = false;
+
+const LIBNFS_TEST_C: &str = include_str!("libnfs_e2e.c");
+
+fn compile_test_binary() {
+    COMPILE_ONCE.call_once(|| {
+        // Write source to temp file
+        std::fs::write("/tmp/embednfs_e2e_test.c", LIBNFS_TEST_C).unwrap();
+
+        let status = Command::new("gcc")
+            .args([
+                "-o",
+                "/tmp/embednfs_e2e_test",
+                "/tmp/embednfs_e2e_test.c",
+                "-lnfs",
+                "-Wall",
+                "-Wextra",
+            ])
+            .status()
+            .expect("failed to run gcc — is gcc installed?");
+
+        unsafe {
+            COMPILE_SUCCESS = status.success();
+        }
+    });
+
+    assert!(
+        unsafe { COMPILE_SUCCESS },
+        "failed to compile libnfs test program — is libnfs-dev installed?"
+    );
 }
 
-async fn start_server_with_fs(fs: MemFs) -> u16 {
-    let server = NfsServer::new(fs);
+async fn start_server() -> u16 {
+    let server = NfsServer::new(MemFs::new());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
         server.serve(listener).await.unwrap();
     });
+    // Give the server a moment to start accepting.
     tokio::time::sleep(Duration::from_millis(50)).await;
     port
 }
 
-fn connect(port: u16) -> TcpStream {
-    let stream = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(30)))
-        .unwrap();
-    stream
-        .set_write_timeout(Some(Duration::from_secs(30)))
-        .unwrap();
-    stream
+fn run_libnfs_test(port: u16, test_name: &str) -> std::process::Output {
+    Command::new("/tmp/embednfs_e2e_test")
+        .args([&port.to_string(), test_name])
+        .output()
+        .expect("failed to execute libnfs test binary")
 }
 
-/// Full session establishment: EXCHANGE_ID → CREATE_SESSION → RECLAIM_COMPLETE.
+fn assert_test_passed(output: &std::process::Output, test_name: &str) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "libnfs test '{test_name}' failed (exit={}):\nstdout: {stdout}\nstderr: {stderr}",
+        output.status,
+    );
+    eprintln!("--- libnfs {test_name} ---\n{stdout}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn e2e_session_establishment() {
+async fn e2e_libnfs_mount() {
+    compile_test_binary();
     let port = start_server().await;
-    let mut transport = connect(port);
-    let _client = Client::new(&mut transport).unwrap();
+    let output = run_libnfs_test(port, "mount");
+    assert_test_passed(&output, "mount");
 }
 
-/// GETATTR on the root directory.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn e2e_getattr_root() {
+async fn e2e_libnfs_create_write_read() {
+    compile_test_binary();
     let port = start_server().await;
-    let mut transport = connect(port);
-    let mut client = Client::new(&mut transport).unwrap();
-    let _res = client.get_attr(&mut transport, "/").unwrap();
-    // If get_attr succeeded, the server returned valid attributes.
+    let output = run_libnfs_test(port, "create_write_read");
+    assert_test_passed(&output, "create_write_read");
 }
 
-/// LOOKUP a file that exists.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn e2e_lookup_file() {
-    let fs = MemFs::new();
-    fs.create_file("/hello.txt").await.unwrap();
-    let port = start_server_with_fs(fs).await;
-    let mut transport = connect(port);
-    let mut client = Client::new(&mut transport).unwrap();
-    let _fh = client.look_up(&mut transport, "hello.txt").unwrap();
-}
-
-/// LOOKUP a file that does not exist should fail.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn e2e_lookup_nonexistent() {
+async fn e2e_libnfs_stat() {
+    compile_test_binary();
     let port = start_server().await;
-    let mut transport = connect(port);
-    let mut client = Client::new(&mut transport).unwrap();
-    let result = client.look_up(&mut transport, "nonexistent.txt");
-    assert!(result.is_err());
+    let output = run_libnfs_test(port, "stat");
+    assert_test_passed(&output, "stat");
 }
 
-/// Create a file via OPEN, write data, read it back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn e2e_create_write_read() {
+async fn e2e_libnfs_mkdir_readdir() {
+    compile_test_binary();
     let port = start_server().await;
-    let mut transport = connect(port);
-    let mut client = Client::new(&mut transport).unwrap();
-
-    // Get root filehandle.
-    let root_fh = client.look_up(&mut transport, ".").unwrap_or_else(|_| {
-        // Some servers don't support looking up "."; use PutRootFh+GetFh instead.
-        // For now, just skip if this fails.
-        panic!("could not get root fh");
-    });
-
-    // Create a file.
-    let fh = client
-        .create_file(&mut transport, root_fh, "test.txt")
-        .unwrap();
-
-    // Write data.
-    let data = b"hello from nfs4_client!".to_vec();
-    let write_res = client
-        .write(&mut transport, fh.clone(), 0, data.clone())
-        .unwrap();
-    assert_eq!(write_res.count as usize, data.len());
-
-    // Read it back.
-    let mut buf = Vec::new();
-    client.read_all(&mut transport, fh, &mut buf).unwrap();
-    assert_eq!(buf, data);
+    let output = run_libnfs_test(port, "mkdir_readdir");
+    assert_test_passed(&output, "mkdir_readdir");
 }
 
-/// Write at multiple offsets and verify reads.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn e2e_write_multiple_offsets() {
-    let fs = MemFs::new();
-    fs.create_file("/data.bin").await.unwrap();
-    let port = start_server_with_fs(fs).await;
-    let mut transport = connect(port);
-    let mut client = Client::new(&mut transport).unwrap();
+async fn e2e_libnfs_rename() {
+    compile_test_binary();
+    let port = start_server().await;
+    let output = run_libnfs_test(port, "rename");
+    assert_test_passed(&output, "rename");
+}
 
-    let fh = client.look_up(&mut transport, "data.bin").unwrap();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn e2e_libnfs_unlink_rmdir() {
+    compile_test_binary();
+    let port = start_server().await;
+    let output = run_libnfs_test(port, "unlink_rmdir");
+    assert_test_passed(&output, "unlink_rmdir");
+}
 
-    // Write "AAAA" at offset 0.
-    client
-        .write(&mut transport, fh.clone(), 0, b"AAAA".to_vec())
-        .unwrap();
-
-    // Write "BBBB" at offset 4.
-    client
-        .write(&mut transport, fh.clone(), 4, b"BBBB".to_vec())
-        .unwrap();
-
-    // Read all.
-    let mut buf = Vec::new();
-    client.read_all(&mut transport, fh, &mut buf).unwrap();
-    assert_eq!(buf, b"AAAABBBB");
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn e2e_libnfs_full() {
+    compile_test_binary();
+    let port = start_server().await;
+    let output = run_libnfs_test(port, "full");
+    assert_test_passed(&output, "full");
 }
