@@ -68,7 +68,7 @@ dependencies = [
 
 [[package]]
 name = "embednfs"
-version = "0.1.2"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "bytes",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "embednfs-proto"
-version = "0.1.1"
+version = "0.1.3"
 dependencies = [
  "bytes",
  "num-derive",
@@ -90,7 +90,7 @@ dependencies = [
 
 [[package]]
 name = "embednfsd"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "embednfs",
  "tokio",

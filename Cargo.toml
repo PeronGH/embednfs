@@ -6,6 +6,6 @@ resolver = "3"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/PeronGH/embednfs"
-rust-version = "1.85"
+rust-version = "1.88"
 keywords = ["nfs", "nfsv4", "filesystem", "server"]
 categories = ["network-programming", "filesystem"]
