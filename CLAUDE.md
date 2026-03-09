@@ -36,8 +36,8 @@ Before writing any module, read the relevant RFC sections, then study how existi
 You MUST prepare the following first:
 
 - RFC 8881 and RFC 5531 texts.
-- Apple NFS client source code.
-- `pynfs` source code.
+- Apple NFS client source code (`https://github.com/apple-oss-distributions/NFS.git`).
+- `pynfs` source code (`git://git.linux-nfs.org/projects/cdmackay/pynfs.git`).
 - Other RFCs or implementations, if needed.
 
 If they are missing, ask the human for them.
