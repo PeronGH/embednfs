@@ -24,4 +24,9 @@ tokio = { version = "1.50.0", features = ["full"] }
 tracing = "0.1.44"
 
 [dev-dependencies]
+criterion = { version = "0.8.2", features = ["html_reports"] }
 nfs-rs = { git = "https://github.com/NetAppLabs/nfs-rs.git", rev = "483ef9f072e20cc84a5c40d8f3484d7f816c2a79" }
+
+[[bench]]
+name = "server"
+harness = false

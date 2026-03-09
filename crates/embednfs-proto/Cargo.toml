@@ -18,3 +18,10 @@ workspace = true
 bytes = "1.11.1"
 num-derive = "0.4.2"
 num-traits = "0.2.19"
+
+[dev-dependencies]
+criterion = { version = "0.8.2", features = ["html_reports"] }
+
+[[bench]]
+name = "xdr"
+harness = false
