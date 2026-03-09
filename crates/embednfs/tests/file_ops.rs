@@ -8,18 +8,4 @@
 //! provenance.
 
 mod common;
-
-use bytes::{Bytes, BytesMut};
-use embednfs::{CreateKind, CreateRequest, FileSystem, MemFs, RequestContext, SetAttrs};
-use embednfs_proto::xdr::*;
-use embednfs_proto::*;
-use std::sync::atomic::AtomicUsize;
-
-use common::*;
-
-#[path = "file_ops/lifecycle.rs"]
-mod lifecycle;
-#[path = "file_ops/attrs_state.rs"]
-mod attrs_state;
-#[path = "file_ops/secinfo_verify.rs"]
-mod secinfo_verify;
+mod file_ops_cases;
