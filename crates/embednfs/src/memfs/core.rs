@@ -330,12 +330,16 @@ impl FileSystem for MemFs {
         };
 
         let replaced = {
-            let target_inode = inner.inodes.get_mut(to_dir).ok_or(FsError::Stale)?;
-            match &mut target_inode.data {
-                InodeData::Directory(entries) => entries.insert(to_name.to_string(), child_id),
+            let target_inode = inner.inodes.get(to_dir).ok_or(FsError::Stale)?;
+            match &target_inode.data {
+                InodeData::Directory(entries) => entries.get(to_name).copied(),
                 _ => return Err(FsError::NotDirectory),
             }
         };
+
+        if replaced == Some(child_id) {
+            return Ok(());
+        }
 
         if let Some(replaced_id) = replaced
             && let Some(replaced_inode) = inner.inodes.get(&replaced_id)
@@ -345,19 +349,38 @@ impl FileSystem for MemFs {
             return Err(FsError::NotEmpty);
         }
 
-        if let Some(from_inode) = inner.inodes.get_mut(from_dir) {
-            if let InodeData::Directory(entries) = &mut from_inode.data {
-                let _ = entries.remove(from_name);
+        if from_dir == to_dir {
+            if let Some(dir_inode) = inner.inodes.get_mut(from_dir) {
+                if let InodeData::Directory(entries) = &mut dir_inode.data {
+                    let removed = entries.remove(from_name);
+                    debug_assert_eq!(removed, Some(child_id));
+                    let previous = entries.insert(to_name.to_string(), child_id);
+                    debug_assert_eq!(previous, replaced);
+                }
+                self.touch_change(&mut dir_inode.attrs);
+                dir_inode.attrs.mtime = Timestamp::now();
             }
-            self.touch_change(&mut from_inode.attrs);
-            from_inode.attrs.mtime = Timestamp::now();
-        }
-        if let Some(to_inode) = inner.inodes.get_mut(to_dir) {
-            self.touch_change(&mut to_inode.attrs);
-            to_inode.attrs.mtime = Timestamp::now();
+        } else {
+            if let Some(from_inode) = inner.inodes.get_mut(from_dir) {
+                if let InodeData::Directory(entries) = &mut from_inode.data {
+                    let removed = entries.remove(from_name);
+                    debug_assert_eq!(removed, Some(child_id));
+                }
+                self.touch_change(&mut from_inode.attrs);
+                from_inode.attrs.mtime = Timestamp::now();
+            }
+            if let Some(to_inode) = inner.inodes.get_mut(to_dir) {
+                if let InodeData::Directory(entries) = &mut to_inode.data {
+                    let previous = entries.insert(to_name.to_string(), child_id);
+                    debug_assert_eq!(previous, replaced);
+                }
+                self.touch_change(&mut to_inode.attrs);
+                to_inode.attrs.mtime = Timestamp::now();
+            }
         }
         if let Some(child_inode) = inner.inodes.get_mut(&child_id)
             && child_inode.attrs.object_type == ObjectType::Directory
+            && from_dir != to_dir
         {
             child_inode.parent = Some(*to_dir);
         }

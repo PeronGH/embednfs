@@ -1,8 +1,8 @@
 use bytes::Bytes;
 
 use crate::fs::{
-    AccessMask, AuthContext, CreateKind, CreateRequest, FileSystem, ObjectType, RequestContext,
-    SetAttrs, WriteStability, XattrSetMode, Xattrs,
+    AccessMask, AuthContext, CreateKind, CreateRequest, FileSystem, FsError, HardLinks, ObjectType,
+    RequestContext, SetAttrs, WriteStability, XattrSetMode, Xattrs,
 };
 
 use super::MemFs;
@@ -163,4 +163,133 @@ async fn create_stamps_auth_sys_owner_by_default() {
 
     assert_eq!(created.attrs.uid, 501);
     assert_eq!(created.attrs.gid, 20);
+}
+
+#[tokio::test]
+async fn rename_over_nonempty_directory_is_atomic_on_error() {
+    let fs = MemFs::new();
+    let ctx = RequestContext::anonymous();
+    let source = fs
+        .create(
+            &ctx,
+            &1,
+            "source.txt",
+            CreateRequest {
+                kind: CreateKind::File,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap();
+    let target_dir = fs
+        .create(
+            &ctx,
+            &1,
+            "target",
+            CreateRequest {
+                kind: CreateKind::Directory,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap();
+    let nested = fs
+        .create(
+            &ctx,
+            &target_dir.handle,
+            "nested.txt",
+            CreateRequest {
+                kind: CreateKind::File,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let err = fs
+        .rename(&ctx, &1, "source.txt", &1, "target")
+        .await
+        .unwrap_err();
+    assert_eq!(err, FsError::NotEmpty);
+    assert_eq!(
+        fs.lookup(&ctx, &1, "source.txt").await.unwrap(),
+        source.handle
+    );
+    assert_eq!(
+        fs.lookup(&ctx, &1, "target").await.unwrap(),
+        target_dir.handle
+    );
+    assert_eq!(
+        fs.lookup(&ctx, &target_dir.handle, "nested.txt")
+            .await
+            .unwrap(),
+        nested.handle
+    );
+}
+
+#[tokio::test]
+async fn rename_same_name_is_a_noop() {
+    let fs = MemFs::new();
+    let ctx = RequestContext::anonymous();
+    let created = fs
+        .create(
+            &ctx,
+            &1,
+            "same.txt",
+            CreateRequest {
+                kind: CreateKind::File,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap();
+    let root_before = fs.getattr(&ctx, &1).await.unwrap();
+
+    fs.rename(&ctx, &1, "same.txt", &1, "same.txt")
+        .await
+        .unwrap();
+
+    let root_after = fs.getattr(&ctx, &1).await.unwrap();
+    assert_eq!(
+        fs.lookup(&ctx, &1, "same.txt").await.unwrap(),
+        created.handle
+    );
+    assert_eq!(root_after.change, root_before.change);
+}
+
+#[tokio::test]
+async fn rename_over_existing_hard_link_to_same_inode_is_a_noop() {
+    let fs = MemFs::new();
+    let ctx = RequestContext::anonymous();
+    let created = fs
+        .create(
+            &ctx,
+            &1,
+            "source.txt",
+            CreateRequest {
+                kind: CreateKind::File,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap();
+    fs.link(&ctx, &created.handle, &1, "alias.txt")
+        .await
+        .unwrap();
+    let root_before = fs.getattr(&ctx, &1).await.unwrap();
+
+    fs.rename(&ctx, &1, "source.txt", &1, "alias.txt")
+        .await
+        .unwrap();
+
+    let root_after = fs.getattr(&ctx, &1).await.unwrap();
+    assert_eq!(
+        fs.lookup(&ctx, &1, "source.txt").await.unwrap(),
+        created.handle
+    );
+    assert_eq!(
+        fs.lookup(&ctx, &1, "alias.txt").await.unwrap(),
+        created.handle
+    );
+    assert_eq!(root_after.change, root_before.change);
 }
