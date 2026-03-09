@@ -9,8 +9,8 @@
 mod common;
 
 use bytes::BytesMut;
-use embednfs_proto::*;
 use embednfs_proto::xdr::XdrEncode;
+use embednfs_proto::*;
 
 use common::*;
 
