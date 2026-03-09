@@ -136,13 +136,19 @@ impl XdrDecode for bool {
     }
 }
 
+/// Zero-padding bytes (at most 3 bytes needed for XDR 4-byte alignment).
+const ZERO_PAD: [u8; 3] = [0; 3];
+
 /// Write XDR padding zeros (0–3 bytes for 4-byte alignment).
+#[expect(
+    clippy::indexing_slicing,
+    reason = "xdr_pad always returns 0..=3, and ZERO_PAD has length 3; pad==0 is guarded"
+)]
 #[inline]
 fn put_xdr_padding(dst: &mut BytesMut, len: usize) {
-    const ZERO_PAD: [u8; 3] = [0; 3];
     let pad = xdr_pad(len);
-    if let Some(slice) = ZERO_PAD.get(..pad) {
-        dst.put_slice(slice);
+    if pad > 0 {
+        dst.put_slice(&ZERO_PAD[..pad]);
     }
 }
 

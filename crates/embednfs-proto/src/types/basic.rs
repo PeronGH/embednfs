@@ -400,15 +400,19 @@ impl Bitmap4 {
 }
 
 impl XdrEncode for Bitmap4 {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "trimmed_len is bounded by words.len() and guarded by > 0 check"
+    )]
     #[inline]
     fn encode(&self, dst: &mut BytesMut) {
-        let trimmed_len = self
-            .0
-            .iter()
-            .rposition(|word| *word != 0)
-            .map_or(0, |idx| idx + 1);
+        let words = self.0.as_slice();
+        let mut trimmed_len = words.len();
+        while trimmed_len > 0 && words[trimmed_len - 1] == 0 {
+            trimmed_len -= 1;
+        }
         (trimmed_len as u32).encode(dst);
-        for w in self.0.iter().take(trimmed_len) {
+        for w in &words[..trimmed_len] {
             w.encode(dst);
         }
     }
