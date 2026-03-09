@@ -263,6 +263,23 @@ pub fn encode_open_create(name: &str) -> Vec<u8> {
     encode_open_create_with_access(name, OPEN4_SHARE_ACCESS_BOTH, OPEN4_SHARE_DENY_NONE)
 }
 
+pub fn encode_open_create_guarded(name: &str) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_OPEN.encode(&mut buf);
+    0u32.encode(&mut buf); // seqid
+    OPEN4_SHARE_ACCESS_BOTH.encode(&mut buf);
+    OPEN4_SHARE_DENY_NONE.encode(&mut buf);
+    1u64.encode(&mut buf); // clientid
+    encode_opaque(&mut buf, b"test-open-owner");
+    1u32.encode(&mut buf); // OPEN4_CREATE
+    1u32.encode(&mut buf); // GUARDED4
+    Bitmap4::new().encode(&mut buf); // empty attrs
+    encode_opaque(&mut buf, &[]); // empty attr values
+    0u32.encode(&mut buf); // CLAIM_NULL
+    name.to_string().encode(&mut buf);
+    buf.to_vec()
+}
+
 pub fn encode_open_create_with_access(name: &str, share_access: u32, share_deny: u32) -> Vec<u8> {
     let mut buf = BytesMut::new();
     OP_OPEN.encode(&mut buf);
