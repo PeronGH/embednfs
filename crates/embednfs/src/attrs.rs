@@ -87,7 +87,7 @@ pub(crate) fn encode_fattr4(
     ctx: &AttrEncodingContext<'_>,
 ) -> Fattr4 {
     let mut result_bitmap = Bitmap4::new();
-    let mut vals = BytesMut::with_capacity(256);
+    let mut vals = BytesMut::with_capacity(128);
 
     // Word 0 attributes (bits 0-31)
 
