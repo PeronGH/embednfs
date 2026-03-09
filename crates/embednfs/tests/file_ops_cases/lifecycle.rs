@@ -647,17 +647,18 @@ async fn test_rename_file() {
         .await
         .unwrap()
         .handle;
-    fs.create(
-        &ctx,
-        &dir1,
-        "old-name.txt",
-        CreateRequest {
-            kind: CreateKind::File,
-            attrs: SetAttrs::default(),
-        },
-    )
-    .await
-    .unwrap();
+    let _ = fs
+        .create(
+            &ctx,
+            &dir1,
+            "old-name.txt",
+            CreateRequest {
+                kind: CreateKind::File,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap();
     let port = start_server_with_fs(fs).await;
     let mut stream = connect(port).await;
     let sessionid = setup_session(&mut stream).await;

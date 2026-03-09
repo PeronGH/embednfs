@@ -42,9 +42,9 @@ pub async fn send_rpc_with_auth(
     stream.flush().await.unwrap();
 
     let mut header = [0u8; 4];
-    stream.read_exact(&mut header).await.unwrap();
+    let _ = stream.read_exact(&mut header).await.unwrap();
     let resp_len = (u32::from_be_bytes(header) & 0x7fff_ffff) as usize;
     let mut resp = vec![0u8; resp_len];
-    stream.read_exact(&mut resp).await.unwrap();
+    let _ = stream.read_exact(&mut resp).await.unwrap();
     Bytes::from(resp)
 }

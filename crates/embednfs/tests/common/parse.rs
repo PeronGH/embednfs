@@ -11,7 +11,7 @@ pub fn parse_locku_res(resp: &mut Bytes) -> Stateid4 {
     Stateid4::decode(resp).unwrap()
 }
 
-pub fn parse_rpc_reply(resp: &mut Bytes) -> (u32, u32) {
+pub fn parse_rpc_reply_fields(resp: &mut Bytes) -> (u32, u32) {
     let xid = u32::decode(resp).unwrap();
     let msg_type = u32::decode(resp).unwrap();
     assert_eq!(msg_type, 1, "expected RPC reply");
@@ -20,6 +20,10 @@ pub fn parse_rpc_reply(resp: &mut Bytes) -> (u32, u32) {
     let _verf = OpaqueAuth::decode(resp).unwrap();
     let accept_stat = u32::decode(resp).unwrap();
     (xid, accept_stat)
+}
+
+pub fn parse_rpc_reply(resp: &mut Bytes) {
+    let _ = parse_rpc_reply_fields(resp);
 }
 
 pub fn parse_rpc_auth_error(resp: &mut Bytes) -> (u32, u32) {

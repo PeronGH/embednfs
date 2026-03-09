@@ -21,17 +21,18 @@ async fn test_remove_nonempty_directory() {
         .await
         .unwrap()
         .handle;
-    fs.create(
-        &ctx,
-        &subdir_id,
-        "child.txt",
-        CreateRequest {
-            kind: CreateKind::File,
-            attrs: SetAttrs::default(),
-        },
-    )
-    .await
-    .unwrap();
+    let _ = fs
+        .create(
+            &ctx,
+            &subdir_id,
+            "child.txt",
+            CreateRequest {
+                kind: CreateKind::File,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap();
     let port = start_server_with_fs(fs).await;
     let mut stream = connect(port).await;
     let sessionid = setup_session(&mut stream).await;

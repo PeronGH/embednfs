@@ -205,51 +205,51 @@ fn write_hot_file_pass(
     let mut chunk = vec![0u8; LARGE_CHUNK_SIZE];
     for chunk_idx in 0..LARGE_CHUNK_COUNT {
         chunk.fill(pattern_byte(worker_id, pass, chunk_idx));
-        mount
+        let _ = mount
             .write_path(path, (chunk_idx * LARGE_CHUNK_SIZE) as u64, &chunk)
             .map_err(|err| format!("write_path({path}) failed: {err}"))?;
     }
-    mount
+    let _ = mount
         .commit_path(path, 0, LARGE_FILE_SIZE as u32)
         .map_err(|err| format!("commit_path({path}) failed: {err}"))?;
     Ok(())
 }
 
 fn setup_stress_tree(mount: &dyn Mount) -> Result<(), String> {
-    mount
+    let _ = mount
         .mkdir_path(STRESS_ROOT, 0o755)
         .map_err(|err| format!("mkdir_path({STRESS_ROOT}) failed: {err}"))?;
-    mount
+    let _ = mount
         .mkdir_path(IO_ROOT, 0o755)
         .map_err(|err| format!("mkdir_path({IO_ROOT}) failed: {err}"))?;
-    mount
+    let _ = mount
         .mkdir_path(META_ROOT, 0o755)
         .map_err(|err| format!("mkdir_path({META_ROOT}) failed: {err}"))?;
 
     for worker_id in 0..IO_WORKERS {
         let dir = io_dir(worker_id);
-        mount
+        let _ = mount
             .mkdir_path(&dir, 0o755)
             .map_err(|err| format!("mkdir_path({dir}) failed: {err}"))?;
-        mount
+        let _ = mount
             .create_path(&hot_file(worker_id), 0o664)
             .map_err(|err| format!("create_path({}) failed: {err}", hot_file(worker_id)))?;
         write_hot_file_pass(mount, &hot_file(worker_id), worker_id, 0)?;
-        mount
+        let _ = mount
             .create_path(&status_file(worker_id), 0o644)
             .map_err(|err| format!("create_path({}) failed: {err}", status_file(worker_id)))?;
         let status = fixed_status_payload(worker_id, 0);
-        mount
+        let _ = mount
             .write_path(&status_file(worker_id), 0, &status)
             .map_err(|err| format!("write_path({}) failed: {err}", status_file(worker_id)))?;
     }
 
     for worker_id in 0..METADATA_WORKERS {
         let (dir_a, dir_b) = metadata_dirs(worker_id);
-        mount
+        let _ = mount
             .mkdir_path(&dir_a, 0o755)
             .map_err(|err| format!("mkdir_path({dir_a}) failed: {err}"))?;
-        mount
+        let _ = mount
             .mkdir_path(&dir_b, 0o755)
             .map_err(|err| format!("mkdir_path({dir_b}) failed: {err}"))?;
         for file_idx in 0..METADATA_FILE_COUNT {
@@ -258,7 +258,7 @@ fn setup_stress_tree(mount: &dyn Mount) -> Result<(), String> {
                 .create_path(&path, 0o640)
                 .map_err(|err| format!("create_path({path}) failed: {err}"))?;
             let payload = vec![metadata_byte(worker_id, 0, file_idx); METADATA_FILE_SIZE];
-            mount
+            let _ = mount
                 .write(&created.fh, 0, &payload)
                 .map_err(|err| format!("write({path}) failed: {err}"))?;
         }
@@ -278,7 +278,7 @@ fn io_worker(
     let status_path = status_file(worker_id);
     let mut passes = 0usize;
 
-    start_barrier.wait();
+    let _ = start_barrier.wait();
     while Instant::now() < deadline {
         let pass = passes + 1;
         write_hot_file_pass(mount.as_ref(), &hot_path, worker_id, pass)?;
@@ -299,7 +299,7 @@ fn io_worker(
         }
 
         let status = fixed_status_payload(worker_id, pass);
-        mount
+        let _ = mount
             .write_path(&status_path, 0, &status)
             .map_err(|err| format!("write_path({status_path}) failed: {err}"))?;
         passes += 1;
@@ -329,7 +329,7 @@ fn metadata_worker(
     let mut in_dir_a = [true; METADATA_FILE_COUNT];
     let mut cycles = 0usize;
 
-    start_barrier.wait();
+    let _ = start_barrier.wait();
     while Instant::now() < deadline {
         let primary = cycles % METADATA_FILE_COUNT;
         let secondary = (cycles + 3) % METADATA_FILE_COUNT;
@@ -346,7 +346,7 @@ fn metadata_worker(
         in_dir_a[primary] = !in_dir_a[primary];
 
         let rewrite = vec![metadata_byte(worker_id, cycles, primary); METADATA_FILE_SIZE];
-        mount
+        let _ = mount
             .write_path(&primary_to_path, 0, &rewrite)
             .map_err(|err| format!("write_path({primary_to_path}) failed: {err}"))?;
         let attrs = mount
@@ -364,14 +364,14 @@ fn metadata_worker(
         let secondary_current_path = format!("{secondary_current_dir}/file-{secondary}.bin");
         let secondary_next_path = format!("{secondary_next_dir}/file-{secondary}.bin");
 
-        mount
+        let _ = mount
             .remove_path(&secondary_current_path)
             .map_err(|err| format!("remove_path({secondary_current_path}) failed: {err}"))?;
         let created = mount
             .create_path(&secondary_next_path, 0o640)
             .map_err(|err| format!("create_path({secondary_next_path}) failed: {err}"))?;
         let replacement = vec![metadata_byte(worker_id, cycles + 1, secondary); METADATA_FILE_SIZE];
-        mount
+        let _ = mount
             .write(&created.fh, 0, &replacement)
             .map_err(|err| format!("write({secondary_next_path}) failed: {err}"))?;
         let sample = read_exact_path(mount.as_ref(), &secondary_next_path, 0, SAMPLE_SIZE)?;
@@ -429,7 +429,7 @@ fn traversal_worker(
     let expected_meta_root = expected_meta_root_entries();
     let mut scans = 0usize;
 
-    start_barrier.wait();
+    let _ = start_barrier.wait();
     while Instant::now() < deadline {
         if readdir_names(mount.as_ref(), STRESS_ROOT) != expected_root {
             return Err("root directory listing changed unexpectedly".to_string());

@@ -141,7 +141,7 @@ async fn test_exchange_id_reuses_existing_client_when_verifier_matches() {
     let args = exchange_id_args(b"owner", [0x11; 8]);
 
     let first = state.exchange_id(&args).await.unwrap();
-    state
+    let _ = state
         .create_session(&create_session_args(first.clientid, first.sequenceid), 1)
         .await
         .unwrap();
@@ -197,7 +197,7 @@ async fn test_exchange_id_reboot_drops_old_state_after_new_create_session() {
         vec![NfsStat4::Ok, NfsStat4::Ok]
     );
 
-    state
+    let _ = state
         .create_session(
             &create_session_args(rebooted.clientid, rebooted.sequenceid),
             2,
@@ -238,7 +238,7 @@ async fn test_existing_lock_owner_tracks_multiple_ranges() {
         )
         .await
         .unwrap();
-    state
+    let _ = state
         .update_lock_state(&lock_stateid, NfsLockType4::WriteLt, 20, 10)
         .await
         .unwrap();
@@ -317,7 +317,7 @@ async fn test_unlock_splits_range_and_conflict_checks_all_ranges() {
         .await
         .unwrap();
 
-    state.unlock_state(&lock_stateid, 40, 20).await.unwrap();
+    let _ = state.unlock_state(&lock_stateid, 40, 20).await.unwrap();
 
     let inner = state.inner.read().await;
     let lock = inner.lock_files.get(&lock_stateid.other).unwrap();

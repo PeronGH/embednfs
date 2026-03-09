@@ -11,7 +11,7 @@ async fn test_null_procedure() {
     let mut stream = connect(port).await;
 
     let mut resp = send_rpc(&mut stream, 1, 0, &[]).await;
-    let (xid, accept_stat) = parse_rpc_reply(&mut resp);
+    let (xid, accept_stat) = parse_rpc_reply_fields(&mut resp);
     assert_eq!(xid, 1);
     assert_eq!(accept_stat, 0);
 }
@@ -31,7 +31,7 @@ async fn test_minor_version_mismatch_rejects_non_v41() {
     for (xid, minorversion, op) in [(1, 0u32, &rootfh_op[..]), (2, 2u32, &illegal_op[..])] {
         let compound = encode_compound_minor("bad-minor", minorversion, &[op]);
         let mut resp = send_rpc(&mut stream, xid, 1, &compound).await;
-        let (_, accept_stat) = parse_rpc_reply(&mut resp);
+        let (_, accept_stat) = parse_rpc_reply_fields(&mut resp);
         assert_eq!(accept_stat, 0);
 
         let (status, _, num_results) = parse_compound_header(&mut resp);
@@ -50,7 +50,7 @@ async fn test_empty_compound_succeeds() {
 
     let compound = encode_compound("empty", &[]);
     let mut resp = send_rpc(&mut stream, 1, 1, &compound).await;
-    let (_, accept_stat) = parse_rpc_reply(&mut resp);
+    let (_, accept_stat) = parse_rpc_reply_fields(&mut resp);
     assert_eq!(accept_stat, 0);
 
     let (status, tag, num_results) = parse_compound_header(&mut resp);
@@ -88,7 +88,7 @@ async fn test_exchange_id_basic() {
     let exchange_id_op = encode_exchange_id();
     let compound = encode_compound("exid", &[&exchange_id_op]);
     let mut resp = send_rpc(&mut stream, 1, 1, &compound).await;
-    let (_, accept_stat) = parse_rpc_reply(&mut resp);
+    let (_, accept_stat) = parse_rpc_reply_fields(&mut resp);
     assert_eq!(accept_stat, 0);
     let (status, _, num_results) = parse_compound_header(&mut resp);
     assert_eq!(status, NfsStat4::Ok as u32);
@@ -229,7 +229,7 @@ async fn test_v41_session_flow_and_readdir() {
     let readdir_op = encode_readdir();
     let compound = encode_compound("readdir", &[&seq_op, &rootfh_op, &readdir_op]);
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
-    let (_, accept_stat) = parse_rpc_reply(&mut resp);
+    let (_, accept_stat) = parse_rpc_reply_fields(&mut resp);
     assert_eq!(accept_stat, 0);
 
     let (status, _, num_results) = parse_compound_header(&mut resp);

@@ -2,7 +2,7 @@
 //!
 //! Provides server setup, XDR encoding helpers, and response parsing utilities
 //! so that individual test modules stay focused on test logic.
-#![allow(dead_code, unused_imports)]
+#![allow(dead_code, unused_imports, unreachable_pub)]
 
 mod attr_bits;
 mod encode;

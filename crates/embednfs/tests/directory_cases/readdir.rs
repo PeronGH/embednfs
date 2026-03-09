@@ -541,17 +541,18 @@ async fn test_readdir_subdirectory() {
         .await
         .unwrap()
         .handle;
-    fs.create(
-        &ctx,
-        &subdir_id,
-        "inner.txt",
-        CreateRequest {
-            kind: CreateKind::File,
-            attrs: SetAttrs::default(),
-        },
-    )
-    .await
-    .unwrap();
+    let _ = fs
+        .create(
+            &ctx,
+            &subdir_id,
+            "inner.txt",
+            CreateRequest {
+                kind: CreateKind::File,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap();
     let port = start_server_with_fs(fs).await;
     let mut stream = connect(port).await;
     let sessionid = setup_session(&mut stream).await;

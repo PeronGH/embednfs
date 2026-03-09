@@ -13,9 +13,9 @@ pub async fn start_server_with_fs<F: FileSystem>(fs: F) -> u16 {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
 
-    tokio::spawn(async move {
+    std::mem::drop(tokio::spawn(async move {
         server.serve(listener).await.unwrap();
-    });
+    }));
 
     tokio::time::sleep(Duration::from_millis(50)).await;
     port

@@ -9,17 +9,18 @@ pub async fn populated_fs(names: &[&str]) -> MemFs {
     let fs = MemFs::new();
     let ctx = RequestContext::anonymous();
     for name in names {
-        fs.create(
-            &ctx,
-            &1,
-            name,
-            CreateRequest {
-                kind: CreateKind::File,
-                attrs: SetAttrs::default(),
-            },
-        )
-        .await
-        .unwrap();
+        let _ = fs
+            .create(
+                &ctx,
+                &1,
+                name,
+                CreateRequest {
+                    kind: CreateKind::File,
+                    attrs: SetAttrs::default(),
+                },
+            )
+            .await
+            .unwrap();
     }
     fs
 }
@@ -55,17 +56,18 @@ pub async fn fs_with_xattr(file_name: &str, xattr_name: &str, value: &[u8]) -> M
 pub async fn fs_with_subdir(dir_name: &str) -> MemFs {
     let fs = MemFs::new();
     let ctx = RequestContext::anonymous();
-    fs.create(
-        &ctx,
-        &1,
-        dir_name,
-        CreateRequest {
-            kind: CreateKind::Directory,
-            attrs: SetAttrs::default(),
-        },
-    )
-    .await
-    .unwrap();
+    let _ = fs
+        .create(
+            &ctx,
+            &1,
+            dir_name,
+            CreateRequest {
+                kind: CreateKind::Directory,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap();
     fs
 }
 
@@ -85,14 +87,15 @@ pub async fn fs_with_data(file_name: &str, data: &[u8]) -> MemFs {
         .await
         .unwrap()
         .handle;
-    fs.write(
-        &ctx,
-        &fid,
-        0,
-        Bytes::copy_from_slice(data),
-        WriteStability::FileSync,
-    )
-    .await
-    .unwrap();
+    let _ = fs
+        .write(
+            &ctx,
+            &fid,
+            0,
+            Bytes::copy_from_slice(data),
+            WriteStability::FileSync,
+        )
+        .await
+        .unwrap();
     fs
 }

@@ -45,17 +45,18 @@ async fn create_write_read_round_trip() {
 async fn readdir_returns_inline_attrs_when_requested() {
     let fs = MemFs::new();
     let ctx = RequestContext::anonymous();
-    fs.create(
-        &ctx,
-        &1,
-        "a.txt",
-        CreateRequest {
-            kind: CreateKind::File,
-            attrs: SetAttrs::default(),
-        },
-    )
-    .await
-    .unwrap();
+    let _ = fs
+        .create(
+            &ctx,
+            &1,
+            "a.txt",
+            CreateRequest {
+                kind: CreateKind::File,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap();
 
     let page = fs.readdir(&ctx, &1, 0, 16, true).await.unwrap();
     assert_eq!(page.entries.len(), 1);

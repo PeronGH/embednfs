@@ -40,8 +40,8 @@ fn test_nfs_rs_namespace_workflow() {
     let server = start_external_server();
     let mount = mount_nfs_rs(server.port());
 
-    mount.mkdir_path("/smoke-ns", 0o755).unwrap();
-    mount.create_path("/smoke-ns/original.txt", 0o640).unwrap();
+    let _ = mount.mkdir_path("/smoke-ns", 0o755).unwrap();
+    let _ = mount.create_path("/smoke-ns/original.txt", 0o640).unwrap();
     assert_eq!(
         readdir_names(mount.as_ref(), "/smoke-ns"),
         expected_names(&["original.txt"])
@@ -59,7 +59,7 @@ fn test_nfs_rs_namespace_workflow() {
     mount
         .rename_path("/smoke-ns/original.txt", "/smoke-ns/renamed.txt")
         .unwrap();
-    mount
+    let _ = mount
         .symlink_path("/smoke-ns/renamed.txt", "/smoke-ns/link.txt")
         .unwrap();
     assert_eq!(

@@ -290,7 +290,7 @@ impl FileSystem for CountingNamedAttrFs {
 #[async_trait::async_trait]
 impl Xattrs<u64> for CountingNamedAttrFs {
     async fn list_xattrs(&self, ctx: &RequestContext, id: &u64) -> FsResult<Vec<String>> {
-        self.list_count.fetch_add(1, Ordering::Relaxed);
+        let _ = self.list_count.fetch_add(1, Ordering::Relaxed);
         self.inner.list_xattrs(ctx, id).await
     }
     async fn get_xattr(&self, ctx: &RequestContext, id: &u64, name: &str) -> FsResult<Bytes> {
