@@ -112,6 +112,58 @@ async fn test_readdir_excludes_dot_entries() {
     }
 }
 
+/// READDIR without a current filehandle returns `NFS4ERR_NOFILEHANDLE`.
+/// Origin: `pynfs/nfs4.0/servertests/st_readdir.py` (CODE `RDDR6`).
+/// RFC: RFC 8881 §18.23.3.
+#[tokio::test]
+async fn test_readdir_no_fh() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let readdir_op = encode_readdir();
+    let compound = encode_compound("readdir-nofh", &[&seq_op, &readdir_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Nofilehandle as u32);
+    assert_eq!(num_results, 2);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_READDIR);
+    assert_eq!(op_status, NfsStat4::Nofilehandle as u32);
+}
+
+/// READDIR with `maxcount=0` returns `NFS4ERR_TOOSMALL`.
+/// Origin: `pynfs/nfs4.0/servertests/st_readdir.py` (CODE `RDDR7`).
+/// RFC: RFC 8881 §18.23.3.
+#[tokio::test]
+async fn test_readdir_maxcount_zero_returns_toosmall() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let readdir_op = encode_readdir_custom(0, [0u8; 8], 4096, 0, &[FATTR4_FILEID]);
+    let compound = encode_compound("readdir-maxcount-zero", &[&seq_op, &rootfh_op, &readdir_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Toosmall as u32);
+    assert_eq!(num_results, 3);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_READDIR);
+    assert_eq!(op_status, NfsStat4::Toosmall as u32);
+}
+
 /// READDIR cookies start at 3 because 0 is the initial cookie and 1-2 are reserved for `.` and `..`.
 /// Origin: Linux kernel nfsd and client-behavior-derived check; no direct one-to-one pynfs case.
 /// RFC: RFC 8881 §18.23.3.
@@ -233,6 +285,65 @@ async fn test_readdir_returns_toosmall_when_entry_cannot_fit() {
     let (opnum, op_status) = parse_op_header(&mut resp);
     assert_eq!(opnum, OP_READDIR);
     assert_eq!(op_status, NfsStat4::Toosmall as u32);
+}
+
+/// READDIR with write-only attrs returns `NFS4ERR_INVAL`.
+/// Origin: `pynfs/nfs4.0/servertests/st_readdir.py` (CODE `RDDR9`).
+/// RFC: RFC 8881 §18.23.3.
+#[tokio::test]
+async fn test_readdir_write_only_attrs_invalid() {
+    let fs = populated_fs(&["alpha.txt"]).await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let readdir_op =
+        encode_readdir_custom(0, [0u8; 8], 4096, 8192, &[FATTR4_TIME_MODIFY_SET]);
+    let compound = encode_compound("readdir-writeonly", &[&seq_op, &rootfh_op, &readdir_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Inval as u32);
+    assert_eq!(num_results, 3);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_READDIR);
+    assert_eq!(op_status, NfsStat4::Inval as u32);
+}
+
+/// READDIR with reserved cookies returns `NFS4ERR_BAD_COOKIE`.
+/// Origin: `pynfs/nfs4.0/servertests/st_readdir.py` (CODE `RDDR10`).
+/// RFC: RFC 8881 §18.23.3.
+#[tokio::test]
+async fn test_readdir_reserved_cookies_bad_cookie() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    for (xid, seq, cookie) in [(3, 1, 1u64), (4, 2, 2u64)] {
+        let seq_op = encode_sequence(&sessionid, seq, 0);
+        let rootfh_op = encode_putrootfh();
+        let readdir_op = encode_readdir_custom(cookie, [0u8; 8], 4096, 8192, &[FATTR4_FILEID]);
+        let compound =
+            encode_compound("readdir-bad-cookie", &[&seq_op, &rootfh_op, &readdir_op]);
+        let mut resp = send_rpc(&mut stream, xid, 1, &compound).await;
+        parse_rpc_reply(&mut resp);
+
+        let (status, _, num_results) = parse_compound_header(&mut resp);
+        assert_eq!(status, NfsStat4::BadCookie as u32);
+        assert_eq!(num_results, 3);
+        let _ = parse_op_header(&mut resp);
+        skip_sequence_res(&mut resp);
+        let _ = parse_op_header(&mut resp);
+        let (opnum, op_status) = parse_op_header(&mut resp);
+        assert_eq!(opnum, OP_READDIR);
+        assert_eq!(op_status, NfsStat4::BadCookie as u32);
+    }
 }
 
 /// READDIR cookie verifier is stable while the directory is unchanged.

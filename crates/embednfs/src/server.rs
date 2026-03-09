@@ -443,6 +443,22 @@ impl<F: FileSystem> NfsServer<F> {
         }
     }
 
+    fn validate_component_name(&self, name: &str) -> Result<(), NfsStat4> {
+        if name.is_empty() {
+            return Err(NfsStat4::Inval);
+        }
+        if name == "." || name == ".." {
+            return Err(NfsStat4::Badname);
+        }
+        if name.contains('/') {
+            return Err(NfsStat4::Badchar);
+        }
+        if name.len() > self.limits().max_name_bytes as usize {
+            return Err(NfsStat4::Nametoolong);
+        }
+        Ok(())
+    }
+
     async fn encode_fattr(
         &self,
         request_ctx: &RequestContext,
@@ -1320,8 +1336,14 @@ impl<F: FileSystem> NfsServer<F> {
             Ok(attrs) => attrs,
             Err(status) => return NfsResop4::Create(status, None, Bitmap4::new()),
         };
+        if let Err(status) = self.validate_component_name(&args.objname) {
+            return NfsResop4::Create(status, None, Bitmap4::new());
+        }
 
         let (new_object, _new_type) = match &args.objtype {
+            Createtype4::Reg => {
+                return NfsResop4::Create(NfsStat4::Badtype, None, Bitmap4::new());
+            }
             Createtype4::Dir => match self
                 .create_dir(request_ctx, dir_id, &args.objname, set_attrs.clone())
                 .await
@@ -1429,6 +1451,9 @@ impl<F: FileSystem> NfsServer<F> {
             Ok(attr) => attr,
             Err(e) => return NfsResop4::Link(e.to_nfsstat4(), None),
         };
+        if let Err(status) = self.validate_component_name(&args.newname) {
+            return NfsResop4::Link(status, None);
+        }
 
         let links = match self.hard_links() {
             Some(links) => links,
@@ -1470,6 +1495,9 @@ impl<F: FileSystem> NfsServer<F> {
         let child = match object {
             ServerObject::Fs(dir_id) => match self.kind_of(request_ctx, dir_id).await {
                 Ok(ObjectType::Directory) => {
+                    if let Err(status) = self.validate_component_name(&args.objname) {
+                        return NfsResop4::Lookup(status);
+                    }
                     match self.lookup(request_ctx, dir_id, &args.objname).await {
                         Ok(id) => Ok(ServerObject::Fs(id)),
                         Err(e) => Err(e),
@@ -1625,6 +1653,9 @@ impl<F: FileSystem> NfsServer<F> {
         let mut created_before_change = None;
         let object = match (&container, &args.claim) {
             (ServerObject::Fs(dir_id), OpenClaim4::Null(name)) => {
+                if let Err(status) = self.validate_component_name(name) {
+                    return NfsResop4::Open(status, None);
+                }
                 match self.kind_of(request_ctx, *dir_id).await {
                     Ok(ObjectType::Directory) => {}
                     Ok(_) => return NfsResop4::Open(NfsStat4::Notdir, None),
@@ -1894,6 +1925,17 @@ impl<F: FileSystem> NfsServer<F> {
         ) {
             return NfsResop4::Readdir(NfsStat4::Notdir, None);
         }
+        if matches!(args.cookie, 1 | 2) {
+            return NfsResop4::Readdir(NfsStat4::BadCookie, None);
+        }
+        if args.maxcount == 0 {
+            return NfsResop4::Readdir(NfsStat4::Toosmall, None);
+        }
+        if args.attr_request.is_set(FATTR4_TIME_ACCESS_SET)
+            || args.attr_request.is_set(FATTR4_TIME_MODIFY_SET)
+        {
+            return NfsResop4::Readdir(NfsStat4::Inval, None);
+        }
         let cookieverf = dir_attr.change_id.to_be_bytes();
 
         if args.cookie != 0 && args.cookieverf != cookieverf {
@@ -2091,6 +2133,9 @@ impl<F: FileSystem> NfsServer<F> {
             Ok(attr) => attr,
             Err(e) => return NfsResop4::Remove(e.to_nfsstat4(), None),
         };
+        if let Err(status) = self.validate_component_name(&args.target) {
+            return NfsResop4::Remove(status, None);
+        }
 
         let status = match dir_object.clone() {
             ServerObject::Fs(dir_id) => {

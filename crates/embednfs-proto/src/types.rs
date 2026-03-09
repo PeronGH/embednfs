@@ -905,6 +905,7 @@ pub struct CreateArgs4 {
 
 #[derive(Debug)]
 pub enum Createtype4 {
+    Reg,
     Link(String),
     Blk(Specdata4),
     Chr(Specdata4),
@@ -1937,6 +1938,7 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
         OP_CREATE => {
             let type_val = u32::decode(src)?;
             let objtype = match type_val {
+                1 => Createtype4::Reg,
                 5 => {
                     // NF4LNK
                     let linkdata = String::decode(src)?;

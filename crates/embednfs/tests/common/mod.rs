@@ -404,12 +404,14 @@ pub fn encode_rename(oldname: &str, newname: &str) -> Vec<u8> {
 }
 
 pub fn encode_create_dir(name: &str) -> Vec<u8> {
+    encode_create_type(2, name)
+}
+
+pub fn encode_create_type(objtype: u32, name: &str) -> Vec<u8> {
     let mut buf = BytesMut::new();
     OP_CREATE.encode(&mut buf);
-    // type = NF4DIR (2), with objname
-    2u32.encode(&mut buf); // NF4DIR
+    objtype.encode(&mut buf);
     name.to_string().encode(&mut buf);
-    // createattrs = empty fattr4
     Bitmap4::new().encode(&mut buf);
     encode_opaque(&mut buf, &[]);
     buf.to_vec()

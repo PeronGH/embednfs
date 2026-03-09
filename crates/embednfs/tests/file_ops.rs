@@ -479,6 +479,87 @@ async fn test_remove_nonexistent() {
     assert_eq!(status, NfsStat4::Noent as u32);
 }
 
+/// REMOVE without a current filehandle returns `NFS4ERR_NOFILEHANDLE`.
+/// Origin: `pynfs/nfs4.0/servertests/st_remove.py` (CODE `RM3`).
+/// RFC: RFC 8881 §18.25.3.
+#[tokio::test]
+async fn test_remove_no_fh() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let remove_op = encode_remove("ghost.txt");
+    let compound = encode_compound("rm-nofh", &[&seq_op, &remove_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Nofilehandle as u32);
+    assert_eq!(num_results, 2);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_REMOVE);
+    assert_eq!(op_status, NfsStat4::Nofilehandle as u32);
+}
+
+/// REMOVE with a zero-length target returns `NFS4ERR_INVAL`.
+/// Origin: `pynfs/nfs4.0/servertests/st_remove.py` (CODE `RM4`).
+/// RFC: RFC 8881 §18.25.3.
+#[tokio::test]
+async fn test_remove_zero_length_target() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let remove_op = encode_remove("");
+    let compound = encode_compound("rm-empty", &[&seq_op, &rootfh_op, &remove_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Inval as u32);
+    assert_eq!(num_results, 3);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_REMOVE);
+    assert_eq!(op_status, NfsStat4::Inval as u32);
+}
+
+/// REMOVE of `.` or `..` returns `NFS4ERR_BADNAME`.
+/// Origin: adapted from `pynfs/nfs4.0/servertests/st_remove.py` (CODE `RM7`) to our stricter RFC-targeted expectation.
+/// RFC: RFC 8881 §18.25.3.
+#[tokio::test]
+async fn test_remove_dot_names_badname() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    for (xid, seq, name) in [(3, 1, "."), (4, 2, "..")] {
+        let seq_op = encode_sequence(&sessionid, seq, 0);
+        let rootfh_op = encode_putrootfh();
+        let remove_op = encode_remove(name);
+        let compound = encode_compound("rm-dot", &[&seq_op, &rootfh_op, &remove_op]);
+        let mut resp = send_rpc(&mut stream, xid, 1, &compound).await;
+        parse_rpc_reply(&mut resp);
+
+        let (status, _, num_results) = parse_compound_header(&mut resp);
+        assert_eq!(status, NfsStat4::Badname as u32);
+        assert_eq!(num_results, 3);
+        let _ = parse_op_header(&mut resp);
+        skip_sequence_res(&mut resp);
+        let _ = parse_op_header(&mut resp);
+        let (opnum, op_status) = parse_op_header(&mut resp);
+        assert_eq!(opnum, OP_REMOVE);
+        assert_eq!(op_status, NfsStat4::Badname as u32);
+    }
+}
+
 /// Retrying REMOVE on the same cached slot replays the cached reply.
 /// Origin: RFC 8881 replay-cache semantics; implementation-driven check.
 /// RFC: RFC 8881 §2.10.6.1.3, §18.25.3.

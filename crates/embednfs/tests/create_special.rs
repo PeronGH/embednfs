@@ -127,6 +127,85 @@ async fn test_create_directory_no_fh() {
     assert_eq!(status, NfsStat4::Nofilehandle as u32);
 }
 
+/// CREATE with a zero-length name returns `NFS4ERR_INVAL`.
+/// Origin: `pynfs/nfs4.0/servertests/st_create.py` (CODE `CR9`).
+/// RFC: RFC 8881 §18.4.3.
+#[tokio::test]
+async fn test_create_directory_zero_length_name() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let create_op = encode_create_dir("");
+    let compound = encode_compound("mkdir-empty", &[&seq_op, &rootfh_op, &create_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Inval as u32);
+}
+
+/// CREATE with object type `NF4REG` returns `NFS4ERR_BADTYPE`.
+/// Origin: `pynfs/nfs4.0/servertests/st_create.py` (CODE `CR10`).
+/// RFC: RFC 8881 §18.4.3.
+#[tokio::test]
+async fn test_create_regular_file_badtype() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let create_op = encode_create_type(NfsFtype4::Reg as u32, "badtype.txt");
+    let compound = encode_compound("create-reg", &[&seq_op, &rootfh_op, &create_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Badtype as u32);
+}
+
+/// CREATE with `.` or `..` returns `NFS4ERR_BADNAME`.
+/// Origin: adapted from `pynfs/nfs4.0/servertests/st_create.py` (CODE `CR13`) to our stricter RFC-targeted expectation.
+/// RFC: RFC 8881 §18.4.3.
+#[tokio::test]
+async fn test_create_directory_dot_names_badname() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    for (xid, seq, name) in [(3, 1, "."), (4, 2, "..")] {
+        let seq_op = encode_sequence(&sessionid, seq, 0);
+        let rootfh_op = encode_putrootfh();
+        let create_op = encode_create_dir(name);
+        let compound = encode_compound("mkdir-dot", &[&seq_op, &rootfh_op, &create_op]);
+        let mut resp = send_rpc(&mut stream, xid, 1, &compound).await;
+        parse_rpc_reply(&mut resp);
+        let (status, _, _) = parse_compound_header(&mut resp);
+        assert_eq!(status, NfsStat4::Badname as u32);
+    }
+}
+
+/// CREATE with a long name returns `NFS4ERR_NAMETOOLONG`.
+/// Origin: `pynfs/nfs4.0/servertests/st_create.py` (CODE `CR15`).
+/// RFC: RFC 8881 §18.4.3.
+#[tokio::test]
+async fn test_create_directory_name_too_long() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+    let long_name = "x".repeat(300);
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let create_op = encode_create_dir(&long_name);
+    let compound = encode_compound("mkdir-long", &[&seq_op, &rootfh_op, &create_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Nametoolong as u32);
+}
+
 /// A created directory reports type `NF4DIR`.
 /// Origin: derived from `pynfs/nfs4.0/servertests/st_create.py` (CODE `MKDIR`) plus GETATTR verification.
 /// RFC: RFC 8881 §18.4.3.
@@ -443,6 +522,111 @@ async fn test_link_no_saved_fh() {
     let (status, _, _) = parse_compound_header(&mut resp);
     // RFC 8881 §18.9.3: LINK without a saved FH returns NFS4ERR_NOFILEHANDLE
     assert_eq!(status, NfsStat4::Nofilehandle as u32);
+}
+
+/// LINK without a current filehandle returns `NFS4ERR_NOFILEHANDLE`.
+/// Origin: `pynfs/nfs4.0/servertests/st_link.py` (CODE `LINK3`).
+/// RFC: RFC 8881 §18.9.3.
+#[tokio::test]
+async fn test_link_no_current_fh() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let link_op = encode_link("dst.txt");
+    let compound = encode_compound("link-nocfh", &[&seq_op, &link_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Nofilehandle as u32);
+    assert_eq!(num_results, 2);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_LINK);
+    assert_eq!(op_status, NfsStat4::Nofilehandle as u32);
+}
+
+/// LINK with a zero-length name returns `NFS4ERR_INVAL`.
+/// Origin: `pynfs/nfs4.0/servertests/st_link.py` (CODE `LINK6`).
+/// RFC: RFC 8881 §18.9.3.
+#[tokio::test]
+async fn test_link_zero_length_name() {
+    let fs = populated_fs(&["src.txt"]).await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_op = encode_lookup("src.txt");
+    let savefh_op = encode_savefh();
+    let rootfh_op2 = encode_putrootfh();
+    let link_op = encode_link("");
+    let compound = encode_compound(
+        "link-empty",
+        &[&seq_op, &rootfh_op, &lookup_op, &savefh_op, &rootfh_op2, &link_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Inval as u32);
+}
+
+/// LINK with a long name returns `NFS4ERR_NAMETOOLONG`.
+/// Origin: `pynfs/nfs4.0/servertests/st_link.py` (CODE `LINK7`).
+/// RFC: RFC 8881 §18.9.3.
+#[tokio::test]
+async fn test_link_name_too_long() {
+    let fs = populated_fs(&["src.txt"]).await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+    let long_name = "x".repeat(300);
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_op = encode_lookup("src.txt");
+    let savefh_op = encode_savefh();
+    let rootfh_op2 = encode_putrootfh();
+    let link_op = encode_link(&long_name);
+    let compound = encode_compound(
+        "link-long",
+        &[&seq_op, &rootfh_op, &lookup_op, &savefh_op, &rootfh_op2, &link_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Nametoolong as u32);
+}
+
+/// LINK with `.` or `..` returns `NFS4ERR_BADNAME`.
+/// Origin: adapted from `pynfs/nfs4.0/servertests/st_link.py` (CODE `LINK9`) to our stricter RFC-targeted expectation.
+/// RFC: RFC 8881 §18.9.3.
+#[tokio::test]
+async fn test_link_dot_names_badname() {
+    let fs = populated_fs(&["src.txt"]).await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    for (xid, seq, name) in [(3, 1, "."), (4, 2, "..")] {
+        let seq_op = encode_sequence(&sessionid, seq, 0);
+        let rootfh_op = encode_putrootfh();
+        let lookup_op = encode_lookup("src.txt");
+        let savefh_op = encode_savefh();
+        let rootfh_op2 = encode_putrootfh();
+        let link_op = encode_link(name);
+        let compound = encode_compound(
+            "link-dot",
+            &[&seq_op, &rootfh_op, &lookup_op, &savefh_op, &rootfh_op2, &link_op],
+        );
+        let mut resp = send_rpc(&mut stream, xid, 1, &compound).await;
+        parse_rpc_reply(&mut resp);
+        let (status, _, _) = parse_compound_header(&mut resp);
+        assert_eq!(status, NfsStat4::Badname as u32);
+    }
 }
 
 // ===== COMMIT (pynfs CMT) =====
