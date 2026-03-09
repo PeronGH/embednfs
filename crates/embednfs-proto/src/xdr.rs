@@ -136,15 +136,23 @@ impl XdrDecode for bool {
     }
 }
 
+/// Write XDR padding zeros (0–3 bytes for 4-byte alignment).
+#[inline]
+fn put_xdr_padding(dst: &mut BytesMut, len: usize) {
+    const ZERO_PAD: [u8; 3] = [0; 3];
+    let pad = xdr_pad(len);
+    if let Some(slice) = ZERO_PAD.get(..pad) {
+        dst.put_slice(slice);
+    }
+}
+
 /// Encode a variable-length opaque (byte array) with length prefix.
+#[inline]
 pub fn encode_opaque(dst: &mut BytesMut, data: &[u8]) {
     let len = data.len() as u32;
     dst.put_u32(len);
     dst.put_slice(data);
-    let pad = xdr_pad(data.len());
-    for _ in 0..pad {
-        dst.put_u8(0);
-    }
+    put_xdr_padding(dst, data.len());
 }
 
 /// Decode a variable-length opaque.
@@ -178,12 +186,10 @@ pub fn decode_string_max(src: &mut Bytes, max: usize) -> XdrResult<String> {
 }
 
 /// Encode a fixed-length opaque.
+#[inline]
 pub fn encode_fixed_opaque(dst: &mut BytesMut, data: &[u8]) {
     dst.put_slice(data);
-    let pad = xdr_pad(data.len());
-    for _ in 0..pad {
-        dst.put_u8(0);
-    }
+    put_xdr_padding(dst, data.len());
 }
 
 /// Decode a fixed-length opaque.

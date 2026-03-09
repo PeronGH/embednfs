@@ -1,4 +1,5 @@
 use bytes::{Buf, Bytes, BytesMut};
+use smallvec::SmallVec;
 
 use crate::xdr::*;
 
@@ -362,14 +363,18 @@ impl XdrDecode for Stateid4 {
 }
 
 /// Bitmap4 - variable length bitmap for file attributes.
+///
+/// Uses inline storage for up to 3 words (covers all standard NFSv4.1
+/// attributes through bit 95), avoiding heap allocation in the common case.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Bitmap4(pub Vec<u32>);
+pub struct Bitmap4(pub SmallVec<[u32; 3]>);
 
 impl Bitmap4 {
     pub fn new() -> Self {
-        Bitmap4(vec![])
+        Bitmap4(SmallVec::new())
     }
 
+    #[inline]
     pub fn is_set(&self, bit: u32) -> bool {
         let word = (bit / 32) as usize;
         let mask = 1u32 << (bit % 32);
@@ -380,6 +385,7 @@ impl Bitmap4 {
         clippy::indexing_slicing,
         reason = "the loop below grows the bitmap through the requested word"
     )]
+    #[inline]
     pub fn set(&mut self, bit: u32) {
         let word = (bit / 32) as usize;
         let mask = 1u32 << (bit % 32);
@@ -391,6 +397,7 @@ impl Bitmap4 {
 }
 
 impl XdrEncode for Bitmap4 {
+    #[inline]
     fn encode(&self, dst: &mut BytesMut) {
         let trimmed_len = self
             .0
@@ -413,7 +420,7 @@ impl XdrDecode for Bitmap4 {
         if src.remaining() < bytes_needed {
             return Err(XdrError::Underflow);
         }
-        let mut words = Vec::with_capacity(count.min(1024));
+        let mut words = SmallVec::with_capacity(count.min(1024));
         for _ in 0..count {
             words.push(u32::decode(src)?);
         }
