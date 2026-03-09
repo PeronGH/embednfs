@@ -82,23 +82,13 @@ impl<F: FileSystem> NfsServer<F> {
                 return Ok(());
             };
 
-            let mut response = response;
-            while !response.is_empty() {
-                let frag_len = response.len().min(MAX_FRAGMENT_SIZE);
-                let last_fragment = frag_len == response.len();
-                let fragment = response.split_to(frag_len);
-                let resp_len = u32::try_from(fragment.len())
-                    .ok()
-                    .filter(|len| *len <= RPC_FRAG_LEN_MASK)
-                    .expect("response exceeds RPC fragment limit");
-                let resp_len = if last_fragment {
-                    resp_len | RPC_LAST_FRAGMENT
-                } else {
-                    resp_len
-                };
-                writer.write_all(&resp_len.to_be_bytes()).await?;
-                writer.write_all(&fragment).await?;
-            }
+            let resp_len = u32::try_from(response.len())
+                .ok()
+                .filter(|len| *len <= RPC_FRAG_LEN_MASK)
+                .expect("response exceeds RPC fragment limit");
+            let resp_len = resp_len | RPC_LAST_FRAGMENT;
+            writer.write_all(&resp_len.to_be_bytes()).await?;
+            writer.write_all(&response).await?;
             writer.flush().await?;
         }
     }
