@@ -4,6 +4,51 @@ use crate::xdr::*;
 
 use super::*;
 
+fn encode_open_none_delegation(why: &OpenNoneDelegation4, dst: &mut BytesMut) {
+    match why {
+        OpenNoneDelegation4::Contention {
+            server_will_push_deleg,
+        } => {
+            (WhyNoDelegation4::Contention as u32).encode(dst);
+            server_will_push_deleg.encode(dst);
+        }
+        OpenNoneDelegation4::Resource {
+            server_will_signal_avail,
+        } => {
+            (WhyNoDelegation4::ResourceNotAvail as u32).encode(dst);
+            server_will_signal_avail.encode(dst);
+        }
+        OpenNoneDelegation4::Other(why) => {
+            (*why as u32).encode(dst);
+        }
+    }
+}
+
+fn encode_open_delegation(delegation: &OpenDelegation4, dst: &mut BytesMut) {
+    match delegation {
+        OpenDelegation4::None => {
+            (OpenDelegationType4::None as u32).encode(dst);
+        }
+        OpenDelegation4::NoneExt(why) => {
+            (OpenDelegationType4::NoneExt as u32).encode(dst);
+            encode_open_none_delegation(why, dst);
+        }
+        OpenDelegation4::Read(read) => {
+            (OpenDelegationType4::Read as u32).encode(dst);
+            read.stateid.encode(dst);
+            read.recall.encode(dst);
+            read.permissions.encode(dst);
+        }
+        OpenDelegation4::Write(write) => {
+            (OpenDelegationType4::Write as u32).encode(dst);
+            write.stateid.encode(dst);
+            write.recall.encode(dst);
+            write.space_limit.encode(dst);
+            write.permissions.encode(dst);
+        }
+    }
+}
+
 impl XdrEncode for NfsResop4 {
     fn encode(&self, dst: &mut BytesMut) {
         match self {
@@ -84,25 +129,7 @@ impl XdrEncode for NfsResop4 {
                     r.cinfo.encode(dst);
                     r.rflags.encode(dst);
                     r.attrset.encode(dst);
-                    match &r.delegation {
-                        OpenDelegation4::None => {
-                            (OpenDelegationType4::None as u32).encode(dst);
-                        }
-                        OpenDelegation4::NoneExt(why) => {
-                            (OpenDelegationType4::NoneExt as u32).encode(dst);
-                            (*why as u32).encode(dst);
-                            match why {
-                                WhyNoDelegation4::Contention
-                                | WhyNoDelegation4::ResourceNotAvail => {
-                                    false.encode(dst);
-                                }
-                                _ => {}
-                            }
-                        }
-                        _ => {
-                            (OpenDelegationType4::None as u32).encode(dst);
-                        }
-                    }
+                    encode_open_delegation(&r.delegation, dst);
                 }
             }
             NfsResop4::Putfh(status) => {
@@ -217,7 +244,7 @@ impl XdrEncode for NfsResop4 {
                     r.clientid.encode(dst);
                     r.sequenceid.encode(dst);
                     r.flags.encode(dst);
-                    0u32.encode(dst);
+                    r.state_protect.encode(dst);
                     r.server_owner.encode(dst);
                     encode_opaque(dst, &r.server_scope);
                     (r.server_impl_id.len() as u32).encode(dst);
@@ -372,41 +399,130 @@ impl XdrEncode for NfsResop4 {
                     s.encode(dst);
                 }
             }
-            NfsResop4::LayoutGet(status) => {
+            NfsResop4::LayoutGet(status, res) => {
                 OP_LAYOUTGET.encode(dst);
                 status.encode(dst);
+                match (*status, res) {
+                    (NfsStat4::Ok, Some(LayoutGetRes4::Ok(ok))) => {
+                        ok.return_on_close.encode(dst);
+                        ok.stateid.encode(dst);
+                        ok.layout.encode(dst);
+                    }
+                    (
+                        NfsStat4::LayoutTrylater,
+                        Some(LayoutGetRes4::LayoutTryLater {
+                            will_signal_layout_avail,
+                        }),
+                    ) => {
+                        will_signal_layout_avail.encode(dst);
+                    }
+                    _ => {}
+                }
             }
-            NfsResop4::LayoutReturn(status) => {
+            NfsResop4::LayoutReturn(status, res) => {
                 OP_LAYOUTRETURN.encode(dst);
                 status.encode(dst);
+                if *status == NfsStat4::Ok
+                    && let Some(res) = res
+                {
+                    match res {
+                        LayoutReturnStateid4::None => false.encode(dst),
+                        LayoutReturnStateid4::Some(stateid) => {
+                            true.encode(dst);
+                            stateid.encode(dst);
+                        }
+                    }
+                }
             }
-            NfsResop4::LayoutCommit(status) => {
+            NfsResop4::LayoutCommit(status, res) => {
                 OP_LAYOUTCOMMIT.encode(dst);
                 status.encode(dst);
+                if *status == NfsStat4::Ok
+                    && let Some(res) = res
+                {
+                    res.newsize.encode(dst);
+                }
             }
-            NfsResop4::GetDirDelegation(status) => {
+            NfsResop4::GetDirDelegation(status, res) => {
                 OP_GET_DIR_DELEGATION.encode(dst);
                 status.encode(dst);
+                if *status == NfsStat4::Ok
+                    && let Some(res) = res
+                {
+                    match res {
+                        GetDirDelegationRes4::Ok(ok) => {
+                            0u32.encode(dst);
+                            dst.extend_from_slice(&ok.cookieverf);
+                            ok.stateid.encode(dst);
+                            ok.notification.encode(dst);
+                            ok.child_attributes.encode(dst);
+                            ok.dir_attributes.encode(dst);
+                        }
+                        GetDirDelegationRes4::Unavail {
+                            will_signal_deleg_avail,
+                        } => {
+                            1u32.encode(dst);
+                            will_signal_deleg_avail.encode(dst);
+                        }
+                    }
+                }
             }
-            NfsResop4::WantDelegation(status) => {
+            NfsResop4::WantDelegation(status, res) => {
                 OP_WANT_DELEGATION.encode(dst);
                 status.encode(dst);
+                if *status == NfsStat4::Ok
+                    && let Some(res) = res
+                {
+                    encode_open_delegation(res, dst);
+                }
             }
             NfsResop4::BackchannelCtl(status) => {
                 OP_BACKCHANNEL_CTL.encode(dst);
                 status.encode(dst);
             }
-            NfsResop4::GetDeviceInfo(status) => {
+            NfsResop4::GetDeviceInfo(status, res) => {
                 OP_GETDEVICEINFO.encode(dst);
                 status.encode(dst);
+                match (*status, res) {
+                    (
+                        NfsStat4::Ok,
+                        Some(GetDeviceInfoRes4::Ok {
+                            device_addr,
+                            notification,
+                        }),
+                    ) => {
+                        device_addr.encode(dst);
+                        notification.encode(dst);
+                    }
+                    (NfsStat4::Toosmall, Some(GetDeviceInfoRes4::TooSmall { mincount })) => {
+                        mincount.encode(dst);
+                    }
+                    _ => {}
+                }
             }
-            NfsResop4::GetDeviceList(status) => {
+            NfsResop4::GetDeviceList(status, res) => {
                 OP_GETDEVICELIST.encode(dst);
                 status.encode(dst);
+                if *status == NfsStat4::Ok
+                    && let Some(res) = res
+                {
+                    res.cookie.encode(dst);
+                    dst.extend_from_slice(&res.cookieverf);
+                    (res.deviceid_list.len() as u32).encode(dst);
+                    for deviceid in &res.deviceid_list {
+                        dst.extend_from_slice(deviceid);
+                    }
+                    res.eof.encode(dst);
+                }
             }
-            NfsResop4::SetSsv(status) => {
+            NfsResop4::SetSsv(status, res) => {
                 OP_SET_SSV.encode(dst);
                 status.encode(dst);
+                if *status == NfsStat4::Ok
+                    && let Some(res) = res
+                {
+                    res.digest.encode(dst);
+                }
             }
             NfsResop4::Illegal(status) => {
                 OP_ILLEGAL.encode(dst);
@@ -463,7 +579,7 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
                 6 => Createtype4::Sock,
                 7 => Createtype4::Fifo,
                 2 => Createtype4::Dir,
-                _ => return Err(XdrError::InvalidEnum(type_val)),
+                _ => Createtype4::Unsupported(type_val),
             };
             Ok(NfsArgop4::Create(CreateArgs4 {
                 objtype,
@@ -603,9 +719,21 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             let state_protect = match sp_type {
                 0 => StateProtect4A::None,
                 1 => StateProtect4A::MachCred {
-                    ops: StateProt4MachOps {
+                    ops: StateProtectOps4 {
                         enforce: Bitmap4::decode(src)?,
                         allow: Bitmap4::decode(src)?,
+                    },
+                },
+                2 => StateProtect4A::Ssv {
+                    parms: SsvSpParms4 {
+                        ops: StateProtectOps4 {
+                            enforce: Bitmap4::decode(src)?,
+                            allow: Bitmap4::decode(src)?,
+                        },
+                        hash_algs: decode_list(src)?,
+                        encr_algs: decode_list(src)?,
+                        window: u32::decode(src)?,
+                        num_gss_handles: u32::decode(src)?,
                     },
                 },
                 _ => return Err(XdrError::InvalidEnum(sp_type)),
@@ -674,7 +802,7 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             let vdata = decode_fixed_opaque(src, 8)?;
             let mut verifier = [0u8; 8];
             verifier.copy_from_slice(&vdata);
-            let ownerid = decode_opaque(src)?;
+            let ownerid = decode_opaque_max(src, 1024)?;
             let _client = ClientOwner4 { verifier, ownerid };
             let _cb_program = u32::decode(src)?;
             let _cb_netid = String::decode(src)?;
@@ -697,7 +825,7 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
         }
         OP_RELEASE_LOCKOWNER => {
             let _clientid = u64::decode(src)?;
-            let _owner = decode_opaque(src)?;
+            let _owner = decode_opaque_max(src, 1024)?;
             Ok(NfsArgop4::MustNotImplement(
                 MustNotImplementOp4::ReleaseLockowner,
             ))
@@ -715,7 +843,7 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
                     lock_seqid: u32::decode(src)?,
                     lock_owner: StateOwner4 {
                         clientid: u64::decode(src)?,
-                        owner: decode_opaque(src)?,
+                        owner: decode_opaque_max(src, 1024)?,
                     },
                 })
             } else {
@@ -738,7 +866,7 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             length: u64::decode(src)?,
             owner: StateOwner4 {
                 clientid: u64::decode(src)?,
-                owner: decode_opaque(src)?,
+                owner: decode_opaque_max(src, 1024)?,
             },
         })),
         OP_LOCKU => Ok(NfsArgop4::Locku(LockuArgs4 {
@@ -759,27 +887,7 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
         OP_NVERIFY => Ok(NfsArgop4::Nverify(Fattr4::decode(src)?)),
         OP_BACKCHANNEL_CTL => {
             let _cb_program = u32::decode(src)?;
-            let count = u32::decode(src)?;
-            for _ in 0..count {
-                let flavor = u32::decode(src)?;
-                match flavor {
-                    0 => {}
-                    1 => {
-                        let _stamp = u32::decode(src)?;
-                        let _name = String::decode(src)?;
-                        let _uid = u32::decode(src)?;
-                        let _gid = u32::decode(src)?;
-                        let _gids = decode_list::<u32>(src)?;
-                    }
-                    6 => {
-                        let _gcbp_service = u32::decode(src)?;
-                        let _gss_handle = decode_opaque(src)?;
-                        let _gcbp_handle_from_server = decode_opaque(src)?;
-                        let _gcbp_handle_from_client = decode_opaque(src)?;
-                    }
-                    _ => {}
-                }
-            }
+            let _sec_parms: Vec<CallbackSecParms4> = decode_list(src)?;
             Ok(NfsArgop4::BackchannelCtl)
         }
         OP_GET_DIR_DELEGATION => {

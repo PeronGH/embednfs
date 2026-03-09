@@ -102,6 +102,56 @@ async fn test_exchange_id_basic() {
     assert_ne!(flags & EXCHGID4_FLAG_MASK_PNFS, 0);
 }
 
+/// EXCHANGE_ID with unsupported non-`SP4_NONE` state protection returns `NFS4ERR_INVAL`.
+/// Origin: RFC 8881 state-protection negotiation; no direct pynfs one-to-one case.
+/// RFC: RFC 8881 §18.35.3.
+#[tokio::test]
+async fn test_exchange_id_non_none_state_protect_returns_inval() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+
+    for (xid, op) in [
+        (1, encode_exchange_id_with_mach_cred(b"mach-cred-client")),
+        (
+            2,
+            encode_exchange_id_with_ssv(
+                b"ssv-client",
+                &[b"\x06\x09\x60\x86\x48\x01\x65\x03\x04\x02\x01"],
+                &[b"\x06\x09\x60\x86\x48\x01\x65\x03\x04\x01\x2a"],
+            ),
+        ),
+    ] {
+        let compound = encode_compound("exid-state-protect", &[&op]);
+        let mut resp = send_rpc(&mut stream, xid, 1, &compound).await;
+        parse_rpc_reply(&mut resp);
+        let (status, _, num_results) = parse_compound_header(&mut resp);
+        assert_eq!(status, NfsStat4::Inval as u32);
+        assert_eq!(num_results, 1);
+        let (opnum, op_status) = parse_op_header(&mut resp);
+        assert_eq!(opnum, OP_EXCHANGE_ID);
+        assert_eq!(op_status, NfsStat4::Inval as u32);
+    }
+}
+
+/// EXCHANGE_ID with `client_owner4.co_ownerid` longer than 1024 bytes returns `NFS4ERR_BADXDR`.
+/// Origin: RFC 8881 `client_owner4` length bound; no direct pynfs one-to-one case.
+/// RFC: RFC 8881 §2.4, §3.3.10.1.
+#[tokio::test]
+async fn test_exchange_id_ownerid_too_long_returns_badxdr() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let owner = vec![b'x'; 1025];
+
+    let exchange_id_op = encode_exchange_id_with_name(&owner);
+    let compound = encode_compound("exid-ownerid-too-long", &[&exchange_id_op]);
+    let mut resp = send_rpc(&mut stream, 1, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::BadXdr as u32);
+    assert_eq!(num_results, 0);
+}
+
 /// EXCHANGE_ID must be the only op in a non-SEQUENCE COMPOUND.
 /// Origin: `pynfs/nfs4.1/server41tests/st_exchange_id.py` (CODE `EID8`).
 /// RFC: RFC 8881 §18.35.3.
@@ -257,6 +307,38 @@ async fn test_create_session_wrong_sequenceid() {
     assert_eq!(opnum, OP_CREATE_SESSION);
     assert_eq!(status, op_status);
     assert_eq!(op_status, NfsStat4::SeqMisordered as u32);
+}
+
+/// CREATE_SESSION accepts RFC-compliant RPCSEC_GSS callback security parameters.
+/// Origin: RFC 8881 callback security parameter grammar; no direct pynfs one-to-one case.
+/// RFC: RFC 8881 §18.36.1, §18.33.1.
+#[tokio::test]
+async fn test_create_session_rpcsec_gss_callback_params_succeed() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+
+    let exchange_id_op = encode_exchange_id();
+    let compound = encode_compound("exid", &[&exchange_id_op]);
+    let mut resp = send_rpc(&mut stream, 1, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let (_, _) = parse_op_header(&mut resp);
+    let (clientid, sequenceid) = skip_exchange_id_res(&mut resp);
+
+    let create_session_op =
+        encode_create_session_rpcsec_gss(clientid, sequenceid, 1, b"fore-handle", b"back-handle");
+    let compound = encode_compound("csess-gss", &[&create_session_op]);
+    let mut resp = send_rpc(&mut stream, 2, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 1);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_CREATE_SESSION);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let sessionid = parse_create_session_res(&mut resp);
+    assert_ne!(sessionid, [0u8; 16]);
 }
 
 // ===== SEQUENCE (pynfs SEQ) =====

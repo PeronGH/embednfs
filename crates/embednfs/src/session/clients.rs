@@ -12,7 +12,11 @@ use super::{MAX_CACHED_RESPONSE, MAX_FORE_CHAN_SLOTS, MAX_REQUEST_SIZE, StateMan
 
 impl StateManager {
     /// Handle EXCHANGE_ID.
-    pub async fn exchange_id(&self, args: &ExchangeIdArgs4) -> ExchangeIdRes4 {
+    pub async fn exchange_id(&self, args: &ExchangeIdArgs4) -> Result<ExchangeIdRes4, NfsStat4> {
+        if !matches!(args.state_protect, embednfs_proto::StateProtect4A::None) {
+            return Err(NfsStat4::Inval);
+        }
+
         let mut inner = self.inner.write().await;
 
         let (clientid, seq, confirmed) = if let Some(existing) =
@@ -66,7 +70,7 @@ impl StateManager {
             0
         };
 
-        ExchangeIdRes4 {
+        Ok(ExchangeIdRes4 {
             clientid,
             sequenceid: seq,
             flags: EXCHGID4_FLAG_USE_NON_PNFS | confirmed_flag,
@@ -81,7 +85,7 @@ impl StateManager {
                     nseconds: 0,
                 },
             }],
-        }
+        })
     }
 
     /// Handle CREATE_SESSION.

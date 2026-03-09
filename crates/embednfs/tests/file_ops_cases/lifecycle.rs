@@ -86,6 +86,28 @@ async fn test_open_nocreate_nonexistent() {
     assert_eq!(status, NfsStat4::Noent as u32);
 }
 
+/// OPEN with `state_owner4.owner` longer than 1024 bytes returns `NFS4ERR_BADXDR`.
+/// Origin: RFC 8881 `state_owner4` length bound; no direct pynfs one-to-one case.
+/// RFC: RFC 8881 §3.3.10.
+#[tokio::test]
+async fn test_open_owner_too_long_returns_badxdr() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+    let long_owner = vec![b'o'; 1025];
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let open_op = encode_open_nocreate_with_owner("ghost.txt", &long_owner);
+    let compound = encode_compound("open-owner-too-long", &[&seq_op, &rootfh_op, &open_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::BadXdr as u32);
+    assert_eq!(num_results, 0);
+}
+
 /// CLOSE on a valid open stateid succeeds.
 /// Origin: `pynfs/nfs4.0/servertests/st_close.py` (CODE `CLOSE1`).
 /// RFC: RFC 8881 §18.2.3.

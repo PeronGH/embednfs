@@ -22,6 +22,18 @@ pub fn parse_rpc_reply(resp: &mut Bytes) -> (u32, u32) {
     (xid, accept_stat)
 }
 
+pub fn parse_rpc_auth_error(resp: &mut Bytes) -> (u32, u32) {
+    let xid = u32::decode(resp).unwrap();
+    let msg_type = u32::decode(resp).unwrap();
+    assert_eq!(msg_type, 1, "expected RPC reply");
+    let reply_stat = u32::decode(resp).unwrap();
+    assert_eq!(reply_stat, 1, "expected rejected reply");
+    let reject_stat = u32::decode(resp).unwrap();
+    assert_eq!(reject_stat, 1, "expected AUTH_ERROR");
+    let auth_stat = u32::decode(resp).unwrap();
+    (xid, auth_stat)
+}
+
 pub fn parse_compound_header(resp: &mut Bytes) -> (u32, String, u32) {
     let status = u32::decode(resp).unwrap();
     let tag = String::decode(resp).unwrap();

@@ -44,6 +44,46 @@ pub fn encode_exchange_id_with_flags(name: &[u8], flags: u32) -> Vec<u8> {
     buf.to_vec()
 }
 
+pub fn encode_exchange_id_with_mach_cred(name: &[u8]) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_EXCHANGE_ID.encode(&mut buf);
+    buf.put_slice(&[0u8; 8]);
+    encode_opaque(&mut buf, name);
+    EXCHGID4_FLAG_USE_NON_PNFS.encode(&mut buf);
+    1u32.encode(&mut buf);
+    Bitmap4::new().encode(&mut buf);
+    Bitmap4::new().encode(&mut buf);
+    0u32.encode(&mut buf);
+    buf.to_vec()
+}
+
+pub fn encode_exchange_id_with_ssv(
+    name: &[u8],
+    hash_algs: &[&[u8]],
+    encr_algs: &[&[u8]],
+) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_EXCHANGE_ID.encode(&mut buf);
+    buf.put_slice(&[0u8; 8]);
+    encode_opaque(&mut buf, name);
+    EXCHGID4_FLAG_USE_NON_PNFS.encode(&mut buf);
+    2u32.encode(&mut buf);
+    Bitmap4::new().encode(&mut buf);
+    Bitmap4::new().encode(&mut buf);
+    (hash_algs.len() as u32).encode(&mut buf);
+    for oid in hash_algs {
+        encode_opaque(&mut buf, oid);
+    }
+    (encr_algs.len() as u32).encode(&mut buf);
+    for oid in encr_algs {
+        encode_opaque(&mut buf, oid);
+    }
+    4u32.encode(&mut buf);
+    1u32.encode(&mut buf);
+    0u32.encode(&mut buf);
+    buf.to_vec()
+}
+
 pub fn encode_create_session(clientid: u64, seq: u32) -> Vec<u8> {
     let mut buf = BytesMut::new();
     OP_CREATE_SESSION.encode(&mut buf);
@@ -70,6 +110,44 @@ pub fn encode_create_session(clientid: u64, seq: u32) -> Vec<u8> {
     0u32.encode(&mut buf);
     1u32.encode(&mut buf);
     0u32.encode(&mut buf);
+    buf.to_vec()
+}
+
+pub fn encode_create_session_rpcsec_gss(
+    clientid: u64,
+    seq: u32,
+    service: u32,
+    handle_from_server: &[u8],
+    handle_from_client: &[u8],
+) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_CREATE_SESSION.encode(&mut buf);
+    clientid.encode(&mut buf);
+    seq.encode(&mut buf);
+    0u32.encode(&mut buf);
+
+    0u32.encode(&mut buf);
+    1_048_576u32.encode(&mut buf);
+    1_048_576u32.encode(&mut buf);
+    8192u32.encode(&mut buf);
+    16u32.encode(&mut buf);
+    8u32.encode(&mut buf);
+    0u32.encode(&mut buf);
+
+    0u32.encode(&mut buf);
+    4096u32.encode(&mut buf);
+    4096u32.encode(&mut buf);
+    0u32.encode(&mut buf);
+    2u32.encode(&mut buf);
+    1u32.encode(&mut buf);
+    0u32.encode(&mut buf);
+
+    0u32.encode(&mut buf);
+    1u32.encode(&mut buf);
+    6u32.encode(&mut buf);
+    service.encode(&mut buf);
+    encode_opaque(&mut buf, handle_from_server);
+    encode_opaque(&mut buf, handle_from_client);
     buf.to_vec()
 }
 
@@ -216,6 +294,20 @@ pub fn encode_open_create_with_access(name: &str, share_access: u32, share_deny:
     0u32.encode(&mut buf);
     Bitmap4::new().encode(&mut buf);
     encode_opaque(&mut buf, &[]);
+    0u32.encode(&mut buf);
+    name.to_string().encode(&mut buf);
+    buf.to_vec()
+}
+
+pub fn encode_open_nocreate_with_owner(name: &str, owner: &[u8]) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_OPEN.encode(&mut buf);
+    0u32.encode(&mut buf);
+    OPEN4_SHARE_ACCESS_BOTH.encode(&mut buf);
+    OPEN4_SHARE_DENY_NONE.encode(&mut buf);
+    1u64.encode(&mut buf);
+    encode_opaque(&mut buf, owner);
+    0u32.encode(&mut buf);
     0u32.encode(&mut buf);
     name.to_string().encode(&mut buf);
     buf.to_vec()
@@ -600,5 +692,35 @@ pub fn encode_bind_conn_to_session(sessionid: &[u8; 16], dir: u32) -> Vec<u8> {
     buf.put_slice(sessionid);
     dir.encode(&mut buf);
     false.encode(&mut buf);
+    buf.to_vec()
+}
+
+pub fn encode_backchannel_ctl_rpcsec_gss(
+    cb_program: u32,
+    service: u32,
+    handle_from_server: &[u8],
+    handle_from_client: &[u8],
+) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_BACKCHANNEL_CTL.encode(&mut buf);
+    cb_program.encode(&mut buf);
+    1u32.encode(&mut buf);
+    6u32.encode(&mut buf);
+    service.encode(&mut buf);
+    encode_opaque(&mut buf, handle_from_server);
+    encode_opaque(&mut buf, handle_from_client);
+    buf.to_vec()
+}
+
+pub fn encode_auth_sys_body(machine_name: &str, gids: &[u32]) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    0u32.encode(&mut buf);
+    machine_name.to_string().encode(&mut buf);
+    501u32.encode(&mut buf);
+    20u32.encode(&mut buf);
+    (gids.len() as u32).encode(&mut buf);
+    for gid in gids {
+        gid.encode(&mut buf);
+    }
     buf.to_vec()
 }

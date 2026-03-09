@@ -60,6 +60,32 @@ impl XdrEncode for AcceptStat {
     }
 }
 
+/// Authentication failure status for rejected replies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthStat {
+    Ok = 0,
+    BadCred = 1,
+    RejectedCred = 2,
+    BadVerf = 3,
+    RejectedVerf = 4,
+    TooWeak = 5,
+    InvalidResp = 6,
+    Failed = 7,
+    KerbGeneric = 8,
+    TimeExpire = 9,
+    TktFile = 10,
+    Decode = 11,
+    NetAddr = 12,
+    RpcsecGssCredProblem = 13,
+    RpcsecGssCtxProblem = 14,
+}
+
+impl XdrEncode for AuthStat {
+    fn encode(&self, dst: &mut BytesMut) {
+        (*self as u32).encode(dst);
+    }
+}
+
 /// Auth flavor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthFlavor {
@@ -133,10 +159,10 @@ pub struct AuthSysParams {
 impl XdrDecode for AuthSysParams {
     fn decode(src: &mut Bytes) -> XdrResult<Self> {
         let stamp = u32::decode(src)?;
-        let machinename = String::decode(src)?;
+        let machinename = decode_string_max(src, 255)?;
         let uid = u32::decode(src)?;
         let gid = u32::decode(src)?;
-        let gids = decode_list(src)?;
+        let gids = decode_list_max(src, 16)?;
         Ok(AuthSysParams {
             stamp,
             machinename,
@@ -212,4 +238,13 @@ pub fn encode_rpc_reply_proc_unavail(dst: &mut BytesMut, xid: u32) {
     ReplyStat::Accepted.encode(dst);
     OpaqueAuth::null().encode(dst);
     AcceptStat::ProcUnavail.encode(dst);
+}
+
+/// Encode an RPC reply rejected due to authentication failure.
+pub fn encode_rpc_reply_auth_error(dst: &mut BytesMut, xid: u32, auth: AuthStat) {
+    xid.encode(dst);
+    MsgType::Reply.encode(dst);
+    ReplyStat::Denied.encode(dst);
+    1u32.encode(dst);
+    auth.encode(dst);
 }

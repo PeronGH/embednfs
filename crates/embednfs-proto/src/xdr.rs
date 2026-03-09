@@ -171,6 +171,12 @@ pub fn decode_opaque_max(src: &mut Bytes, max: usize) -> XdrResult<Vec<u8>> {
     Ok(data)
 }
 
+/// Decode a variable-length UTF-8 string with a maximum length.
+pub fn decode_string_max(src: &mut Bytes, max: usize) -> XdrResult<String> {
+    let data = decode_opaque_max(src, max)?;
+    String::from_utf8(data).map_err(|_| XdrError::InvalidUtf8)
+}
+
 /// Encode a fixed-length opaque.
 pub fn encode_fixed_opaque(dst: &mut BytesMut, data: &[u8]) {
     dst.put_slice(data);
@@ -256,6 +262,20 @@ impl<T: XdrDecode> XdrDecode for Option<T> {
 /// Decode a list of XDR items (length-prefixed array).
 pub fn decode_list<T: XdrDecode>(src: &mut Bytes) -> XdrResult<Vec<T>> {
     let count = u32::decode(src)? as usize;
+    let mut result = Vec::with_capacity(count.min(1024));
+    for _ in 0..count {
+        result.push(T::decode(src)?);
+    }
+    Ok(result)
+}
+
+/// Decode a list of XDR items with an upper bound on the element count.
+pub fn decode_list_max<T: XdrDecode>(src: &mut Bytes, max: usize) -> XdrResult<Vec<T>> {
+    let count = u32::decode(src)? as usize;
+    if count > max {
+        return Err(XdrError::OpaqueTooLong(count));
+    }
+
     let mut result = Vec::with_capacity(count.min(1024));
     for _ in 0..count {
         result.push(T::decode(src)?);

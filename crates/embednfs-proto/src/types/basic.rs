@@ -1,4 +1,4 @@
-use bytes::{Bytes, BytesMut};
+use bytes::{Buf, Bytes, BytesMut};
 
 use crate::xdr::*;
 
@@ -11,6 +11,7 @@ pub type Seqid4 = u32;
 pub type Sequenceid4 = u32;
 pub type Slotid4 = u32;
 pub type Sessionid4 = [u8; 16];
+pub type Deviceid4 = [u8; 16];
 pub type Verifier4 = [u8; 8];
 
 /// NFS file handle.
@@ -140,8 +141,8 @@ pub enum NfsStat4 {
 }
 
 impl NfsStat4 {
-    pub fn from_u32(v: u32) -> Self {
-        match v {
+    pub fn from_u32(v: u32) -> Option<Self> {
+        Some(match v {
             0 => NfsStat4::Ok,
             1 => NfsStat4::Perm,
             2 => NfsStat4::Noent,
@@ -245,8 +246,8 @@ impl NfsStat4 {
             10085 => NfsStat4::RejectDeleg,
             10086 => NfsStat4::ReturnConflict,
             10087 => NfsStat4::DelegRevoked,
-            _ => NfsStat4::Serverfault,
-        }
+            _ => return None,
+        })
     }
 }
 
@@ -258,7 +259,8 @@ impl XdrEncode for NfsStat4 {
 
 impl XdrDecode for NfsStat4 {
     fn decode(src: &mut Bytes) -> XdrResult<Self> {
-        Ok(NfsStat4::from_u32(u32::decode(src)?))
+        let value = u32::decode(src)?;
+        NfsStat4::from_u32(value).ok_or(XdrError::InvalidEnum(value))
     }
 }
 
@@ -334,7 +336,7 @@ impl Stateid4 {
     };
     pub const CURRENT: Stateid4 = Stateid4 {
         seqid: 1,
-        other: [0xff; 12],
+        other: [0; 12],
     };
     pub const BYPASS: Stateid4 = Stateid4 {
         seqid: 0xffffffff,
@@ -401,10 +403,13 @@ impl XdrEncode for Bitmap4 {
 impl XdrDecode for Bitmap4 {
     fn decode(src: &mut Bytes) -> XdrResult<Self> {
         let count = u32::decode(src)? as usize;
-        if count > 8 {
-            return Err(XdrError::OpaqueTooLong(count));
+        let bytes_needed = count
+            .checked_mul(std::mem::size_of::<u32>())
+            .ok_or(XdrError::Overflow)?;
+        if src.remaining() < bytes_needed {
+            return Err(XdrError::Underflow);
         }
-        let mut words = Vec::with_capacity(count);
+        let mut words = Vec::with_capacity(count.min(1024));
         for _ in 0..count {
             words.push(u32::decode(src)?);
         }

@@ -82,6 +82,9 @@ impl<F: FileSystem> NfsServer<F> {
                     Err(e) => return NfsResop4::Create(e.to_nfsstat4(), None, Bitmap4::new()),
                 }
             }
+            Createtype4::Unsupported(_) => {
+                return NfsResop4::Create(NfsStat4::Badtype, None, Bitmap4::new());
+            }
             _ => return NfsResop4::Create(NfsStat4::Notsupp, None, Bitmap4::new()),
         };
 

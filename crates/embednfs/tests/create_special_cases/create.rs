@@ -152,6 +152,31 @@ async fn test_create_regular_file_badtype() {
     assert_eq!(status, NfsStat4::Badtype as u32);
 }
 
+/// CREATE default-arm object types decode and later return `NFS4ERR_BADTYPE`.
+/// Origin: RFC 8881 `createtype4` default-arm semantics; no direct pynfs one-to-one case.
+/// RFC: RFC 8881 §18.4.1, §18.4.3.
+#[tokio::test]
+async fn test_create_default_arm_types_return_badtype() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    for (xid, seq, objtype, name) in [
+        (3, 1, NfsFtype4::AttrDir as u32, "badtype-attrdir"),
+        (4, 2, NfsFtype4::NamedAttr as u32, "badtype-namedattr"),
+        (5, 3, 99u32, "badtype-future"),
+    ] {
+        let seq_op = encode_sequence(&sessionid, seq, 0);
+        let rootfh_op = encode_putrootfh();
+        let create_op = encode_create_type(objtype, name);
+        let compound = encode_compound("create-default-arm", &[&seq_op, &rootfh_op, &create_op]);
+        let mut resp = send_rpc(&mut stream, xid, 1, &compound).await;
+        parse_rpc_reply(&mut resp);
+        let (status, _, _) = parse_compound_header(&mut resp);
+        assert_eq!(status, NfsStat4::Badtype as u32);
+    }
+}
+
 /// CREATE with `.` or `..` returns `NFS4ERR_BADNAME`.
 /// Origin: adapted from `pynfs/nfs4.0/servertests/st_create.py` (CODE `CR13`) to our stricter RFC-targeted expectation.
 /// RFC: RFC 8881 §18.4.3.

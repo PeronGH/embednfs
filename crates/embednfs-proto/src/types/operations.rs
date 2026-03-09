@@ -105,6 +105,7 @@ pub enum Createtype4 {
     Sock,
     Fifo,
     Dir,
+    Unsupported(u32),
 }
 
 #[derive(Debug)]
@@ -132,7 +133,7 @@ impl XdrDecode for StateOwner4 {
     fn decode(src: &mut bytes::Bytes) -> XdrResult<Self> {
         Ok(StateOwner4 {
             clientid: u64::decode(src)?,
-            owner: crate::xdr::decode_opaque(src)?,
+            owner: crate::xdr::decode_opaque_max(src, 1024)?,
         })
     }
 }
@@ -320,6 +321,197 @@ pub struct OpenAttrArgs4 {
     pub createdir: bool,
 }
 
+#[derive(Debug)]
+pub struct NfsAce4 {
+    pub ace_type: u32,
+    pub ace_flags: u32,
+    pub access_mask: u32,
+    pub who: String,
+}
+
+impl XdrEncode for NfsAce4 {
+    fn encode(&self, dst: &mut BytesMut) {
+        self.ace_type.encode(dst);
+        self.ace_flags.encode(dst);
+        self.access_mask.encode(dst);
+        self.who.encode(dst);
+    }
+}
+
+#[derive(Debug)]
+pub struct NfsModifiedLimit4 {
+    pub num_blocks: u32,
+    pub bytes_per_block: u32,
+}
+
+#[derive(Debug)]
+pub enum NfsSpaceLimit4 {
+    Size(u64),
+    Blocks(NfsModifiedLimit4),
+}
+
+impl XdrEncode for NfsSpaceLimit4 {
+    fn encode(&self, dst: &mut BytesMut) {
+        match self {
+            NfsSpaceLimit4::Size(filesize) => {
+                1u32.encode(dst);
+                filesize.encode(dst);
+            }
+            NfsSpaceLimit4::Blocks(limit) => {
+                2u32.encode(dst);
+                limit.num_blocks.encode(dst);
+                limit.bytes_per_block.encode(dst);
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct OpenReadDelegation4 {
+    pub stateid: Stateid4,
+    pub recall: bool,
+    pub permissions: NfsAce4,
+}
+
+#[derive(Debug)]
+pub struct OpenWriteDelegation4 {
+    pub stateid: Stateid4,
+    pub recall: bool,
+    pub space_limit: NfsSpaceLimit4,
+    pub permissions: NfsAce4,
+}
+
+#[derive(Debug)]
+pub enum OpenNoneDelegation4 {
+    Contention { server_will_push_deleg: bool },
+    Resource { server_will_signal_avail: bool },
+    Other(WhyNoDelegation4),
+}
+
+#[derive(Debug)]
+pub struct DeviceAddr4 {
+    pub layout_type: u32,
+    pub addr_body: Vec<u8>,
+}
+
+impl XdrEncode for DeviceAddr4 {
+    fn encode(&self, dst: &mut BytesMut) {
+        self.layout_type.encode(dst);
+        self.addr_body.encode(dst);
+    }
+}
+
+#[derive(Debug)]
+pub struct LayoutContent4 {
+    pub layout_type: u32,
+    pub body: Vec<u8>,
+}
+
+impl XdrEncode for LayoutContent4 {
+    fn encode(&self, dst: &mut BytesMut) {
+        self.layout_type.encode(dst);
+        self.body.encode(dst);
+    }
+}
+
+#[derive(Debug)]
+pub struct Layout4 {
+    pub offset: Offset4,
+    pub length: Length4,
+    pub iomode: u32,
+    pub content: LayoutContent4,
+}
+
+impl XdrEncode for Layout4 {
+    fn encode(&self, dst: &mut BytesMut) {
+        self.offset.encode(dst);
+        self.length.encode(dst);
+        self.iomode.encode(dst);
+        self.content.encode(dst);
+    }
+}
+
+#[derive(Debug)]
+pub enum Newsize4 {
+    Unchanged,
+    Size(Length4),
+}
+
+impl XdrEncode for Newsize4 {
+    fn encode(&self, dst: &mut BytesMut) {
+        match self {
+            Newsize4::Unchanged => false.encode(dst),
+            Newsize4::Size(size) => {
+                true.encode(dst);
+                size.encode(dst);
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct GetDirDelegationResOk4 {
+    pub cookieverf: Verifier4,
+    pub stateid: Stateid4,
+    pub notification: Bitmap4,
+    pub child_attributes: Bitmap4,
+    pub dir_attributes: Bitmap4,
+}
+
+#[derive(Debug)]
+pub enum GetDirDelegationRes4 {
+    Ok(GetDirDelegationResOk4),
+    Unavail { will_signal_deleg_avail: bool },
+}
+
+#[derive(Debug)]
+pub enum GetDeviceInfoRes4 {
+    Ok {
+        device_addr: DeviceAddr4,
+        notification: Bitmap4,
+    },
+    TooSmall {
+        mincount: Count4,
+    },
+}
+
+#[derive(Debug)]
+pub struct GetDeviceListResOk4 {
+    pub cookie: u64,
+    pub cookieverf: Verifier4,
+    pub deviceid_list: Vec<Deviceid4>,
+    pub eof: bool,
+}
+
+#[derive(Debug)]
+pub struct LayoutCommitResOk4 {
+    pub newsize: Newsize4,
+}
+
+#[derive(Debug)]
+pub struct LayoutGetResOk4 {
+    pub return_on_close: bool,
+    pub stateid: Stateid4,
+    pub layout: Vec<Layout4>,
+}
+
+#[derive(Debug)]
+pub enum LayoutGetRes4 {
+    Ok(LayoutGetResOk4),
+    LayoutTryLater { will_signal_layout_avail: bool },
+}
+
+#[derive(Debug)]
+pub enum LayoutReturnStateid4 {
+    None,
+    Some(Stateid4),
+}
+
+#[derive(Debug)]
+pub struct SetSsvResOk4 {
+    pub digest: Vec<u8>,
+}
+
 /// NfsArgop4 - a single operation in a COMPOUND request.
 #[derive(Debug)]
 pub enum NfsArgop4 {
@@ -408,9 +600,9 @@ impl XdrEncode for Compound4Res {
 #[derive(Debug)]
 pub enum OpenDelegation4 {
     None,
-    NoneExt(WhyNoDelegation4),
-    Read { stateid: Stateid4 },
-    Write { stateid: Stateid4 },
+    NoneExt(OpenNoneDelegation4),
+    Read(OpenReadDelegation4),
+    Write(OpenWriteDelegation4),
 }
 
 #[derive(Debug)]
@@ -495,14 +687,14 @@ pub enum NfsResop4 {
     Verify(NfsStat4),
     Nverify(NfsStat4),
     OpenDowngrade(NfsStat4, Option<Stateid4>),
-    LayoutGet(NfsStat4),
-    LayoutReturn(NfsStat4),
-    LayoutCommit(NfsStat4),
-    GetDirDelegation(NfsStat4),
-    WantDelegation(NfsStat4),
+    LayoutGet(NfsStat4, Option<LayoutGetRes4>),
+    LayoutReturn(NfsStat4, Option<LayoutReturnStateid4>),
+    LayoutCommit(NfsStat4, Option<LayoutCommitResOk4>),
+    GetDirDelegation(NfsStat4, Option<GetDirDelegationRes4>),
+    WantDelegation(NfsStat4, Option<OpenDelegation4>),
     BackchannelCtl(NfsStat4),
-    GetDeviceInfo(NfsStat4),
-    GetDeviceList(NfsStat4),
-    SetSsv(NfsStat4),
+    GetDeviceInfo(NfsStat4, Option<GetDeviceInfoRes4>),
+    GetDeviceList(NfsStat4, Option<GetDeviceListResOk4>),
+    SetSsv(NfsStat4, Option<SetSsvResOk4>),
     Illegal(NfsStat4),
 }

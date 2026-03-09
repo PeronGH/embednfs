@@ -148,22 +148,41 @@ impl<F: FileSystem> NfsServer<F> {
         fh.0.len() == std::mem::size_of::<u64>()
     }
 
+    fn parse_auth_sys(body: &[u8]) -> Option<AuthSysParams> {
+        let mut body = Bytes::copy_from_slice(body);
+        let params = AuthSysParams::decode(&mut body).ok()?;
+        if body.is_empty() { Some(params) } else { None }
+    }
+
+    fn validate_rpc_auth(call: &RpcCallHeader) -> Result<(), AuthStat> {
+        if call.cred.flavor == AuthFlavor::Sys as u32
+            && Self::parse_auth_sys(&call.cred.body).is_none()
+        {
+            return Err(AuthStat::BadCred);
+        }
+
+        if call.verf.flavor == AuthFlavor::Sys as u32
+            && Self::parse_auth_sys(&call.verf.body).is_none()
+        {
+            return Err(AuthStat::BadVerf);
+        }
+
+        Ok(())
+    }
+
     fn request_context(cred: &OpaqueAuth) -> RequestContext {
         let auth = match cred.flavor {
             x if x == AuthFlavor::None as u32 => AuthContext::None,
-            x if x == AuthFlavor::Sys as u32 => {
-                let mut body = Bytes::from(cred.body.clone());
-                match AuthSysParams::decode(&mut body) {
-                    Ok(params) => AuthContext::Sys {
-                        uid: params.uid,
-                        gid: params.gid,
-                        supplemental_gids: params.gids,
-                    },
-                    Err(_) => AuthContext::Unknown {
-                        flavor: cred.flavor,
-                    },
-                }
-            }
+            x if x == AuthFlavor::Sys as u32 => match Self::parse_auth_sys(&cred.body) {
+                Some(params) => AuthContext::Sys {
+                    uid: params.uid,
+                    gid: params.gid,
+                    supplemental_gids: params.gids,
+                },
+                None => AuthContext::Unknown {
+                    flavor: cred.flavor,
+                },
+            },
             flavor => AuthContext::Unknown { flavor },
         };
 

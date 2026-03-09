@@ -1,5 +1,6 @@
 use bytes::{Bytes, BytesMut};
 
+use crate::rpc::AuthSysParams;
 use crate::xdr::*;
 
 use super::basic::*;
@@ -61,27 +62,37 @@ impl Default for ChannelAttrs4 {
 
 /// Callback security parameters.
 #[derive(Debug, Clone)]
-pub struct CallbackSecParms4 {
-    pub cb_secflavor: u32,
+pub enum CallbackSecParms4 {
+    None,
+    Sys(AuthSysParams),
+    RpcSecGss(GssCbHandles4),
+}
+
+#[derive(Debug, Clone)]
+pub struct GssCbHandles4 {
+    pub service: u32,
+    pub handle_from_server: GssHandle4,
+    pub handle_from_client: GssHandle4,
 }
 
 impl XdrDecode for CallbackSecParms4 {
     fn decode(src: &mut Bytes) -> XdrResult<Self> {
         let cb_secflavor = u32::decode(src)?;
         match cb_secflavor {
-            0 => {}
-            1 => {
-                let _stamp = u32::decode(src)?;
-                let _machine = String::decode(src)?;
-                let _uid = u32::decode(src)?;
-                let _gid = u32::decode(src)?;
-                let _gids: Vec<u32> = decode_list(src)?;
-            }
-            _ => {}
+            0 => Ok(CallbackSecParms4::None),
+            1 => Ok(CallbackSecParms4::Sys(AuthSysParams::decode(src)?)),
+            6 => Ok(CallbackSecParms4::RpcSecGss(GssCbHandles4 {
+                service: u32::decode(src)?,
+                handle_from_server: decode_opaque(src)?,
+                handle_from_client: decode_opaque(src)?,
+            })),
+            _ => Err(XdrError::InvalidEnum(cb_secflavor)),
         }
-        Ok(CallbackSecParms4 { cb_secflavor })
     }
 }
+
+pub type GssHandle4 = Vec<u8>;
+pub type SecOid4 = Vec<u8>;
 
 #[derive(Debug, Clone)]
 pub struct ClientOwner4 {
@@ -94,7 +105,7 @@ impl XdrDecode for ClientOwner4 {
         let vdata = decode_fixed_opaque(src, 8)?;
         let mut verifier = [0u8; 8];
         verifier.copy_from_slice(&vdata);
-        let ownerid = decode_opaque(src)?;
+        let ownerid = decode_opaque_max(src, 1024)?;
         Ok(ClientOwner4 { verifier, ownerid })
     }
 }
@@ -102,23 +113,40 @@ impl XdrDecode for ClientOwner4 {
 #[derive(Debug)]
 pub enum StateProtect4A {
     None,
-    MachCred { ops: StateProt4MachOps },
-    Ssv { ssv: SsvProtInfo4 },
+    MachCred { ops: StateProtectOps4 },
+    Ssv { parms: SsvSpParms4 },
 }
 
 #[derive(Debug)]
-pub struct StateProt4MachOps {
+pub struct StateProtectOps4 {
     pub enforce: Bitmap4,
     pub allow: Bitmap4,
 }
 
+impl XdrEncode for StateProtectOps4 {
+    fn encode(&self, dst: &mut BytesMut) {
+        self.enforce.encode(dst);
+        self.allow.encode(dst);
+    }
+}
+
 #[derive(Debug)]
-pub struct SsvProtInfo4 {
-    pub ops: StateProt4MachOps,
-    pub hash_algs: Vec<u32>,
-    pub encr_algs: Vec<u32>,
+pub struct SsvSpParms4 {
+    pub ops: StateProtectOps4,
+    pub hash_algs: Vec<SecOid4>,
+    pub encr_algs: Vec<SecOid4>,
     pub window: u32,
     pub num_gss_handles: u32,
+}
+
+#[derive(Debug)]
+pub struct SsvProtInfo4 {
+    pub ops: StateProtectOps4,
+    pub hash_alg: u32,
+    pub encr_alg: u32,
+    pub ssv_len: u32,
+    pub window: u32,
+    pub handles: Vec<GssHandle4>,
 }
 
 #[derive(Debug, Clone)]
@@ -214,6 +242,29 @@ pub struct DelegReturnArgs4 {
 #[derive(Debug)]
 pub enum StateProtect4R {
     None,
+    MachCred { ops: StateProtectOps4 },
+    Ssv { info: SsvProtInfo4 },
+}
+
+impl XdrEncode for StateProtect4R {
+    fn encode(&self, dst: &mut BytesMut) {
+        match self {
+            StateProtect4R::None => 0u32.encode(dst),
+            StateProtect4R::MachCred { ops } => {
+                1u32.encode(dst);
+                ops.encode(dst);
+            }
+            StateProtect4R::Ssv { info } => {
+                2u32.encode(dst);
+                info.ops.encode(dst);
+                info.hash_alg.encode(dst);
+                info.encr_alg.encode(dst);
+                info.ssv_len.encode(dst);
+                info.window.encode(dst);
+                info.handles.encode(dst);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -304,6 +304,56 @@ async fn test_exchange_id_different_names_different_clients() {
     assert_ne!(clientid1, clientid2);
 }
 
+/// BACKCHANNEL_CTL with RFC-compliant RPCSEC_GSS callback parameters reaches operation-level `NFS4ERR_NOTSUPP`.
+/// Origin: RFC 8881 callback security grammar; no direct pynfs one-to-one case.
+/// RFC: RFC 8881 §18.33.1, §18.33.2.
+#[tokio::test]
+async fn test_backchannel_ctl_rpcsec_gss_callback_params_reaches_notsupp() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let backchannel_ctl = encode_backchannel_ctl_rpcsec_gss(99, 1, b"fore-handle", b"back-handle");
+    let compound = encode_compound("backchannel-gss", &[&seq_op, &backchannel_ctl]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Notsupp as u32);
+    assert_eq!(num_results, 2);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_SEQUENCE);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    skip_sequence_res(&mut resp);
+
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_BACKCHANNEL_CTL);
+    assert_eq!(op_status, NfsStat4::Notsupp as u32);
+}
+
+/// Malformed AUTH_SYS credentials are rejected with RPC `AUTH_BADCRED`.
+/// Origin: RFC 5531 AUTH_SYS length bounds; no direct pynfs one-to-one case.
+/// RFC: RFC 5531 Appendix A.
+#[tokio::test]
+async fn test_overlong_auth_sys_credential_returns_auth_badcred() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let authsys = encode_auth_sys_body(&"x".repeat(300), &(0..17u32).collect::<Vec<_>>());
+    let cred = OpaqueAuth {
+        flavor: AuthFlavor::Sys as u32,
+        body: authsys,
+    };
+
+    let compound = encode_compound("authsys-too-long", &[]);
+    let mut resp =
+        send_rpc_with_auth(&mut stream, 1, 1, &compound, &cred, &OpaqueAuth::null()).await;
+    let (xid, auth_stat) = parse_rpc_auth_error(&mut resp);
+    assert_eq!(xid, 1);
+    assert_eq!(auth_stat, AuthStat::BadCred as u32);
+}
+
 /// COMPOUND with a long tag echoes the tag correctly.
 /// Origin: RFC 8881 §2.10.6.2; no direct pynfs case.
 /// RFC: RFC 8881 §2.10.6.2.

@@ -137,13 +137,13 @@ async fn test_exchange_id_reuses_existing_client_when_verifier_matches() {
     let state = StateManager::new();
     let args = exchange_id_args(b"owner", [0x11; 8]);
 
-    let first = state.exchange_id(&args).await;
+    let first = state.exchange_id(&args).await.unwrap();
     state
         .create_session(&create_session_args(first.clientid, first.sequenceid), 1)
         .await
         .unwrap();
 
-    let second = state.exchange_id(&args).await;
+    let second = state.exchange_id(&args).await.unwrap();
 
     assert_eq!(second.clientid, first.clientid);
     assert_eq!(
@@ -157,7 +157,8 @@ async fn test_exchange_id_reboot_drops_old_state_after_new_create_session() {
     let state = StateManager::new();
     let original = state
         .exchange_id(&exchange_id_args(b"owner", [0x11; 8]))
-        .await;
+        .await
+        .unwrap();
     let original_session = state
         .create_session(
             &create_session_args(original.clientid, original.sequenceid),
@@ -179,7 +180,8 @@ async fn test_exchange_id_reboot_drops_old_state_after_new_create_session() {
 
     let rebooted = state
         .exchange_id(&exchange_id_args(b"owner", [0x22; 8]))
-        .await;
+        .await
+        .unwrap();
     assert_ne!(rebooted.clientid, original.clientid);
     assert_eq!(
         state.session_clientid(&original_session.sessionid).await,

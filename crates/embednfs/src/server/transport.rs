@@ -106,6 +106,11 @@ impl<F: FileSystem> NfsServer<F> {
             return Some(response.freeze());
         }
 
+        if let Err(auth) = Self::validate_rpc_auth(&call) {
+            encode_rpc_reply_auth_error(&mut response, call.xid, auth);
+            return Some(response.freeze());
+        }
+
         match call.proc_num {
             0 => encode_rpc_reply_accepted(&mut response, call.xid),
             1 => {
