@@ -80,6 +80,12 @@ If an abstraction is wrong, rewrite it. Large-scale rewrites are encouraged. Lay
 
 Doc comments on every public item. `cargo doc` should produce useful, navigable documentation. The README should cover what the library is, how to use it, and a minimal example.
 
+### Lint Suppressions
+
+Any lint suppression in non-test code must have an explicit explanation. This includes `#[allow(...)]`, `#![allow(...)]`, `#[expect(...)]`, and `#![expect(...)]`, including forms nested inside `cfg_attr`.
+
+Use the narrowest scope possible and include a `reason = "..."` that explains why the suppression is necessary and why fixing the underlying lint directly is not the better option.
+
 ### Panic and Unsafe Policy
 
 `panic!`, `unwrap()`, and `expect()` are allowed in non-test code when they keep the implementation clearer than propagating an error that is not usefully recoverable. Each such site must have an immediately preceding comment that explains the invariant, why the failure is considered unrecoverable, or why crashing is preferable to additional error plumbing there.
