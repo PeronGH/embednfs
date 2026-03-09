@@ -206,6 +206,22 @@ pub fn decode_fixed_opaque(src: &mut Bytes, len: usize) -> XdrResult<Vec<u8>> {
     Ok(data)
 }
 
+/// Decode a fixed-length opaque directly into a byte array, avoiding allocation.
+#[inline]
+pub fn decode_fixed_array<const N: usize>(src: &mut Bytes) -> XdrResult<[u8; N]> {
+    let padded = N + xdr_pad(N);
+    if src.remaining() < padded {
+        return Err(XdrError::Underflow);
+    }
+    let mut arr = [0u8; N];
+    src.copy_to_slice(&mut arr);
+    let pad = xdr_pad(N);
+    if pad > 0 {
+        src.advance(pad);
+    }
+    Ok(arr)
+}
+
 impl XdrEncode for Vec<u8> {
     fn encode(&self, dst: &mut BytesMut) {
         encode_opaque(dst, self);

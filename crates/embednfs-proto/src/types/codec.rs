@@ -610,17 +610,11 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
                     0 => Createhow4::Unchecked(Fattr4::decode(src)?),
                     1 => Createhow4::Guarded(Fattr4::decode(src)?),
                     2 => {
-                        let vdata = decode_fixed_opaque(src, 8)?;
-                        let mut v = [0u8; 8];
-                        v.copy_from_slice(&vdata);
-                        Createhow4::Exclusive(v)
+                        Createhow4::Exclusive(decode_fixed_array::<8>(src)?)
                     }
                     3 => {
-                        let vdata = decode_fixed_opaque(src, 8)?;
-                        let mut v = [0u8; 8];
-                        v.copy_from_slice(&vdata);
                         Createhow4::Exclusive4_1 {
-                            verifier: v,
+                            verifier: decode_fixed_array::<8>(src)?,
                             attrs: Fattr4::decode(src)?,
                         }
                     }
@@ -678,9 +672,7 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
         })),
         OP_READDIR => {
             let cookie = u64::decode(src)?;
-            let cvdata = decode_fixed_opaque(src, 8)?;
-            let mut cookieverf = [0u8; 8];
-            cookieverf.copy_from_slice(&cvdata);
+            let cookieverf = decode_fixed_array::<8>(src)?;
             Ok(NfsArgop4::Readdir(ReaddirArgs4 {
                 cookie,
                 cookieverf,
@@ -755,17 +747,13 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             sec_parms: decode_list(src)?,
         })),
         OP_DESTROY_SESSION => {
-            let sid = decode_fixed_opaque(src, 16)?;
-            let mut sessionid = [0u8; 16];
-            sessionid.copy_from_slice(&sid);
-            Ok(NfsArgop4::DestroySession(DestroySessionArgs4 { sessionid }))
+            Ok(NfsArgop4::DestroySession(DestroySessionArgs4 {
+                sessionid: decode_fixed_array::<16>(src)?,
+            }))
         }
         OP_SEQUENCE => {
-            let sid = decode_fixed_opaque(src, 16)?;
-            let mut sessionid = [0u8; 16];
-            sessionid.copy_from_slice(&sid);
             Ok(NfsArgop4::Sequence(SequenceArgs4 {
-                sessionid,
+                sessionid: decode_fixed_array::<16>(src)?,
                 sequenceid: u32::decode(src)?,
                 slotid: u32::decode(src)?,
                 highest_slotid: u32::decode(src)?,
@@ -779,11 +767,8 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             clientid: u64::decode(src)?,
         })),
         OP_BIND_CONN_TO_SESSION => {
-            let sid = decode_fixed_opaque(src, 16)?;
-            let mut sessionid = [0u8; 16];
-            sessionid.copy_from_slice(&sid);
             Ok(NfsArgop4::BindConnToSession(BindConnToSessionArgs4 {
-                sessionid,
+                sessionid: decode_fixed_array::<16>(src)?,
                 dir: u32::decode(src)?,
                 use_conn_in_rdma_mode: bool::decode(src)?,
             }))
@@ -799,9 +784,7 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             stateid: Stateid4::decode(src)?,
         })),
         OP_SETCLIENTID => {
-            let vdata = decode_fixed_opaque(src, 8)?;
-            let mut verifier = [0u8; 8];
-            verifier.copy_from_slice(&vdata);
+            let verifier = decode_fixed_array::<8>(src)?;
             let ownerid = decode_opaque_max(src, 1024)?;
             let _client = ClientOwner4 { verifier, ownerid };
             let _cb_program = u32::decode(src)?;
@@ -814,7 +797,7 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
         }
         OP_SETCLIENTID_CONFIRM => {
             let _clientid = u64::decode(src)?;
-            let _verifier = decode_fixed_opaque(src, 8)?;
+            let _verifier = decode_fixed_array::<8>(src)?;
             Ok(NfsArgop4::MustNotImplement(
                 MustNotImplementOp4::SetClientIdConfirm,
             ))
@@ -902,7 +885,7 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             Ok(NfsArgop4::GetDirDelegation)
         }
         OP_GETDEVICEINFO => {
-            let _deviceid = decode_fixed_opaque(src, 16)?;
+            let _deviceid = decode_fixed_array::<16>(src)?;
             let _layout_type = u32::decode(src)?;
             let _maxcount = u32::decode(src)?;
             let _notif_types = Bitmap4::decode(src)?;
@@ -912,7 +895,7 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             let _layout_type = u32::decode(src)?;
             let _maxdevices = u32::decode(src)?;
             let _cookie = u64::decode(src)?;
-            let _vdata = decode_fixed_opaque(src, 8)?;
+            let _vdata = decode_fixed_array::<8>(src)?;
             Ok(NfsArgop4::GetDeviceList)
         }
         OP_LAYOUTCOMMIT => {

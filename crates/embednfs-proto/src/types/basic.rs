@@ -355,9 +355,12 @@ impl XdrEncode for Stateid4 {
 impl XdrDecode for Stateid4 {
     fn decode(src: &mut Bytes) -> XdrResult<Self> {
         let seqid = u32::decode(src)?;
-        let other_data = decode_fixed_opaque(src, 12)?;
+        // 12 bytes is 4-byte aligned, so no padding — read directly into array.
+        if src.remaining() < 12 {
+            return Err(XdrError::Underflow);
+        }
         let mut other = [0u8; 12];
-        other.copy_from_slice(&other_data);
+        src.copy_to_slice(&mut other);
         Ok(Stateid4 { seqid, other })
     }
 }

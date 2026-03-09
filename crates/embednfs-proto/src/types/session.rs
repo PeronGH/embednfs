@@ -102,9 +102,7 @@ pub struct ClientOwner4 {
 
 impl XdrDecode for ClientOwner4 {
     fn decode(src: &mut Bytes) -> XdrResult<Self> {
-        let vdata = decode_fixed_opaque(src, 8)?;
-        let mut verifier = [0u8; 8];
-        verifier.copy_from_slice(&vdata);
+        let verifier = decode_fixed_array::<8>(src)?;
         let ownerid = decode_opaque_max(src, 1024)?;
         Ok(ClientOwner4 { verifier, ownerid })
     }
