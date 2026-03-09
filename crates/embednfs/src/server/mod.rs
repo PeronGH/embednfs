@@ -260,9 +260,10 @@ impl<F: FileSystem> NfsServer<F> {
         id: ObjectId,
         offset: u64,
         data: Bytes,
+        requested: WriteStability,
     ) -> NfsResult<WriteResult> {
         let handle = self.resolve_backend_handle(id).await?;
-        self.fs.write(ctx, &handle, offset, data).await
+        self.fs.write(ctx, &handle, offset, data, requested).await
     }
 
     async fn create_file(

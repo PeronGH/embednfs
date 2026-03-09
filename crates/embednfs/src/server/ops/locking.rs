@@ -2,6 +2,7 @@ use embednfs_proto::*;
 
 use crate::fs::{FileSystem, RequestContext};
 use crate::internal::ServerFileType;
+use crate::session::{CurrentStateidMode, NormalizedStateid, ResolvedStateid};
 
 use super::super::NfsServer;
 
@@ -11,6 +12,8 @@ impl<F: FileSystem> NfsServer<F> {
         request_ctx: &RequestContext,
         args: &LockArgs4,
         current_fh: &Option<NfsFh4>,
+        current_stateid: Option<Stateid4>,
+        sequence_clientid: Option<Clientid4>,
     ) -> NfsResop4 {
         let (_, object) = match self.resolve_object(current_fh).await {
             Ok(resolved) => resolved,
@@ -27,9 +30,37 @@ impl<F: FileSystem> NfsServer<F> {
         ) {
             return NfsResop4::Lock(NfsStat4::Isdir, None, None);
         }
+        if let Err(status) = self.state.validate_lock_bounds(args.offset, args.length) {
+            return NfsResop4::Lock(status, None, None);
+        }
+
+        let clientid = match sequence_clientid {
+            Some(clientid) => clientid,
+            None => return NfsResop4::Lock(NfsStat4::BadStateid, None, None),
+        };
 
         match &args.locker {
             Locker4::NewLockOwner(new_owner) => {
+                let open_stateid = match self.state.normalize_stateid(
+                    &new_owner.open_stateid,
+                    current_stateid,
+                    CurrentStateidMode::ZeroSeqid,
+                ) {
+                    Ok(NormalizedStateid::Concrete(stateid)) => stateid,
+                    Ok(NormalizedStateid::Anonymous | NormalizedStateid::Bypass) => {
+                        return NfsResop4::Lock(NfsStat4::BadStateid, None, None);
+                    }
+                    Err(status) => return NfsResop4::Lock(status, None, None),
+                };
+                match self
+                    .state
+                    .resolve_stateid(clientid, &open_stateid, None, CurrentStateidMode::ZeroSeqid)
+                    .await
+                {
+                    Ok(ResolvedStateid::Open(open)) if open.object == object => {}
+                    Ok(_) => return NfsResop4::Lock(NfsStat4::Openmode, None, None),
+                    Err(status) => return NfsResop4::Lock(status, None, None),
+                }
                 if let Some(denied) = self
                     .state
                     .find_lock_conflict(
@@ -47,7 +78,7 @@ impl<F: FileSystem> NfsServer<F> {
                 match self
                     .state
                     .create_lock_state(
-                        &new_owner.open_stateid,
+                        &open_stateid,
                         &new_owner.lock_owner,
                         object,
                         args.locktype,
@@ -61,14 +92,28 @@ impl<F: FileSystem> NfsServer<F> {
                 }
             }
             Locker4::ExistingLockOwner(existing) => {
-                let (lock_object, owner) =
-                    match self.state.lock_state_info(&existing.lock_stateid).await {
-                        Some(info) => info,
-                        None => return NfsResop4::Lock(NfsStat4::BadStateid, None, None),
-                    };
-                if lock_object != object {
-                    return NfsResop4::Lock(NfsStat4::BadStateid, None, None);
-                }
+                let lock_stateid = match self.state.normalize_stateid(
+                    &existing.lock_stateid,
+                    current_stateid,
+                    CurrentStateidMode::ZeroSeqid,
+                ) {
+                    Ok(NormalizedStateid::Concrete(stateid)) => stateid,
+                    Ok(NormalizedStateid::Anonymous | NormalizedStateid::Bypass) => {
+                        return NfsResop4::Lock(NfsStat4::BadStateid, None, None);
+                    }
+                    Err(status) => return NfsResop4::Lock(status, None, None),
+                };
+                let (_lock_object, owner) = match self
+                    .state
+                    .resolve_stateid(clientid, &lock_stateid, None, CurrentStateidMode::ZeroSeqid)
+                    .await
+                {
+                    Ok(ResolvedStateid::Lock(lock)) if lock.object == object => {
+                        (lock.object, lock.owner)
+                    }
+                    Ok(_) => return NfsResop4::Lock(NfsStat4::BadStateid, None, None),
+                    Err(status) => return NfsResop4::Lock(status, None, None),
+                };
                 if let Some(denied) = self
                     .state
                     .find_lock_conflict(
@@ -77,7 +122,7 @@ impl<F: FileSystem> NfsServer<F> {
                         args.locktype,
                         args.offset,
                         args.length,
-                        Some(&existing.lock_stateid),
+                        Some(&lock_stateid),
                     )
                     .await
                 {
@@ -85,12 +130,7 @@ impl<F: FileSystem> NfsServer<F> {
                 }
                 match self
                     .state
-                    .update_lock_state(
-                        &existing.lock_stateid,
-                        args.locktype,
-                        args.offset,
-                        args.length,
-                    )
+                    .update_lock_state(&lock_stateid, args.locktype, args.offset, args.length)
                     .await
                 {
                     Ok(stateid) => NfsResop4::Lock(NfsStat4::Ok, Some(stateid), None),
@@ -120,6 +160,9 @@ impl<F: FileSystem> NfsServer<F> {
         ) {
             return NfsResop4::Lockt(NfsStat4::Isdir, None);
         }
+        if let Err(status) = self.state.validate_lock_bounds(args.offset, args.length) {
+            return NfsResop4::Lockt(status, None);
+        }
         match self
             .state
             .find_lock_conflict(
@@ -137,10 +180,44 @@ impl<F: FileSystem> NfsServer<F> {
         }
     }
 
-    pub(crate) async fn op_locku(&self, args: &LockuArgs4) -> NfsResop4 {
+    pub(crate) async fn op_locku(
+        &self,
+        args: &LockuArgs4,
+        current_fh: &Option<NfsFh4>,
+        current_stateid: Option<Stateid4>,
+        sequence_clientid: Option<Clientid4>,
+    ) -> NfsResop4 {
+        let (_, object) = match self.resolve_object(current_fh).await {
+            Ok(resolved) => resolved,
+            Err(status) => return NfsResop4::Locku(status, None),
+        };
+        let clientid = match sequence_clientid {
+            Some(clientid) => clientid,
+            None => return NfsResop4::Locku(NfsStat4::BadStateid, None),
+        };
+        let stateid = match self.state.normalize_stateid(
+            &args.lock_stateid,
+            current_stateid,
+            CurrentStateidMode::ZeroSeqid,
+        ) {
+            Ok(NormalizedStateid::Concrete(stateid)) => stateid,
+            Ok(NormalizedStateid::Anonymous | NormalizedStateid::Bypass) => {
+                return NfsResop4::Locku(NfsStat4::BadStateid, None);
+            }
+            Err(status) => return NfsResop4::Locku(status, None),
+        };
         match self
             .state
-            .unlock_state(&args.lock_stateid, args.offset, args.length)
+            .resolve_stateid(clientid, &stateid, None, CurrentStateidMode::ZeroSeqid)
+            .await
+        {
+            Ok(ResolvedStateid::Lock(lock)) if lock.object == object => {}
+            Ok(_) => return NfsResop4::Locku(NfsStat4::BadStateid, None),
+            Err(status) => return NfsResop4::Locku(status, None),
+        }
+        match self
+            .state
+            .unlock_state(&stateid, args.offset, args.length)
             .await
         {
             Ok(stateid) => NfsResop4::Locku(NfsStat4::Ok, Some(stateid)),

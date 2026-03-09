@@ -5,6 +5,7 @@ use crate::fs::{FileSystem, RequestContext};
 use crate::internal::{ServerFileType, ServerObject};
 
 use super::super::NfsServer;
+use super::file::IoStateContext;
 
 impl<F: FileSystem> NfsServer<F> {
     pub(crate) async fn op_access(
@@ -87,6 +88,8 @@ impl<F: FileSystem> NfsServer<F> {
         request_ctx: &RequestContext,
         args: &SetattrArgs4,
         current_fh: &Option<NfsFh4>,
+        current_stateid: Option<Stateid4>,
+        sequence_clientid: Option<Clientid4>,
     ) -> NfsResop4 {
         let (_, object) = match self.resolve_object(current_fh).await {
             Ok(resolved) => resolved,
@@ -97,6 +100,31 @@ impl<F: FileSystem> NfsServer<F> {
             Ok(attrs) => attrs,
             Err(status) => return NfsResop4::Setattr(status, Bitmap4::new()),
         };
+
+        if let Some(new_size) = set_attrs.size {
+            let current_attr = match self.build_attr(request_ctx, &object).await {
+                Ok(attr) => attr,
+                Err(e) => return NfsResop4::Setattr(e.to_nfsstat4(), Bitmap4::new()),
+            };
+            let offset = current_attr.size.min(new_size);
+            let length = current_attr.size.max(new_size) - offset;
+            if let Err(status) = self
+                .validate_io_stateid(
+                    &object,
+                    &args.stateid,
+                    IoStateContext {
+                        current_stateid,
+                        sequence_clientid,
+                        is_write: true,
+                        offset,
+                        length,
+                    },
+                )
+                .await
+            {
+                return NfsResop4::Setattr(status, Bitmap4::new());
+            }
+        }
 
         let status = match object.clone() {
             ServerObject::Fs(id) => match self.setattr_real(request_ctx, id, &set_attrs).await {

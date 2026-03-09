@@ -121,7 +121,8 @@ async fn test_close_valid_stateid() {
     let seq_op = encode_sequence(&sessionid, 1, 0);
     let rootfh_op = encode_putrootfh();
     let open_op = encode_open_create("close-test.txt");
-    let compound = encode_compound("open", &[&seq_op, &rootfh_op, &open_op]);
+    let getfh_op = encode_getfh();
+    let compound = encode_compound("open", &[&seq_op, &rootfh_op, &open_op, &getfh_op]);
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, _) = parse_compound_header(&mut resp);
@@ -131,19 +132,23 @@ async fn test_close_valid_stateid() {
     let _ = parse_op_header(&mut resp);
     let _ = parse_op_header(&mut resp);
     let stateid = skip_open_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let fh = parse_getfh(&mut resp);
 
     // Close
     let seq_op = encode_sequence(&sessionid, 2, 0);
+    let putfh_op = encode_putfh(&fh);
     let close_op = encode_close(&stateid);
-    let compound = encode_compound("close", &[&seq_op, &close_op]);
+    let compound = encode_compound("close", &[&seq_op, &putfh_op, &close_op]);
     let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
     parse_rpc_reply(&mut resp);
 
     let (status, _, num_results) = parse_compound_header(&mut resp);
     assert_eq!(status, NfsStat4::Ok as u32);
-    assert_eq!(num_results, 2);
+    assert_eq!(num_results, 3);
     let _ = parse_op_header(&mut resp);
     skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
     let (opnum, op_status) = parse_op_header(&mut resp);
     assert_eq!(opnum, OP_CLOSE);
     assert_eq!(op_status, NfsStat4::Ok as u32);
@@ -163,14 +168,16 @@ async fn test_close_bad_stateid() {
         other: [0xAA; 12],
     };
     let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
     let close_op = encode_close(&bogus);
-    let compound = encode_compound("close-bad", &[&seq_op, &close_op]);
+    let compound = encode_compound("close-bad", &[&seq_op, &rootfh_op, &close_op]);
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
 
     let (status, _, _) = parse_compound_header(&mut resp);
     let _ = parse_op_header(&mut resp);
     skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
     let (opnum, op_status) = parse_op_header(&mut resp);
     assert_eq!(opnum, OP_CLOSE);
     assert_eq!(status, op_status);

@@ -7,7 +7,7 @@ use tokio::sync::Notify;
 use embednfs::{
     AccessMask, Attrs, CommitSupport, CreateRequest, CreateResult, DirPage, FileSystem, FsError,
     FsResult, FsStats, HardLinks, MemFs, ReadResult, RequestContext, SetAttrs, Symlinks,
-    WriteResult, XattrSetMode, Xattrs,
+    WriteResult, WriteStability, XattrSetMode, Xattrs,
 };
 
 pub struct BlockingRemoveFs {
@@ -30,6 +30,11 @@ pub struct FailPostMutationRootStatFs {
 pub struct FailFirstRootStatFs {
     pub inner: MemFs,
     pub root_stat_calls: AtomicUsize,
+}
+
+pub struct ForcedWriteStabilityFs {
+    pub inner: MemFs,
+    pub stability: WriteStability,
 }
 
 #[async_trait::async_trait]
@@ -101,8 +106,9 @@ impl FileSystem for BlockingRemoveFs {
         handle: &Self::Handle,
         offset: u64,
         data: Bytes,
+        requested: WriteStability,
     ) -> FsResult<WriteResult> {
-        self.inner.write(ctx, handle, offset, data).await
+        self.inner.write(ctx, handle, offset, data, requested).await
     }
     async fn create(
         &self,
@@ -226,8 +232,9 @@ impl FileSystem for CountingNamedAttrFs {
         handle: &Self::Handle,
         offset: u64,
         data: Bytes,
+        requested: WriteStability,
     ) -> FsResult<WriteResult> {
-        self.inner.write(ctx, handle, offset, data).await
+        self.inner.write(ctx, handle, offset, data, requested).await
     }
     async fn create(
         &self,
@@ -379,8 +386,9 @@ impl FileSystem for FailPostMutationRootStatFs {
         handle: &Self::Handle,
         offset: u64,
         data: Bytes,
+        requested: WriteStability,
     ) -> FsResult<WriteResult> {
-        self.inner.write(ctx, handle, offset, data).await
+        self.inner.write(ctx, handle, offset, data, requested).await
     }
     async fn create(
         &self,
@@ -493,8 +501,126 @@ impl FileSystem for FailFirstRootStatFs {
         handle: &Self::Handle,
         offset: u64,
         data: Bytes,
+        requested: WriteStability,
     ) -> FsResult<WriteResult> {
-        self.inner.write(ctx, handle, offset, data).await
+        self.inner.write(ctx, handle, offset, data, requested).await
+    }
+    async fn create(
+        &self,
+        ctx: &RequestContext,
+        parent: &Self::Handle,
+        name: &str,
+        req: CreateRequest,
+    ) -> FsResult<CreateResult<Self::Handle>> {
+        self.inner.create(ctx, parent, name, req).await
+    }
+    async fn remove(
+        &self,
+        ctx: &RequestContext,
+        parent: &Self::Handle,
+        name: &str,
+    ) -> FsResult<()> {
+        self.inner.remove(ctx, parent, name).await
+    }
+    async fn rename(
+        &self,
+        ctx: &RequestContext,
+        from_dir: &Self::Handle,
+        from_name: &str,
+        to_dir: &Self::Handle,
+        to_name: &str,
+    ) -> FsResult<()> {
+        self.inner
+            .rename(ctx, from_dir, from_name, to_dir, to_name)
+            .await
+    }
+    async fn setattr(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        attrs: &SetAttrs,
+    ) -> FsResult<Attrs> {
+        self.inner.setattr(ctx, handle, attrs).await
+    }
+}
+
+#[async_trait::async_trait]
+impl FileSystem for ForcedWriteStabilityFs {
+    type Handle = u64;
+
+    fn root(&self) -> Self::Handle {
+        self.inner.root()
+    }
+    fn capabilities(&self) -> embednfs::FsCapabilities {
+        self.inner.capabilities()
+    }
+    fn limits(&self) -> embednfs::FsLimits {
+        self.inner.limits()
+    }
+    async fn statfs(&self, ctx: &RequestContext) -> FsResult<FsStats> {
+        self.inner.statfs(ctx).await
+    }
+    async fn getattr(&self, ctx: &RequestContext, id: &u64) -> FsResult<Attrs> {
+        self.inner.getattr(ctx, id).await
+    }
+    async fn access(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        requested: AccessMask,
+    ) -> FsResult<AccessMask> {
+        self.inner.access(ctx, handle, requested).await
+    }
+    async fn lookup(
+        &self,
+        ctx: &RequestContext,
+        parent: &Self::Handle,
+        name: &str,
+    ) -> FsResult<Self::Handle> {
+        self.inner.lookup(ctx, parent, name).await
+    }
+    async fn parent(
+        &self,
+        ctx: &RequestContext,
+        dir: &Self::Handle,
+    ) -> FsResult<Option<Self::Handle>> {
+        self.inner.parent(ctx, dir).await
+    }
+    async fn readdir(
+        &self,
+        ctx: &RequestContext,
+        dir: &Self::Handle,
+        cookie: u64,
+        max_entries: u32,
+        with_attrs: bool,
+    ) -> FsResult<DirPage<Self::Handle>> {
+        self.inner
+            .readdir(ctx, dir, cookie, max_entries, with_attrs)
+            .await
+    }
+    async fn read(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        offset: u64,
+        count: u32,
+    ) -> FsResult<ReadResult> {
+        self.inner.read(ctx, handle, offset, count).await
+    }
+    async fn write(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        offset: u64,
+        data: Bytes,
+        requested: WriteStability,
+    ) -> FsResult<WriteResult> {
+        let mut result = self
+            .inner
+            .write(ctx, handle, offset, data, requested)
+            .await?;
+        result.stability = self.stability;
+        Ok(result)
     }
     async fn create(
         &self,

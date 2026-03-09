@@ -1,7 +1,8 @@
 use bytes::Bytes;
 
 use embednfs::{
-    CreateKind, CreateRequest, FileSystem, MemFs, RequestContext, SetAttrs, XattrSetMode, Xattrs,
+    CreateKind, CreateRequest, FileSystem, MemFs, RequestContext, SetAttrs, WriteStability,
+    XattrSetMode, Xattrs,
 };
 
 pub async fn populated_fs(names: &[&str]) -> MemFs {
@@ -84,8 +85,14 @@ pub async fn fs_with_data(file_name: &str, data: &[u8]) -> MemFs {
         .await
         .unwrap()
         .handle;
-    fs.write(&ctx, &fid, 0, Bytes::copy_from_slice(data))
-        .await
-        .unwrap();
+    fs.write(
+        &ctx,
+        &fid,
+        0,
+        Bytes::copy_from_slice(data),
+        WriteStability::FileSync,
+    )
+    .await
+    .unwrap();
     fs
 }

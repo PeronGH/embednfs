@@ -239,6 +239,269 @@ async fn test_locku_after_lock() {
     assert_eq!(op_status, NfsStat4::Ok as u32);
 }
 
+/// CLOSE with outstanding byte-range locks returns `NFS4ERR_LOCKS_HELD`.
+/// Origin: `pynfs/nfs4.0/servertests/st_lock.py` (CODE `LOCKHELD`) plus Apple client retry handling.
+/// RFC: RFC 8881 §18.2.3.
+#[tokio::test]
+async fn test_close_with_outstanding_locks_returns_locks_held_then_succeeds_after_unlock() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let (sessionid, clientid) = setup_session_full(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let open_op = encode_open_create("close-locked.txt");
+    let getfh_op = encode_getfh();
+    let compound = encode_compound(
+        "open-close-locked",
+        &[&seq_op, &rootfh_op, &open_op, &getfh_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let open_stateid = skip_open_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let file_fh = parse_getfh(&mut resp);
+
+    let seq_op = encode_sequence(&sessionid, 2, 0);
+    let putfh_op = encode_putfh(&file_fh);
+    let lock_op = encode_lock_new(
+        WRITE_LT,
+        false,
+        0,
+        u64::MAX,
+        &open_stateid,
+        b"close-locked-owner",
+        clientid,
+    );
+    let compound = encode_compound("lock-before-close", &[&seq_op, &putfh_op, &lock_op]);
+    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let lock_stateid = parse_lock_res(&mut resp);
+
+    let seq_op = encode_sequence(&sessionid, 3, 0);
+    let putfh_op = encode_putfh(&file_fh);
+    let close_op = encode_close(&open_stateid);
+    let compound = encode_compound("close-locked", &[&seq_op, &putfh_op, &close_op]);
+    let mut resp = send_rpc(&mut stream, 5, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::LocksHeld as u32);
+
+    let seq_op = encode_sequence(&sessionid, 4, 0);
+    let putfh_op = encode_putfh(&file_fh);
+    let locku_op = encode_locku(WRITE_LT, &lock_stateid, 0, u64::MAX);
+    let compound = encode_compound("unlock-before-close", &[&seq_op, &putfh_op, &locku_op]);
+    let mut resp = send_rpc(&mut stream, 6, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+
+    let seq_op = encode_sequence(&sessionid, 5, 0);
+    let putfh_op = encode_putfh(&file_fh);
+    let close_op = encode_close(&open_stateid);
+    let compound = encode_compound("close-after-unlock", &[&seq_op, &putfh_op, &close_op]);
+    let mut resp = send_rpc(&mut stream, 7, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+}
+
+/// LOCK with length zero returns `NFS4ERR_INVAL`.
+/// Origin: RFC-driven lock-range validation check.
+/// RFC: RFC 8881 §18.10.3.
+#[tokio::test]
+async fn test_lock_zero_length_returns_inval() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let (sessionid, clientid) = setup_session_full(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let open_op = encode_open_create("zero-length-lock.txt");
+    let getfh_op = encode_getfh();
+    let compound = encode_compound(
+        "open-zero-lock",
+        &[&seq_op, &rootfh_op, &open_op, &getfh_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let _ = parse_compound_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let open_stateid = skip_open_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let file_fh = parse_getfh(&mut resp);
+
+    let seq_op = encode_sequence(&sessionid, 2, 0);
+    let putfh_op = encode_putfh(&file_fh);
+    let lock_op = encode_lock_new(
+        WRITE_LT,
+        false,
+        0,
+        0,
+        &open_stateid,
+        b"zero-length-owner",
+        clientid,
+    );
+    let compound = encode_compound("lock-zero-length", &[&seq_op, &putfh_op, &lock_op]);
+    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Inval as u32);
+}
+
+/// LOCKT with length zero returns `NFS4ERR_INVAL`.
+/// Origin: RFC-driven lock-range validation check.
+/// RFC: RFC 8881 §18.10.3, §18.12.3.
+#[tokio::test]
+async fn test_lockt_zero_length_returns_inval() {
+    let fs = populated_fs(&["zero-length-lockt.txt"]).await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = connect(port).await;
+    let (sessionid, clientid) = setup_session_full(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_op = encode_lookup("zero-length-lockt.txt");
+    let lockt_op = encode_lockt(WRITE_LT, 0, 0, clientid, b"zero-length-lockt-owner");
+    let compound = encode_compound(
+        "lockt-zero-length",
+        &[&seq_op, &rootfh_op, &lookup_op, &lockt_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Inval as u32);
+}
+
+/// LOCKU with length zero returns `NFS4ERR_INVAL`.
+/// Origin: RFC-driven lock-range validation check.
+/// RFC: RFC 8881 §18.12.3.
+#[tokio::test]
+async fn test_locku_zero_length_returns_inval() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let (sessionid, clientid) = setup_session_full(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let open_op = encode_open_create("zero-length-locku.txt");
+    let getfh_op = encode_getfh();
+    let compound = encode_compound(
+        "open-zero-locku",
+        &[&seq_op, &rootfh_op, &open_op, &getfh_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let _ = parse_compound_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let open_stateid = skip_open_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let file_fh = parse_getfh(&mut resp);
+
+    let seq_op = encode_sequence(&sessionid, 2, 0);
+    let putfh_op = encode_putfh(&file_fh);
+    let lock_op = encode_lock_new(
+        WRITE_LT,
+        false,
+        0,
+        u64::MAX,
+        &open_stateid,
+        b"zero-length-locku-owner",
+        clientid,
+    );
+    let compound = encode_compound("lock-before-zero-unlock", &[&seq_op, &putfh_op, &lock_op]);
+    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let _ = parse_compound_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let lock_stateid = parse_lock_res(&mut resp);
+
+    let seq_op = encode_sequence(&sessionid, 3, 0);
+    let putfh_op = encode_putfh(&file_fh);
+    let locku_op = encode_locku(WRITE_LT, &lock_stateid, 0, 0);
+    let compound = encode_compound("locku-zero-length", &[&seq_op, &putfh_op, &locku_op]);
+    let mut resp = send_rpc(&mut stream, 5, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Inval as u32);
+}
+
+/// A `length` of `NFS4_UINT64_MAX` locks through end-of-file.
+/// Origin: RFC-driven open-ended range check.
+/// RFC: RFC 8881 §18.10.3.
+#[tokio::test]
+async fn test_lock_u64max_length_locks_to_end_of_file() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let (sessionid, clientid) = setup_session_full(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let open_op = encode_open_create("lock-to-eof.txt");
+    let getfh_op = encode_getfh();
+    let compound = encode_compound(
+        "open-lock-to-eof",
+        &[&seq_op, &rootfh_op, &open_op, &getfh_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let _ = parse_compound_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let open_stateid = skip_open_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let file_fh = parse_getfh(&mut resp);
+
+    let seq_op = encode_sequence(&sessionid, 2, 0);
+    let putfh_op = encode_putfh(&file_fh);
+    let lock_op = encode_lock_new(
+        WRITE_LT,
+        false,
+        10,
+        u64::MAX,
+        &open_stateid,
+        b"to-eof-owner",
+        clientid,
+    );
+    let compound = encode_compound("lock-to-eof", &[&seq_op, &putfh_op, &lock_op]);
+    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+
+    let seq_op = encode_sequence(&sessionid, 3, 0);
+    let putfh_op = encode_putfh(&file_fh);
+    let lockt_op = encode_lockt(WRITE_LT, 100, 10, clientid + 1, b"conflict-owner");
+    let compound = encode_compound("lockt-conflict-to-eof", &[&seq_op, &putfh_op, &lockt_op]);
+    let mut resp = send_rpc(&mut stream, 5, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Denied as u32);
+}
+
 /// LOCKU with a bad stateid returns an error.
 /// Origin: `pynfs/nfs4.0/servertests/st_locku.py` (CODE `LKU8`).
 /// RFC: RFC 8881 §18.12.3.

@@ -667,6 +667,7 @@ pub trait FileSystem: Send + Sync + 'static {
         handle: &Self::Handle,
         offset: u64,
         data: Bytes,
+        requested: WriteStability,
     ) -> FsResult<WriteResult>;
 
     /// Creates a regular file or directory.

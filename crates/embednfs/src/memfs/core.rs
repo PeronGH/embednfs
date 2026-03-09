@@ -175,6 +175,7 @@ impl FileSystem for MemFs {
         handle: &Self::Handle,
         offset: u64,
         data: Bytes,
+        _requested: WriteStability,
     ) -> FsResult<WriteResult> {
         let mut inner = self.inner.write().await;
         let inode = inner.inodes.get_mut(handle).ok_or(FsError::Stale)?;

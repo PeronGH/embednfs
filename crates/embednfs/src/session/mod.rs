@@ -17,6 +17,7 @@ mod metadata;
 mod model;
 mod opens;
 mod sequence;
+mod stateids;
 #[cfg(test)]
 mod tests;
 
@@ -26,7 +27,8 @@ const MAX_CACHED_RESPONSE: u32 = 6144;
 const SYNTH_FILEID_BASE: u64 = 1u64 << 63;
 
 use model::StateInner;
-pub(crate) use model::{SequenceReplay, SynthMeta};
+pub(crate) use model::{ResolvedStateid, SequenceReplay, SynthMeta};
+pub(crate) use stateids::{CurrentStateidMode, NormalizedStateid};
 
 /// Manages all server-side state.
 pub struct StateManager {

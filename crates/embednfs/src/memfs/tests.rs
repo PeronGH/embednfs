@@ -2,7 +2,7 @@ use bytes::Bytes;
 
 use crate::fs::{
     AccessMask, AuthContext, CreateKind, CreateRequest, FileSystem, ObjectType, RequestContext,
-    SetAttrs, XattrSetMode, Xattrs,
+    SetAttrs, WriteStability, XattrSetMode, Xattrs,
 };
 
 use super::MemFs;
@@ -25,7 +25,13 @@ async fn create_write_read_round_trip() {
         .unwrap();
 
     let written = fs
-        .write(&ctx, &created.handle, 0, Bytes::from_static(b"hello world"))
+        .write(
+            &ctx,
+            &created.handle,
+            0,
+            Bytes::from_static(b"hello world"),
+            WriteStability::FileSync,
+        )
         .await
         .unwrap();
     assert_eq!(written.written, 11);

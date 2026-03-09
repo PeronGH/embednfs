@@ -68,7 +68,7 @@ async fn test_test_stateids_recognizes_open_and_lock_stateids() {
         other: [0x55; 12],
     };
     let results = state
-        .test_stateids(&[open_stateid, lock_stateid, unknown])
+        .test_stateids(&[open_stateid, lock_stateid, unknown], None)
         .await;
     assert_eq!(
         results,
@@ -103,20 +103,23 @@ async fn test_test_stateids_checks_nonzero_seqids() {
         .unwrap();
 
     let results = state
-        .test_stateids(&[
-            Stateid4 {
-                seqid: 0,
-                other: downgraded.other,
-            },
-            open_stateid,
-            downgraded,
-            lock_stateid,
-            updated_lock,
-            Stateid4 {
-                seqid: updated_lock.seqid.wrapping_add(1),
-                other: updated_lock.other,
-            },
-        ])
+        .test_stateids(
+            &[
+                Stateid4 {
+                    seqid: 0,
+                    other: downgraded.other,
+                },
+                open_stateid,
+                downgraded,
+                lock_stateid,
+                updated_lock,
+                Stateid4 {
+                    seqid: updated_lock.seqid.wrapping_add(1),
+                    other: updated_lock.other,
+                },
+            ],
+            None,
+        )
         .await;
 
     assert_eq!(
@@ -188,7 +191,9 @@ async fn test_exchange_id_reboot_drops_old_state_after_new_create_session() {
         Some(original.clientid)
     );
     assert_eq!(
-        state.test_stateids(&[open_stateid, lock_stateid]).await,
+        state
+            .test_stateids(&[open_stateid, lock_stateid], None)
+            .await,
         vec![NfsStat4::Ok, NfsStat4::Ok]
     );
 
@@ -205,7 +210,9 @@ async fn test_exchange_id_reboot_drops_old_state_after_new_create_session() {
         None
     );
     assert_eq!(
-        state.test_stateids(&[open_stateid, lock_stateid]).await,
+        state
+            .test_stateids(&[open_stateid, lock_stateid], None)
+            .await,
         vec![NfsStat4::BadStateid, NfsStat4::BadStateid]
     );
 }

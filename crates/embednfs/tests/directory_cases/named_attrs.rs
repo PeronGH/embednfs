@@ -453,7 +453,11 @@ async fn test_named_attr_reopen_and_replace_value() {
     let rootfh_op = encode_putrootfh();
     let lookup_file_op = encode_lookup("notes.txt");
     let openattr_op = encode_openattr(true);
-    let open_xattr_op = encode_open_nocreate("user.demo");
+    let open_xattr_op = encode_open_nocreate_with_access(
+        "user.demo",
+        OPEN4_SHARE_ACCESS_BOTH,
+        OPEN4_SHARE_DENY_NONE,
+    );
     let getfh_op = encode_getfh();
     let compound = encode_compound(
         "named-attr-reopen",

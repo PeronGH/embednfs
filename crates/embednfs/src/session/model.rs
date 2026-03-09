@@ -33,7 +33,7 @@ pub(crate) struct SynthMeta {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct LockRange {
+pub(crate) struct LockRange {
     pub locktype: NfsLockType4,
     pub offset: u64,
     pub length: u64,
@@ -43,9 +43,33 @@ pub(super) struct LockRange {
 pub(super) struct LockFileState {
     pub object: ServerObject,
     pub owner: StateOwner4,
+    pub open_state_other: [u8; 12],
     pub ranges: Vec<LockRange>,
     pub active: bool,
     pub stateid_seq: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedOpenState {
+    pub other: [u8; 12],
+    pub object: ServerObject,
+    pub share_access: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedLockState {
+    pub other: [u8; 12],
+    pub object: ServerObject,
+    pub owner: StateOwner4,
+    pub open_state: ResolvedOpenState,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ResolvedStateid {
+    Anonymous,
+    Bypass,
+    Open(ResolvedOpenState),
+    Lock(ResolvedLockState),
 }
 
 pub(super) struct StateInner {
@@ -102,6 +126,7 @@ pub(super) struct OpenFileState {
     pub object: ServerObject,
     pub clientid: Clientid4,
     pub stateid_seq: u32,
+    pub active: bool,
     pub share_access: u32,
     pub share_deny: u32,
 }

@@ -6,12 +6,166 @@ use embednfs_proto::*;
 use crate::attrs;
 use crate::fs::{FileSystem, FsError, ObjectType, RequestContext, WriteResult, WriteStability};
 use crate::internal::{ServerFileType, ServerObject};
+use crate::session::{CurrentStateidMode, ResolvedStateid};
 
 use super::super::NfsServer;
 
+#[derive(Clone, Copy)]
+pub(super) struct IoStateContext {
+    pub current_stateid: Option<Stateid4>,
+    pub sequence_clientid: Option<Clientid4>,
+    pub is_write: bool,
+    pub offset: u64,
+    pub length: u64,
+}
+
 impl<F: FileSystem> NfsServer<F> {
-    pub(crate) async fn op_close(&self, args: &CloseArgs4) -> NfsResop4 {
-        match self.state.close_state(&args.open_stateid).await {
+    async fn resolve_io_stateid(
+        &self,
+        object: &ServerObject,
+        stateid: &Stateid4,
+        current_stateid: Option<Stateid4>,
+        sequence_clientid: Option<Clientid4>,
+    ) -> Result<ResolvedStateid, NfsStat4> {
+        let clientid = sequence_clientid.ok_or(NfsStat4::BadStateid)?;
+        let resolved = self
+            .state
+            .resolve_stateid(
+                clientid,
+                stateid,
+                current_stateid,
+                CurrentStateidMode::ZeroSeqid,
+            )
+            .await?;
+        match &resolved {
+            ResolvedStateid::Open(open) if open.object != *object => Err(NfsStat4::BadStateid),
+            ResolvedStateid::Lock(lock) if lock.object != *object => Err(NfsStat4::BadStateid),
+            _ => Ok(resolved),
+        }
+    }
+
+    pub(super) async fn validate_io_stateid(
+        &self,
+        object: &ServerObject,
+        stateid: &Stateid4,
+        io: IoStateContext,
+    ) -> Result<(), NfsStat4> {
+        let resolved = self
+            .resolve_io_stateid(object, stateid, io.current_stateid, io.sequence_clientid)
+            .await?;
+        let access = if io.is_write {
+            OPEN4_SHARE_ACCESS_WRITE
+        } else {
+            OPEN4_SHARE_ACCESS_READ
+        };
+
+        let (ignore_open, lock_owner, ignore_lock) = match &resolved {
+            ResolvedStateid::Anonymous | ResolvedStateid::Bypass => (None, None, None),
+            ResolvedStateid::Open(open) => {
+                let share_access = self.state.share_access_mode(open.share_access);
+                if io.is_write && (share_access & OPEN4_SHARE_ACCESS_WRITE) == 0 {
+                    return Err(NfsStat4::Openmode);
+                }
+                (Some(open.other), None, None)
+            }
+            ResolvedStateid::Lock(lock) => {
+                let share_access = self.state.share_access_mode(lock.open_state.share_access);
+                if io.is_write && (share_access & OPEN4_SHARE_ACCESS_WRITE) == 0 {
+                    return Err(NfsStat4::Openmode);
+                }
+                (
+                    Some(lock.open_state.other),
+                    Some(&lock.owner),
+                    Some(lock.other),
+                )
+            }
+        };
+
+        if self
+            .state
+            .has_conflicting_share_deny(object, access, ignore_open)
+            .await
+        {
+            return Err(NfsStat4::Locked);
+        }
+        if self
+            .state
+            .has_conflicting_io_lock(
+                object,
+                lock_owner,
+                io.is_write,
+                io.offset,
+                io.length,
+                ignore_lock,
+            )
+            .await
+        {
+            return Err(NfsStat4::Locked);
+        }
+
+        Ok(())
+    }
+
+    fn requested_write_stability(stable: u32) -> Result<WriteStability, NfsStat4> {
+        match stable {
+            UNSTABLE4 => Ok(WriteStability::Unstable),
+            DATA_SYNC4 => Ok(WriteStability::DataSync),
+            FILE_SYNC4 => Ok(WriteStability::FileSync),
+            _ => Err(NfsStat4::Inval),
+        }
+    }
+
+    fn stability_at_least(actual: WriteStability, requested: WriteStability) -> bool {
+        let rank = |stability| match stability {
+            WriteStability::Unstable => 0,
+            WriteStability::DataSync => 1,
+            WriteStability::FileSync => 2,
+        };
+        rank(actual) >= rank(requested)
+    }
+
+    pub(crate) async fn op_close(
+        &self,
+        args: &CloseArgs4,
+        current_fh: &Option<NfsFh4>,
+        current_stateid: Option<Stateid4>,
+        sequence_clientid: Option<Clientid4>,
+    ) -> NfsResop4 {
+        let (_, object) = match self.resolve_object(current_fh).await {
+            Ok(resolved) => resolved,
+            Err(status) => return NfsResop4::Close(status, Stateid4::default()),
+        };
+
+        let stateid = match self.state.normalize_stateid(
+            &args.open_stateid,
+            current_stateid,
+            CurrentStateidMode::PreserveSeqid,
+        ) {
+            Ok(crate::session::NormalizedStateid::Concrete(stateid)) => stateid,
+            Ok(
+                crate::session::NormalizedStateid::Anonymous
+                | crate::session::NormalizedStateid::Bypass,
+            ) => {
+                return NfsResop4::Close(NfsStat4::BadStateid, Stateid4::default());
+            }
+            Err(status) => return NfsResop4::Close(status, Stateid4::default()),
+        };
+
+        let clientid = match sequence_clientid {
+            Some(clientid) => clientid,
+            None => return NfsResop4::Close(NfsStat4::BadStateid, Stateid4::default()),
+        };
+        match self
+            .state
+            .resolve_stateid(clientid, &stateid, None, CurrentStateidMode::PreserveSeqid)
+            .await
+        {
+            Ok(ResolvedStateid::Open(open)) if open.object == object => {}
+            Ok(_) => return NfsResop4::Close(NfsStat4::BadStateid, Stateid4::default()),
+            Err(status) => return NfsResop4::Close(status, Stateid4::default()),
+        }
+
+        match self.state.close_state(&stateid).await {
             Ok(stateid) => NfsResop4::Close(NfsStat4::Ok, stateid),
             Err(status) => NfsResop4::Close(status, Stateid4::default()),
         }
@@ -291,11 +445,30 @@ impl<F: FileSystem> NfsServer<F> {
         request_ctx: &RequestContext,
         args: &ReadArgs4,
         current_fh: &Option<NfsFh4>,
+        current_stateid: Option<Stateid4>,
+        sequence_clientid: Option<Clientid4>,
     ) -> NfsResop4 {
         let (_, object) = match self.resolve_object(current_fh).await {
             Ok(resolved) => resolved,
             Err(status) => return NfsResop4::Read(status, None),
         };
+
+        if let Err(status) = self
+            .validate_io_stateid(
+                &object,
+                &args.stateid,
+                IoStateContext {
+                    current_stateid,
+                    sequence_clientid,
+                    is_write: false,
+                    offset: args.offset,
+                    length: args.count as u64,
+                },
+            )
+            .await
+        {
+            return NfsResop4::Read(status, None);
+        }
 
         let result = match object {
             ServerObject::Fs(id) => {
@@ -363,9 +536,33 @@ impl<F: FileSystem> NfsServer<F> {
         request_ctx: &RequestContext,
         args: &WriteArgs4,
         current_fh: &Option<NfsFh4>,
+        current_stateid: Option<Stateid4>,
+        sequence_clientid: Option<Clientid4>,
     ) -> NfsResop4 {
         let (_, object) = match self.resolve_object(current_fh).await {
             Ok(resolved) => resolved,
+            Err(status) => return NfsResop4::Write(status, None),
+        };
+
+        if let Err(status) = self
+            .validate_io_stateid(
+                &object,
+                &args.stateid,
+                IoStateContext {
+                    current_stateid,
+                    sequence_clientid,
+                    is_write: true,
+                    offset: args.offset,
+                    length: args.data.len() as u64,
+                },
+            )
+            .await
+        {
+            return NfsResop4::Write(status, None);
+        }
+
+        let requested_stability = match Self::requested_write_stability(args.stable) {
+            Ok(stability) => stability,
             Err(status) => return NfsResop4::Write(status, None),
         };
 
@@ -391,6 +588,7 @@ impl<F: FileSystem> NfsServer<F> {
                     id,
                     args.offset,
                     Bytes::copy_from_slice(&args.data),
+                    requested_stability,
                 )
                 .await
             }
@@ -406,6 +604,9 @@ impl<F: FileSystem> NfsServer<F> {
 
         match result {
             Ok(result) => {
+                if !Self::stability_at_least(result.stability, requested_stability) {
+                    return NfsResop4::Write(NfsStat4::Serverfault, None);
+                }
                 if !matches!(object, ServerObject::Fs(_)) {
                     self.state.touch_data(&object, file_type).await;
                 }
@@ -419,6 +620,51 @@ impl<F: FileSystem> NfsServer<F> {
                 )
             }
             Err(e) => NfsResop4::Write(e.to_nfsstat4(), None),
+        }
+    }
+
+    pub(crate) async fn op_open_downgrade(
+        &self,
+        args: &OpenDowngradeArgs4,
+        current_stateid: Option<Stateid4>,
+        sequence_clientid: Option<Clientid4>,
+    ) -> NfsResop4 {
+        let clientid = match sequence_clientid {
+            Some(clientid) => clientid,
+            None => return NfsResop4::OpenDowngrade(NfsStat4::BadStateid, None),
+        };
+        let stateid = match self.state.normalize_stateid(
+            &args.open_stateid,
+            current_stateid,
+            CurrentStateidMode::PreserveSeqid,
+        ) {
+            Ok(crate::session::NormalizedStateid::Concrete(stateid)) => stateid,
+            Ok(
+                crate::session::NormalizedStateid::Anonymous
+                | crate::session::NormalizedStateid::Bypass,
+            ) => {
+                return NfsResop4::OpenDowngrade(NfsStat4::BadStateid, None);
+            }
+            Err(status) => return NfsResop4::OpenDowngrade(status, None),
+        };
+
+        match self
+            .state
+            .resolve_stateid(clientid, &stateid, None, CurrentStateidMode::PreserveSeqid)
+            .await
+        {
+            Ok(ResolvedStateid::Open(_)) => {}
+            Ok(_) => return NfsResop4::OpenDowngrade(NfsStat4::BadStateid, None),
+            Err(status) => return NfsResop4::OpenDowngrade(status, None),
+        }
+
+        match self
+            .state
+            .open_downgrade(&stateid, args.share_access, args.share_deny)
+            .await
+        {
+            Ok(stateid) => NfsResop4::OpenDowngrade(NfsStat4::Ok, Some(stateid)),
+            Err(status) => NfsResop4::OpenDowngrade(status, None),
         }
     }
 }
