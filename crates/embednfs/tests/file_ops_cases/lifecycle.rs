@@ -642,7 +642,15 @@ async fn test_rename_file() {
     let rename_op = encode_rename("old-name.txt", "new-name.txt");
     let compound = encode_compound(
         "rename",
-        &[&seq_op, &rootfh_op, &lookup_dir1, &savefh_op, &rootfh_op2, &lookup_dir2, &rename_op],
+        &[
+            &seq_op,
+            &rootfh_op,
+            &lookup_dir1,
+            &savefh_op,
+            &rootfh_op2,
+            &lookup_dir2,
+            &rename_op,
+        ],
     );
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
@@ -664,7 +672,10 @@ async fn test_rename_file() {
     let seq_op = encode_sequence(&sessionid, 2, 0);
     let lookup_dir1 = encode_lookup("dir1");
     let lookup_old = encode_lookup("old-name.txt");
-    let compound = encode_compound("check-old", &[&seq_op, &rootfh_op, &lookup_dir1, &lookup_old]);
+    let compound = encode_compound(
+        "check-old",
+        &[&seq_op, &rootfh_op, &lookup_dir1, &lookup_old],
+    );
     let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, _) = parse_compound_header(&mut resp);
@@ -673,7 +684,10 @@ async fn test_rename_file() {
     let seq_op = encode_sequence(&sessionid, 3, 0);
     let lookup_dir2 = encode_lookup("dir2");
     let lookup_new = encode_lookup("new-name.txt");
-    let compound = encode_compound("check-new", &[&seq_op, &rootfh_op, &lookup_dir2, &lookup_new]);
+    let compound = encode_compound(
+        "check-new",
+        &[&seq_op, &rootfh_op, &lookup_dir2, &lookup_new],
+    );
     let mut resp = send_rpc(&mut stream, 5, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, _) = parse_compound_header(&mut resp);

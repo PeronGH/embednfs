@@ -7,7 +7,7 @@ use crate::fs::{FileSystem, FsError, ObjectType, RequestContext};
 use crate::internal::{ServerFileType, ServerObject};
 
 use super::super::{
-    readdir_dir_info_len, readdir_entry_list_item_len, readdir_resok_len, NfsServer,
+    NfsServer, readdir_dir_info_len, readdir_entry_list_item_len, readdir_resok_len,
 };
 
 impl<F: FileSystem> NfsServer<F> {
@@ -487,10 +487,12 @@ impl<F: FileSystem> NfsServer<F> {
         }
 
         let status = match dir_object.clone() {
-            ServerObject::Fs(dir_id) => match self.remove(request_ctx, dir_id, &args.target).await {
-                Ok(()) => NfsStat4::Ok,
-                Err(e) => e.to_nfsstat4(),
-            },
+            ServerObject::Fs(dir_id) => {
+                match self.remove(request_ctx, dir_id, &args.target).await {
+                    Ok(()) => NfsStat4::Ok,
+                    Err(e) => e.to_nfsstat4(),
+                }
+            }
             ServerObject::NamedAttrDir(parent) => {
                 let named = match self.named_attrs() {
                     Some(named) => named,

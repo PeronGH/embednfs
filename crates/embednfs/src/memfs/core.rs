@@ -9,8 +9,8 @@ use crate::fs::{
     RequestContext, SetAttrs, Symlinks, Timestamp, WriteResult, WriteStability, Xattrs,
 };
 
-use super::state::{Inode, InodeData};
 use super::MemFs;
+use super::state::{Inode, InodeData};
 
 #[async_trait]
 impl FileSystem for MemFs {
@@ -33,7 +33,11 @@ impl FileSystem for MemFs {
 
     async fn statfs(&self, _ctx: &RequestContext) -> FsResult<FsStats> {
         let inner = self.inner.read().await;
-        let used_bytes: u64 = inner.inodes.values().map(|inode| inode.attrs.space_used).sum();
+        let used_bytes: u64 = inner
+            .inodes
+            .values()
+            .map(|inode| inode.attrs.space_used)
+            .sum();
         let total_files = 1 << 20;
         let used_files = inner.inodes.len() as u64;
 
@@ -299,7 +303,9 @@ impl FileSystem for MemFs {
         let child_id = {
             let from_inode = inner.inodes.get(from_dir).ok_or(FsError::Stale)?;
             match &from_inode.data {
-                InodeData::Directory(entries) => *entries.get(from_name).ok_or(FsError::NotFound)?,
+                InodeData::Directory(entries) => {
+                    *entries.get(from_name).ok_or(FsError::NotFound)?
+                }
                 _ => return Err(FsError::NotDirectory),
             }
         };

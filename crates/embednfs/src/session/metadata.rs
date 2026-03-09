@@ -39,10 +39,9 @@ impl StateManager {
         let (now_s, now_ns) = Self::now();
         let fileid = match object {
             ServerObject::Fs(id) => *id,
-            ServerObject::NamedAttrDir(_) | ServerObject::NamedAttrFile { .. } => {
-                self.next_synth_fileid
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            }
+            ServerObject::NamedAttrDir(_) | ServerObject::NamedAttrFile { .. } => self
+                .next_synth_fileid
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         };
         let meta = SynthMeta {
             fileid,

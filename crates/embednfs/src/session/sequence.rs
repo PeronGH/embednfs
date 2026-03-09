@@ -1,7 +1,7 @@
 use embednfs_proto::{NfsStat4, SequenceArgs4, SequenceRes4};
 
-use super::model::{CachedReplay, SequenceCacheToken, SequenceReplay, SessionState};
 use super::StateManager;
+use super::model::{CachedReplay, SequenceCacheToken, SequenceReplay, SessionState};
 
 impl StateManager {
     fn sequence_res(session: &SessionState, args: &SequenceArgs4) -> SequenceRes4 {

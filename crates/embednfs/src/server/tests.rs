@@ -48,7 +48,10 @@ fn test_readdir_resok_len_matches_readop_encoding() {
     NfsResop4::Readdir(NfsStat4::Ok, Some(result)).encode(&mut encoded);
 
     let expected_entries = vec![sample_entry("a.txt", 1), sample_entry("b.txt", 2)];
-    assert_eq!(readdir_resok_len(&expected_entries, true), encoded.len() - 8);
+    assert_eq!(
+        readdir_resok_len(&expected_entries, true),
+        encoded.len() - 8
+    );
 }
 
 #[test]

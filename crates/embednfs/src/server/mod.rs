@@ -24,9 +24,9 @@ const CONN_BUF_SIZE: usize = 65_536;
 
 type NfsResult<T> = FsResult<T>;
 
+mod compound;
 mod file_attrs;
 mod objects;
-mod compound;
 mod ops;
 mod transport;
 
@@ -428,7 +428,6 @@ impl<F: FileSystem> NfsServer<F> {
     }
 
     // ===== Individual operation handlers =====
-
 }
 
 fn xdr_opaque_len(len: usize) -> usize {

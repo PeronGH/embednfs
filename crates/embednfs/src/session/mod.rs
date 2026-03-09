@@ -13,8 +13,8 @@ use crate::internal::ServerObject;
 mod clients;
 mod filehandles;
 mod locks;
-mod model;
 mod metadata;
+mod model;
 mod opens;
 mod sequence;
 #[cfg(test)]
@@ -25,8 +25,8 @@ const MAX_REQUEST_SIZE: u32 = 1_049_620;
 const MAX_CACHED_RESPONSE: u32 = 6144;
 const SYNTH_FILEID_BASE: u64 = 1u64 << 63;
 
-pub(crate) use model::{SequenceReplay, SynthMeta};
 use model::StateInner;
+pub(crate) use model::{SequenceReplay, SynthMeta};
 
 /// Manages all server-side state.
 pub struct StateManager {

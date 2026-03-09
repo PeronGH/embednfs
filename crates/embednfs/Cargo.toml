@@ -19,3 +19,6 @@ embednfs-proto = { path = "../embednfs-proto", version = "0.1.5" }
 thiserror = "2.0.18"
 tokio = { version = "1.50.0", features = ["full"] }
 tracing = "0.1.44"
+
+[dev-dependencies]
+nfs-rs = { git = "https://github.com/NetAppLabs/nfs-rs.git", rev = "483ef9f072e20cc84a5c40d8f3484d7f816c2a79" }

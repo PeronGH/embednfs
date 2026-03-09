@@ -1,8 +1,8 @@
 use embednfs_proto::{
-    ChannelAttrs4, ClientOwner4, Clientid4, CreateSessionArgs4, ExchangeIdArgs4,
-    NfsLockType4, NfsStat4, Sequenceid4, StateProtect4A, StateOwner4, Stateid4, Verifier4,
-    EXCHGID4_FLAG_CONFIRMED_R, EXCHGID4_FLAG_USE_NON_PNFS, OPEN4_SHARE_ACCESS_BOTH,
-    OPEN4_SHARE_ACCESS_READ, OPEN4_SHARE_DENY_NONE,
+    ChannelAttrs4, ClientOwner4, Clientid4, CreateSessionArgs4, EXCHGID4_FLAG_CONFIRMED_R,
+    EXCHGID4_FLAG_USE_NON_PNFS, ExchangeIdArgs4, NfsLockType4, NfsStat4, OPEN4_SHARE_ACCESS_BOTH,
+    OPEN4_SHARE_ACCESS_READ, OPEN4_SHARE_DENY_NONE, Sequenceid4, StateOwner4, StateProtect4A,
+    Stateid4, Verifier4,
 };
 
 use crate::internal::ServerObject;
@@ -159,7 +159,10 @@ async fn test_exchange_id_reboot_drops_old_state_after_new_create_session() {
         .exchange_id(&exchange_id_args(b"owner", [0x11; 8]))
         .await;
     let original_session = state
-        .create_session(&create_session_args(original.clientid, original.sequenceid), 1)
+        .create_session(
+            &create_session_args(original.clientid, original.sequenceid),
+            1,
+        )
         .await
         .unwrap();
 
@@ -188,11 +191,17 @@ async fn test_exchange_id_reboot_drops_old_state_after_new_create_session() {
     );
 
     state
-        .create_session(&create_session_args(rebooted.clientid, rebooted.sequenceid), 2)
+        .create_session(
+            &create_session_args(rebooted.clientid, rebooted.sequenceid),
+            2,
+        )
         .await
         .unwrap();
 
-    assert_eq!(state.session_clientid(&original_session.sessionid).await, None);
+    assert_eq!(
+        state.session_clientid(&original_session.sessionid).await,
+        None
+    );
     assert_eq!(
         state.test_stateids(&[open_stateid, lock_stateid]).await,
         vec![NfsStat4::BadStateid, NfsStat4::BadStateid]

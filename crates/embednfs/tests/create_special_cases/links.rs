@@ -311,7 +311,14 @@ async fn test_link_zero_length_name() {
     let link_op = encode_link("");
     let compound = encode_compound(
         "link-empty",
-        &[&seq_op, &rootfh_op, &lookup_op, &savefh_op, &rootfh_op2, &link_op],
+        &[
+            &seq_op,
+            &rootfh_op,
+            &lookup_op,
+            &savefh_op,
+            &rootfh_op2,
+            &link_op,
+        ],
     );
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
@@ -338,7 +345,14 @@ async fn test_link_name_too_long() {
     let link_op = encode_link(&long_name);
     let compound = encode_compound(
         "link-long",
-        &[&seq_op, &rootfh_op, &lookup_op, &savefh_op, &rootfh_op2, &link_op],
+        &[
+            &seq_op,
+            &rootfh_op,
+            &lookup_op,
+            &savefh_op,
+            &rootfh_op2,
+            &link_op,
+        ],
     );
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
@@ -365,7 +379,14 @@ async fn test_link_dot_names_badname() {
         let link_op = encode_link(name);
         let compound = encode_compound(
             "link-dot",
-            &[&seq_op, &rootfh_op, &lookup_op, &savefh_op, &rootfh_op2, &link_op],
+            &[
+                &seq_op,
+                &rootfh_op,
+                &lookup_op,
+                &savefh_op,
+                &rootfh_op2,
+                &link_op,
+            ],
         );
         let mut resp = send_rpc(&mut stream, xid, 1, &compound).await;
         parse_rpc_reply(&mut resp);

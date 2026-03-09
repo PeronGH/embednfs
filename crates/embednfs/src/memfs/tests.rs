@@ -85,13 +85,23 @@ async fn xattrs_update_exported_attrs() {
     .await
     .unwrap();
 
-    assert!(fs.getattr(&ctx, &created.handle).await.unwrap().has_named_attrs);
+    assert!(
+        fs.getattr(&ctx, &created.handle)
+            .await
+            .unwrap()
+            .has_named_attrs
+    );
 
     fs.remove_xattr(&ctx, &created.handle, "com.apple.test")
         .await
         .unwrap();
 
-    assert!(!fs.getattr(&ctx, &created.handle).await.unwrap().has_named_attrs);
+    assert!(
+        !fs.getattr(&ctx, &created.handle)
+            .await
+            .unwrap()
+            .has_named_attrs
+    );
 }
 
 #[tokio::test]

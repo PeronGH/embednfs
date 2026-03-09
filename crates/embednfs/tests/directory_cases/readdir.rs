@@ -282,8 +282,7 @@ async fn test_readdir_write_only_attrs_invalid() {
 
     let seq_op = encode_sequence(&sessionid, 1, 0);
     let rootfh_op = encode_putrootfh();
-    let readdir_op =
-        encode_readdir_custom(0, [0u8; 8], 4096, 8192, &[FATTR4_TIME_MODIFY_SET]);
+    let readdir_op = encode_readdir_custom(0, [0u8; 8], 4096, 8192, &[FATTR4_TIME_MODIFY_SET]);
     let compound = encode_compound("readdir-writeonly", &[&seq_op, &rootfh_op, &readdir_op]);
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
@@ -312,8 +311,7 @@ async fn test_readdir_reserved_cookies_bad_cookie() {
         let seq_op = encode_sequence(&sessionid, seq, 0);
         let rootfh_op = encode_putrootfh();
         let readdir_op = encode_readdir_custom(cookie, [0u8; 8], 4096, 8192, &[FATTR4_FILEID]);
-        let compound =
-            encode_compound("readdir-bad-cookie", &[&seq_op, &rootfh_op, &readdir_op]);
+        let compound = encode_compound("readdir-bad-cookie", &[&seq_op, &rootfh_op, &readdir_op]);
         let mut resp = send_rpc(&mut stream, xid, 1, &compound).await;
         parse_rpc_reply(&mut resp);
 

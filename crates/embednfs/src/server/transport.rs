@@ -9,14 +9,17 @@ use embednfs_proto::*;
 use crate::fs::FileSystem;
 use crate::session::SequenceReplay;
 
-use super::{
-    hex_bytes, replay_fingerprint, Compound4Res, NfsServer, CONN_BUF_SIZE, MAX_FRAGMENT_SIZE,
-    RPC_FRAG_LEN_MASK, RPC_LAST_FRAGMENT,
-};
 use super::compound::sequence_error_compound;
+use super::{
+    CONN_BUF_SIZE, Compound4Res, MAX_FRAGMENT_SIZE, NfsServer, RPC_FRAG_LEN_MASK,
+    RPC_LAST_FRAGMENT, hex_bytes, replay_fingerprint,
+};
 
 impl<F: FileSystem> NfsServer<F> {
-    pub(super) async fn handle_connection(self: &std::sync::Arc<Self>, stream: TcpStream) -> std::io::Result<()> {
+    pub(super) async fn handle_connection(
+        self: &std::sync::Arc<Self>,
+        stream: TcpStream,
+    ) -> std::io::Result<()> {
         let connection_id = self.state.alloc_connection_id();
         let (mut reader, writer) = stream.into_split();
         let mut writer = BufWriter::with_capacity(CONN_BUF_SIZE, writer);

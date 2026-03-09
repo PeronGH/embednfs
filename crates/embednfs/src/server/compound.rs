@@ -186,7 +186,10 @@ impl<F: FileSystem> NfsServer<F> {
             NfsArgop4::Lookupp => self.op_lookupp(request_ctx, current_fh).await,
             NfsArgop4::Open(args) => {
                 if let Some(clientid) = sequence_clientid
-                    && let Err(status) = self.state.validate_open_reclaim(clientid, &args.claim).await
+                    && let Err(status) = self
+                        .state
+                        .validate_open_reclaim(clientid, &args.claim)
+                        .await
                 {
                     return NfsResop4::Open(status, None);
                 }
@@ -250,7 +253,11 @@ impl<F: FileSystem> NfsServer<F> {
                 }
             }
             NfsArgop4::DestroySession(args) => {
-                match self.state.destroy_session(&args.sessionid, connection_id).await {
+                match self
+                    .state
+                    .destroy_session(&args.sessionid, connection_id)
+                    .await
+                {
                     Ok(()) => NfsResop4::DestroySession(NfsStat4::Ok),
                     Err(status) => NfsResop4::DestroySession(status),
                 }
@@ -273,7 +280,8 @@ impl<F: FileSystem> NfsServer<F> {
                 }
             }
             NfsArgop4::SecInfoNoName(style) => {
-                self.op_secinfo_no_name(request_ctx, style, current_fh).await
+                self.op_secinfo_no_name(request_ctx, style, current_fh)
+                    .await
             }
             NfsArgop4::FreeStateid(args) => match self.state.free_stateid(&args.stateid).await {
                 Ok(()) => NfsResop4::FreeStateid(NfsStat4::Ok),

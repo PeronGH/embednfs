@@ -2,8 +2,8 @@ use embednfs_proto::{LockDenied4, NfsLockType4, NfsStat4, StateOwner4, Stateid4}
 
 use crate::internal::ServerObject;
 
-use super::model::{LockFileState, LockRange};
 use super::StateManager;
+use super::model::{LockFileState, LockRange};
 
 impl StateManager {
     /// Look up the object and owner associated with a lock state.

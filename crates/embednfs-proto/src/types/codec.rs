@@ -540,7 +540,9 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
         OP_OPEN_CONFIRM => {
             let _open_stateid = Stateid4::decode(src)?;
             let _seqid = u32::decode(src)?;
-            Ok(NfsArgop4::MustNotImplement(MustNotImplementOp4::OpenConfirm))
+            Ok(NfsArgop4::MustNotImplement(
+                MustNotImplementOp4::OpenConfirm,
+            ))
         }
         OP_OPEN_DOWNGRADE => Ok(NfsArgop4::OpenDowngrade(OpenDowngradeArgs4 {
             open_stateid: Stateid4::decode(src)?,
@@ -678,7 +680,9 @@ fn decode_nfs_argop4(src: &mut Bytes) -> XdrResult<NfsArgop4> {
             let _cb_netid = String::decode(src)?;
             let _cb_addr = String::decode(src)?;
             let _callback_ident = u32::decode(src)?;
-            Ok(NfsArgop4::MustNotImplement(MustNotImplementOp4::SetClientId))
+            Ok(NfsArgop4::MustNotImplement(
+                MustNotImplementOp4::SetClientId,
+            ))
         }
         OP_SETCLIENTID_CONFIRM => {
             let _clientid = u64::decode(src)?;

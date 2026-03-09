@@ -5,8 +5,8 @@ use crate::fs::{
     SetTime, Timestamp,
 };
 
-use super::state::{Inode, InodeData, MemFsInner};
 use super::MemFs;
+use super::state::{Inode, InodeData, MemFsInner};
 
 impl MemFs {
     pub(super) fn next_id(&self) -> u64 {

@@ -6,7 +6,9 @@
 
 mod attr_bits;
 mod encode;
+mod external_server;
 mod fixtures;
+mod nfs_rs;
 mod parse;
 mod server;
 mod session;
@@ -15,7 +17,9 @@ mod wrappers;
 
 pub use attr_bits::*;
 pub use encode::*;
+pub use external_server::*;
 pub use fixtures::*;
+pub use nfs_rs::*;
 pub use parse::*;
 pub use server::*;
 pub use session::*;

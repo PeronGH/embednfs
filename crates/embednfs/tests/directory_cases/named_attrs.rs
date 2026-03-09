@@ -1,7 +1,7 @@
 use super::*;
+use embednfs::{CreateKind, CreateRequest, FileSystem, MemFs, RequestContext, SetAttrs};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use embednfs::{CreateKind, CreateRequest, FileSystem, MemFs, RequestContext, SetAttrs};
 
 /// OPENATTR on a file with xattrs sets the current filehandle to the attribute directory.
 /// Origin: RFC- and macOS-client-driven; not a direct pynfs one-to-one case.
@@ -102,8 +102,7 @@ async fn test_openattr_readdir_empty_named_attr_dir() {
     let rootfh_op = encode_putrootfh();
     let lookup_op = encode_lookup("notes.txt");
     let openattr_op = encode_openattr(false);
-    let readdir_op =
-        encode_readdir_custom(0, [0u8; 8], 4096, 8192, &[FATTR4_FILEID, FATTR4_TYPE]);
+    let readdir_op = encode_readdir_custom(0, [0u8; 8], 4096, 8192, &[FATTR4_FILEID, FATTR4_TYPE]);
     let compound = encode_compound(
         "openattr-readdir-empty",
         &[&seq_op, &rootfh_op, &lookup_op, &openattr_op, &readdir_op],
@@ -194,7 +193,13 @@ async fn test_named_attr_lookup_missing_returns_noent() {
     let lookup_xattr_op = encode_lookup("user.missing");
     let compound = encode_compound(
         "named-attr-missing",
-        &[&seq_op, &rootfh_op, &lookup_file_op, &openattr_op, &lookup_xattr_op],
+        &[
+            &seq_op,
+            &rootfh_op,
+            &lookup_file_op,
+            &openattr_op,
+            &lookup_xattr_op,
+        ],
     );
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
@@ -369,7 +374,13 @@ async fn test_named_attr_guarded_create_existing_returns_exist() {
     let open_xattr_op = encode_open_create_guarded("user.demo");
     let compound = encode_compound(
         "named-attr-guarded-exist",
-        &[&seq_op, &rootfh_op, &lookup_file_op, &openattr_op, &open_xattr_op],
+        &[
+            &seq_op,
+            &rootfh_op,
+            &lookup_file_op,
+            &openattr_op,
+            &open_xattr_op,
+        ],
     );
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
@@ -404,7 +415,13 @@ async fn test_named_attr_open_nocreate_missing_returns_noent() {
     let open_xattr_op = encode_open_nocreate("user.missing");
     let compound = encode_compound(
         "named-attr-open-missing",
-        &[&seq_op, &rootfh_op, &lookup_file_op, &openattr_op, &open_xattr_op],
+        &[
+            &seq_op,
+            &rootfh_op,
+            &lookup_file_op,
+            &openattr_op,
+            &open_xattr_op,
+        ],
     );
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
@@ -440,7 +457,14 @@ async fn test_named_attr_reopen_and_replace_value() {
     let getfh_op = encode_getfh();
     let compound = encode_compound(
         "named-attr-reopen",
-        &[&seq_op, &rootfh_op, &lookup_file_op, &openattr_op, &open_xattr_op, &getfh_op],
+        &[
+            &seq_op,
+            &rootfh_op,
+            &lookup_file_op,
+            &openattr_op,
+            &open_xattr_op,
+            &getfh_op,
+        ],
     );
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
@@ -465,8 +489,10 @@ async fn test_named_attr_reopen_and_replace_value() {
     let putfh_op = encode_putfh(&xattr_fh);
     let write_op = encode_write(&stateid, 0, b"value2");
     let close_op = encode_close(&stateid);
-    let compound =
-        encode_compound("named-attr-rewrite", &[&seq_op, &putfh_op, &write_op, &close_op]);
+    let compound = encode_compound(
+        "named-attr-rewrite",
+        &[&seq_op, &putfh_op, &write_op, &close_op],
+    );
     let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, _) = parse_compound_header(&mut resp);
@@ -525,7 +551,13 @@ async fn test_named_attr_remove_missing_returns_noent() {
     let remove_op = encode_remove("user.missing");
     let compound = encode_compound(
         "named-attr-remove-missing",
-        &[&seq_op, &rootfh_op, &lookup_file_op, &openattr_op, &remove_op],
+        &[
+            &seq_op,
+            &rootfh_op,
+            &lookup_file_op,
+            &openattr_op,
+            &remove_op,
+        ],
     );
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);

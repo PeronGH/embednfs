@@ -3,13 +3,12 @@ use std::sync::atomic::Ordering;
 
 use embednfs_proto::{
     BindConnToSessionArgs4, BindConnToSessionRes4, ChannelAttrs4, Clientid4, CreateSessionArgs4,
-    CreateSessionRes4, ExchangeIdArgs4, ExchangeIdRes4, EXCHGID4_FLAG_CONFIRMED_R,
-    EXCHGID4_FLAG_USE_NON_PNFS, NfsImplId4, NfsStat4, NfsTime4, OpenClaim4, Sessionid4,
-    StateProtect4R,
+    CreateSessionRes4, EXCHGID4_FLAG_CONFIRMED_R, EXCHGID4_FLAG_USE_NON_PNFS, ExchangeIdArgs4,
+    ExchangeIdRes4, NfsImplId4, NfsStat4, NfsTime4, OpenClaim4, Sessionid4, StateProtect4R,
 };
 
 use super::model::{ClientState, SessionState, SlotState, StateInner};
-use super::{StateManager, MAX_CACHED_RESPONSE, MAX_FORE_CHAN_SLOTS, MAX_REQUEST_SIZE};
+use super::{MAX_CACHED_RESPONSE, MAX_FORE_CHAN_SLOTS, MAX_REQUEST_SIZE, StateManager};
 
 impl StateManager {
     /// Handle EXCHANGE_ID.
@@ -217,7 +216,10 @@ impl StateManager {
     /// Look up the client ID associated with a session.
     pub async fn session_clientid(&self, sessionid: &Sessionid4) -> Option<Clientid4> {
         let inner = self.inner.read().await;
-        inner.sessions.get(sessionid).map(|session| session.clientid)
+        inner
+            .sessions
+            .get(sessionid)
+            .map(|session| session.clientid)
     }
 
     pub async fn reclaim_complete(
@@ -246,7 +248,10 @@ impl StateManager {
         claim: &OpenClaim4,
     ) -> Result<(), NfsStat4> {
         let inner = self.inner.read().await;
-        let client = inner.clients.get(&clientid).ok_or(NfsStat4::StaleClientid)?;
+        let client = inner
+            .clients
+            .get(&clientid)
+            .ok_or(NfsStat4::StaleClientid)?;
         match claim {
             OpenClaim4::Previous(_) if client.reclaim_complete_global => Err(NfsStat4::NoGrace),
             _ => Ok(()),
@@ -267,8 +272,14 @@ impl StateManager {
     }
 
     pub(super) fn client_has_active_state(inner: &StateInner, clientid: Clientid4) -> bool {
-        inner.sessions.values().any(|session| session.clientid == clientid)
-            || inner.open_files.values().any(|state| state.clientid == clientid)
+        inner
+            .sessions
+            .values()
+            .any(|session| session.clientid == clientid)
+            || inner
+                .open_files
+                .values()
+                .any(|state| state.clientid == clientid)
             || inner
                 .lock_files
                 .values()

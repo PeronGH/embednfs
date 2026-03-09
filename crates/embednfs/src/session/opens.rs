@@ -1,13 +1,13 @@
 use embednfs_proto::{
-    Clientid4, NfsStat4, Stateid4, OPEN4_SHARE_ACCESS_BOTH, OPEN4_SHARE_ACCESS_READ,
+    Clientid4, NfsStat4, OPEN4_SHARE_ACCESS_BOTH, OPEN4_SHARE_ACCESS_READ,
     OPEN4_SHARE_ACCESS_WANT_DELEG_MASK, OPEN4_SHARE_ACCESS_WRITE, OPEN4_SHARE_DENY_BOTH,
-    OPEN4_SHARE_DENY_NONE, OPEN4_SHARE_DENY_READ, OPEN4_SHARE_DENY_WRITE,
+    OPEN4_SHARE_DENY_NONE, OPEN4_SHARE_DENY_READ, OPEN4_SHARE_DENY_WRITE, Stateid4,
 };
 
 use crate::internal::ServerObject;
 
-use super::model::OpenFileState;
 use super::StateManager;
+use super::model::OpenFileState;
 
 impl StateManager {
     /// Create an open state for an object.

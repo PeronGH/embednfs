@@ -79,10 +79,7 @@ async fn test_secinfo_no_name_parent_of_root_returns_noent() {
     let seq_op = encode_sequence(&sessionid, 1, 0);
     let rootfh_op = encode_putrootfh();
     let secinfo_op = encode_secinfo_no_name(1);
-    let compound = encode_compound(
-        "secinfo-parent-root",
-        &[&seq_op, &rootfh_op, &secinfo_op],
-    );
+    let compound = encode_compound("secinfo-parent-root", &[&seq_op, &rootfh_op, &secinfo_op]);
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
 

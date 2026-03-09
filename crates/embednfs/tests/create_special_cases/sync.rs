@@ -13,7 +13,10 @@ async fn test_commit_on_file() {
     let rootfh_op = encode_putrootfh();
     let open_op = encode_open_create("commit.txt");
     let getfh_op = encode_getfh();
-    let compound = encode_compound("open-for-commit", &[&seq_op, &rootfh_op, &open_op, &getfh_op]);
+    let compound = encode_compound(
+        "open-for-commit",
+        &[&seq_op, &rootfh_op, &open_op, &getfh_op],
+    );
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, _) = parse_compound_header(&mut resp);

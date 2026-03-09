@@ -8,12 +8,12 @@ use crate::fs::{Attrs, ObjectType};
 
 mod commit;
 mod core;
-mod helpers;
 mod hardlinks;
+mod helpers;
 mod state;
+mod symlinks;
 #[cfg(test)]
 mod tests;
-mod symlinks;
 mod xattrs;
 
 use state::{Inode, InodeData, MemFsInner};
