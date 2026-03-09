@@ -15,12 +15,22 @@ impl<F: FileSystem> NfsServer<F> {
         request: &Bitmap4,
         fh: &NfsFh4,
     ) -> NfsResult<Fattr4> {
-        let stats = self.statfs(request_ctx).await?;
+        let needs_statfs = request.is_set(embednfs_proto::FATTR4_FILES_AVAIL)
+            || request.is_set(embednfs_proto::FATTR4_FILES_FREE)
+            || request.is_set(embednfs_proto::FATTR4_FILES_TOTAL)
+            || request.is_set(embednfs_proto::FATTR4_SPACE_AVAIL)
+            || request.is_set(embednfs_proto::FATTR4_SPACE_FREE)
+            || request.is_set(embednfs_proto::FATTR4_SPACE_TOTAL);
+        let stats = if needs_statfs {
+            Some(self.statfs(request_ctx).await?)
+        } else {
+            None
+        };
         let limits = self.limits();
         let capabilities = self.capabilities();
         let ctx = attrs::AttrEncodingContext {
             limits: &limits,
-            stats: &stats,
+            stats: stats.as_ref(),
             capabilities: &capabilities,
         };
         Ok(attrs::encode_fattr4(attr, request, fh, &ctx))

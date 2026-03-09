@@ -13,7 +13,7 @@ const MODE_PERM_MASK: u32 = 0o7777;
 /// Snapshot of filesystem-wide values needed for attribute encoding.
 pub(crate) struct AttrEncodingContext<'a> {
     pub limits: &'a FsLimits,
-    pub stats: &'a FsStats,
+    pub stats: Option<&'a FsStats>,
     pub capabilities: &'a FsCapabilities,
 }
 
@@ -224,22 +224,25 @@ pub(crate) fn encode_fattr4(
     }
 
     // FATTR4_FILES_AVAIL (21)
-    if request.is_set(FATTR4_FILES_AVAIL) {
-        result_bitmap.set(FATTR4_FILES_AVAIL);
-        ctx.stats.avail_files.encode(&mut vals);
-    }
+    if request.is_set(FATTR4_FILES_AVAIL)
+        && let Some(stats) = ctx.stats {
+            result_bitmap.set(FATTR4_FILES_AVAIL);
+            stats.avail_files.encode(&mut vals);
+        }
 
     // FATTR4_FILES_FREE (22)
-    if request.is_set(FATTR4_FILES_FREE) {
-        result_bitmap.set(FATTR4_FILES_FREE);
-        ctx.stats.free_files.encode(&mut vals);
-    }
+    if request.is_set(FATTR4_FILES_FREE)
+        && let Some(stats) = ctx.stats {
+            result_bitmap.set(FATTR4_FILES_FREE);
+            stats.free_files.encode(&mut vals);
+        }
 
     // FATTR4_FILES_TOTAL (23)
-    if request.is_set(FATTR4_FILES_TOTAL) {
-        result_bitmap.set(FATTR4_FILES_TOTAL);
-        ctx.stats.total_files.encode(&mut vals);
-    }
+    if request.is_set(FATTR4_FILES_TOTAL)
+        && let Some(stats) = ctx.stats {
+            result_bitmap.set(FATTR4_FILES_TOTAL);
+            stats.total_files.encode(&mut vals);
+        }
 
     // FATTR4_HIDDEN (25) - macOS UF_HIDDEN flag
     if request.is_set(FATTR4_HIDDEN) {
@@ -326,22 +329,25 @@ pub(crate) fn encode_fattr4(
     }
 
     // FATTR4_SPACE_AVAIL (42)
-    if request.is_set(FATTR4_SPACE_AVAIL) {
-        result_bitmap.set(FATTR4_SPACE_AVAIL);
-        ctx.stats.avail_bytes.encode(&mut vals);
-    }
+    if request.is_set(FATTR4_SPACE_AVAIL)
+        && let Some(stats) = ctx.stats {
+            result_bitmap.set(FATTR4_SPACE_AVAIL);
+            stats.avail_bytes.encode(&mut vals);
+        }
 
     // FATTR4_SPACE_FREE (43)
-    if request.is_set(FATTR4_SPACE_FREE) {
-        result_bitmap.set(FATTR4_SPACE_FREE);
-        ctx.stats.free_bytes.encode(&mut vals);
-    }
+    if request.is_set(FATTR4_SPACE_FREE)
+        && let Some(stats) = ctx.stats {
+            result_bitmap.set(FATTR4_SPACE_FREE);
+            stats.free_bytes.encode(&mut vals);
+        }
 
     // FATTR4_SPACE_TOTAL (44)
-    if request.is_set(FATTR4_SPACE_TOTAL) {
-        result_bitmap.set(FATTR4_SPACE_TOTAL);
-        ctx.stats.total_bytes.encode(&mut vals);
-    }
+    if request.is_set(FATTR4_SPACE_TOTAL)
+        && let Some(stats) = ctx.stats {
+            result_bitmap.set(FATTR4_SPACE_TOTAL);
+            stats.total_bytes.encode(&mut vals);
+        }
 
     // FATTR4_SPACE_USED (45)
     if request.is_set(FATTR4_SPACE_USED) {
@@ -616,7 +622,7 @@ mod tests {
         let caps = FsCapabilities::default();
         let ctx = AttrEncodingContext {
             limits: &limits,
-            stats: &stats,
+            stats: Some(&stats),
             capabilities: &caps,
         };
         let fattr = encode_fattr4(&attr, &request, &fh, &ctx);

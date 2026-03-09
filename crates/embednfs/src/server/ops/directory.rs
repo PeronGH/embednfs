@@ -418,7 +418,7 @@ impl<F: FileSystem> NfsServer<F> {
         let caps = self.capabilities();
         let encode_ctx = attrs::AttrEncodingContext {
             limits: &limits,
-            stats: &stats,
+            stats: Some(&stats),
             capabilities: &caps,
         };
 
