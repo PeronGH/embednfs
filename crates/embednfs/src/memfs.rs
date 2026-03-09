@@ -36,10 +36,12 @@ impl MemFs {
     /// Creates a new empty in-memory filesystem.
     pub fn new() -> Self {
         let mut inodes = HashMap::new();
+        let mut root_attrs = Attrs::new(ObjectType::Directory, 1);
+        root_attrs.mode = 0o777;
         inodes.insert(
             1,
             Inode {
-                attrs: Attrs::new(ObjectType::Directory, 1),
+                attrs: root_attrs,
                 parent: None,
                 data: InodeData::Directory(HashMap::new()),
                 xattrs: HashMap::new(),
@@ -79,6 +81,13 @@ impl MemFs {
             SetTime::ServerNow => Timestamp::now(),
             SetTime::Client(ts) => ts,
         };
+    }
+
+    fn apply_create_owner(attrs: &mut Attrs, ctx: &RequestContext) {
+        if let AuthContext::Sys { uid, gid, .. } = &ctx.auth {
+            attrs.uid = *uid;
+            attrs.gid = *gid;
+        }
     }
 
     fn apply_setattrs(&self, inode: &mut Inode, attrs: &SetAttrs) -> FsResult<()> {
@@ -450,7 +459,7 @@ impl FileSystem for MemFs {
 
     async fn create(
         &self,
-        _ctx: &RequestContext,
+        ctx: &RequestContext,
         parent: &Self::Handle,
         name: &str,
         req: CreateRequest,
@@ -485,6 +494,7 @@ impl FileSystem for MemFs {
             },
             xattrs: HashMap::new(),
         };
+        Self::apply_create_owner(&mut inode.attrs, ctx);
         self.apply_setattrs(&mut inode, &req.attrs)?;
 
         if let InodeData::Directory(entries) = &mut inner.inodes.get_mut(parent).unwrap().data {
@@ -683,7 +693,7 @@ impl Xattrs<u64> for MemFs {
 impl Symlinks<u64> for MemFs {
     async fn create_symlink(
         &self,
-        _ctx: &RequestContext,
+        ctx: &RequestContext,
         parent: &u64,
         name: &str,
         target: &str,
@@ -710,6 +720,7 @@ impl Symlinks<u64> for MemFs {
             data: InodeData::Symlink(target.to_string()),
             xattrs: HashMap::new(),
         };
+        Self::apply_create_owner(&mut inode.attrs, ctx);
         inode.attrs.size = target.len() as u64;
         inode.attrs.space_used = inode.attrs.size;
         self.apply_setattrs(&mut inode, attrs)?;
@@ -878,5 +889,61 @@ mod tests {
 
         let attrs = fs.getattr(&ctx, &created.handle).await.unwrap();
         assert!(attrs.has_named_attrs);
+    }
+
+    #[tokio::test]
+    async fn root_is_writable_for_non_owner_auth_sys_callers() {
+        let fs = MemFs::new();
+        let ctx = RequestContext {
+            auth: AuthContext::Sys {
+                uid: 501,
+                gid: 20,
+                supplemental_gids: vec![],
+            },
+        };
+
+        let granted = fs
+            .access(
+                &ctx,
+                &1,
+                AccessMask::MODIFY | AccessMask::EXTEND | AccessMask::DELETE | AccessMask::LOOKUP,
+            )
+            .await
+            .unwrap();
+
+        assert!(granted.contains(AccessMask::MODIFY));
+        assert!(granted.contains(AccessMask::EXTEND));
+        assert!(granted.contains(AccessMask::DELETE));
+        assert!(granted.contains(AccessMask::LOOKUP));
+    }
+
+    #[tokio::test]
+    async fn create_stamps_auth_sys_owner_by_default() {
+        let fs = MemFs::new();
+        let ctx = RequestContext {
+            auth: AuthContext::Sys {
+                uid: 501,
+                gid: 20,
+                supplemental_gids: vec![12],
+            },
+        };
+
+        let created = fs
+            .create(
+                &ctx,
+                &1,
+                "owned.txt",
+                CreateRequest {
+                    kind: CreateKind::File,
+                    attrs: SetAttrs::default(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let attrs = fs.getattr(&ctx, &created.handle).await.unwrap();
+        assert_eq!(attrs.uid, 501);
+        assert_eq!(attrs.gid, 20);
+        assert_eq!(attrs.mode, 0o644);
     }
 }
