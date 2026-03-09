@@ -70,7 +70,7 @@ Never hand-edit `Cargo.toml`. Use `cargo` for all related changes.
 
 ### Commits
 
-Use conventional commits (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`). Commit every meaningful change as soon as possible instead of accumulating them. Each commit should compile, pass `cargo clippy --workspace`, and pass existing tests.
+Use conventional commits (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`). Commit every meaningful change as soon as possible instead of accumulating them. Each commit should compile, pass formatter, linter, and tests.
 
 ### Correctness Over Momentum
 
