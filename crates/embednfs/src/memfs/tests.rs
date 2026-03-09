@@ -2,7 +2,7 @@ use bytes::Bytes;
 
 use crate::fs::{
     AccessMask, AuthContext, CreateKind, CreateRequest, FileSystem, FsError, HardLinks, ObjectType,
-    RequestContext, SetAttrs, WriteStability, XattrSetMode, Xattrs,
+    RequestContext, SetAttrs, SetTime, Timestamp, WriteStability, XattrSetMode, Xattrs,
 };
 
 use super::MemFs;
@@ -292,4 +292,227 @@ async fn rename_over_existing_hard_link_to_same_inode_is_a_noop() {
         created.handle
     );
     assert_eq!(root_after.change, root_before.change);
+}
+
+#[tokio::test]
+async fn rename_rejects_moving_directory_into_its_descendant() {
+    let fs = MemFs::new();
+    let ctx = RequestContext::anonymous();
+    let src = fs
+        .create(
+            &ctx,
+            &1,
+            "src",
+            CreateRequest {
+                kind: CreateKind::Directory,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap();
+    let subdir = fs
+        .create(
+            &ctx,
+            &src.handle,
+            "child",
+            CreateRequest {
+                kind: CreateKind::Directory,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let err = fs
+        .rename(&ctx, &1, "src", &subdir.handle, "moved")
+        .await
+        .unwrap_err();
+    assert_eq!(err, FsError::InvalidInput);
+    assert_eq!(fs.lookup(&ctx, &1, "src").await.unwrap(), src.handle);
+    assert_eq!(
+        fs.lookup(&ctx, &src.handle, "child").await.unwrap(),
+        subdir.handle
+    );
+}
+
+#[tokio::test]
+async fn rename_rejects_directory_file_type_mismatches() {
+    let fs = MemFs::new();
+    let ctx = RequestContext::anonymous();
+    let dir = fs
+        .create(
+            &ctx,
+            &1,
+            "dir",
+            CreateRequest {
+                kind: CreateKind::Directory,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap();
+    let file = fs
+        .create(
+            &ctx,
+            &1,
+            "file.txt",
+            CreateRequest {
+                kind: CreateKind::File,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let err = fs
+        .rename(&ctx, &1, "file.txt", &1, "dir")
+        .await
+        .unwrap_err();
+    assert_eq!(err, FsError::IsDirectory);
+
+    let err = fs
+        .rename(&ctx, &1, "dir", &1, "file.txt")
+        .await
+        .unwrap_err();
+    assert_eq!(err, FsError::NotDirectory);
+    assert_eq!(fs.lookup(&ctx, &1, "dir").await.unwrap(), dir.handle);
+    assert_eq!(fs.lookup(&ctx, &1, "file.txt").await.unwrap(), file.handle);
+}
+
+#[tokio::test]
+async fn oversized_mutations_return_file_too_large() {
+    let fs = MemFs::new();
+    let ctx = RequestContext::anonymous();
+    let created = fs
+        .create(
+            &ctx,
+            &1,
+            "huge.bin",
+            CreateRequest {
+                kind: CreateKind::File,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap();
+    let over_limit = fs.limits().max_file_size + 1;
+
+    let err = fs
+        .setattr(
+            &ctx,
+            &created.handle,
+            &SetAttrs {
+                size: Some(over_limit),
+                ..SetAttrs::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err, FsError::FileTooLarge);
+
+    let err = fs
+        .write(
+            &ctx,
+            &created.handle,
+            fs.limits().max_file_size,
+            Bytes::from_static(b"x"),
+            WriteStability::FileSync,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err, FsError::FileTooLarge);
+    assert_eq!(fs.getattr(&ctx, &created.handle).await.unwrap().size, 0);
+}
+
+#[tokio::test]
+async fn setattr_size_updates_mtime_when_client_did_not_supply_one() {
+    let fs = MemFs::new();
+    let ctx = RequestContext::anonymous();
+    let created = fs
+        .create(
+            &ctx,
+            &1,
+            "mtime.txt",
+            CreateRequest {
+                kind: CreateKind::File,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap();
+    let fixed_mtime = Timestamp {
+        seconds: 123,
+        nanos: 456,
+    };
+
+    let _ = fs
+        .setattr(
+            &ctx,
+            &created.handle,
+            &SetAttrs {
+                mtime: Some(SetTime::Client(fixed_mtime)),
+                ..SetAttrs::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let attrs = fs
+        .setattr(
+            &ctx,
+            &created.handle,
+            &SetAttrs {
+                size: Some(1),
+                ..SetAttrs::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(attrs.size, 1);
+    assert_ne!(attrs.mtime, fixed_mtime);
+}
+
+#[tokio::test]
+async fn access_is_permissionless_to_match_memfs_operations() {
+    let fs = MemFs::new();
+    let ctx = RequestContext {
+        auth: AuthContext::Sys {
+            uid: 1000,
+            gid: 1000,
+            supplemental_gids: vec![],
+        },
+    };
+    let created = fs
+        .create(
+            &ctx,
+            &1,
+            "mode.txt",
+            CreateRequest {
+                kind: CreateKind::File,
+                attrs: SetAttrs {
+                    mode: Some(0),
+                    ..SetAttrs::default()
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let requested = AccessMask::READ | AccessMask::MODIFY | AccessMask::EXTEND | AccessMask::DELETE;
+
+    let granted = fs.access(&ctx, &created.handle, requested).await.unwrap();
+    assert_eq!(granted, requested);
+}
+
+#[tokio::test]
+async fn statfs_saturates_when_usage_exceeds_advertised_capacity() {
+    let fs = MemFs::new();
+    {
+        let mut inner = fs.inner.write().await;
+        let root = inner.inodes.get_mut(&1).unwrap();
+        root.attrs.space_used = (1_u64 << 30) + 1;
+    }
+
+    let stats = fs.statfs(&RequestContext::anonymous()).await.unwrap();
+    assert_eq!(stats.free_bytes, 0);
+    assert_eq!(stats.avail_bytes, 0);
 }

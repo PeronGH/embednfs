@@ -40,21 +40,19 @@ impl FileSystem for MemFs {
 
     async fn statfs(&self, _ctx: &RequestContext) -> FsResult<FsStats> {
         let inner = self.inner.read().await;
-        let used_bytes: u64 = inner
-            .inodes
-            .values()
-            .map(|inode| inode.attrs.space_used)
-            .sum();
+        let used_bytes = inner.inodes.values().fold(0_u64, |total, inode| {
+            total.saturating_add(inode.attrs.space_used)
+        });
         let total_files = 1 << 20;
         let used_files = inner.inodes.len() as u64;
 
         Ok(FsStats {
             total_bytes: 1 << 30,
-            free_bytes: (1 << 30) - used_bytes,
-            avail_bytes: (1 << 30) - used_bytes,
+            free_bytes: (1_u64 << 30).saturating_sub(used_bytes),
+            avail_bytes: (1_u64 << 30).saturating_sub(used_bytes),
             total_files,
-            free_files: total_files - used_files,
-            avail_files: total_files - used_files,
+            free_files: total_files.saturating_sub(used_files),
+            avail_files: total_files.saturating_sub(used_files),
         })
     }
 
