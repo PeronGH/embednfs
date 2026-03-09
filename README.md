@@ -213,9 +213,12 @@ Rejected in NFSv4.1 because they are v4.0-only:
 ```bash
 cargo clippy --workspace
 cargo test --workspace
+./scripts/smoke-macos-nfs41.sh
 ```
 
 The integration suite exercises the full RPC path over TCP and includes raw `OPENATTR`/named-attribute flows for macOS-style clients.
+
+For a genuine localhost/macOS smoke test, `scripts/smoke-macos-nfs41.sh` starts `embednfsd`, mounts it with `mount_nfs`, and exercises basic create/write/read/rename/remove/rmdir behavior through the kernel client.
 
 Many of the protocol conformance tests are adapted from the maintained `pynfs` tree at `git://git.linux-nfs.org/projects/cdmackay/pynfs.git`.
 
