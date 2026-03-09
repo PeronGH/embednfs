@@ -747,3 +747,86 @@ async fn test_rename_nonexistent_source() {
     let (status, _, _) = parse_compound_header(&mut resp);
     assert_eq!(status, NfsStat4::Noent as u32);
 }
+
+/// RENAME over a non-empty target directory leaves both names unchanged.
+/// Origin: RFC 8881 §18.26.3 target replacement must fail atomically for non-empty directories.
+/// RFC: RFC 8881 §18.26.3.
+#[tokio::test]
+async fn test_rename_over_nonempty_directory_is_atomic() {
+    let fs = MemFs::new();
+    let ctx = RequestContext::anonymous();
+    let _ = fs
+        .create(
+            &ctx,
+            &1,
+            "source.txt",
+            CreateRequest {
+                kind: CreateKind::File,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap();
+    let target_dir = fs
+        .create(
+            &ctx,
+            &1,
+            "target",
+            CreateRequest {
+                kind: CreateKind::Directory,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap();
+    let _ = fs
+        .create(
+            &ctx,
+            &target_dir.handle,
+            "nested.txt",
+            CreateRequest {
+                kind: CreateKind::File,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let port = start_server_with_fs(fs).await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let savefh_op = encode_savefh();
+    let rename_op = encode_rename("source.txt", "target");
+    let compound = encode_compound(
+        "rename-notempty",
+        &[&seq_op, &rootfh_op, &savefh_op, &rename_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Isdir as u32);
+
+    let seq_op = encode_sequence(&sessionid, 2, 0);
+    let lookup_source = encode_lookup("source.txt");
+    let compound = encode_compound("check-source", &[&seq_op, &rootfh_op, &lookup_source]);
+    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+
+    let seq_op = encode_sequence(&sessionid, 3, 0);
+    let lookup_target = encode_lookup("target");
+    let lookup_nested = encode_lookup("nested.txt");
+    let compound = encode_compound(
+        "check-target",
+        &[&seq_op, &rootfh_op, &lookup_target, &lookup_nested],
+    );
+    let mut resp = send_rpc(&mut stream, 5, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+}
