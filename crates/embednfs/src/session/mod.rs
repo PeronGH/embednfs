@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64};
+use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use embednfs_proto::{ServerOwner4, Verifier4};
@@ -25,6 +26,37 @@ const MAX_FORE_CHAN_SLOTS: u32 = 64;
 const MAX_REQUEST_SIZE: u32 = 1_049_620;
 const MAX_CACHED_RESPONSE: u32 = 6144;
 const SYNTH_FILEID_BASE: u64 = 1u64 << 63;
+pub(crate) const DEFAULT_LEASE_TIME_SECS: u32 = 90;
+
+type NowFn = Arc<dyn Fn() -> Instant + Send + Sync>;
+
+#[derive(Clone)]
+struct StateConfig {
+    lease_duration: Duration,
+    revoked_retention: Duration,
+    now: NowFn,
+}
+
+impl StateConfig {
+    fn default_now() -> Instant {
+        Instant::now()
+    }
+
+    fn now(&self) -> Instant {
+        (self.now)()
+    }
+}
+
+impl Default for StateConfig {
+    fn default() -> Self {
+        let lease_duration = Duration::from_secs(u64::from(DEFAULT_LEASE_TIME_SECS));
+        Self {
+            lease_duration,
+            revoked_retention: lease_duration,
+            now: Arc::new(Self::default_now),
+        }
+    }
+}
 
 use model::StateInner;
 pub(crate) use model::{ResolvedStateid, SequenceReplay, SynthMeta};
@@ -42,6 +74,7 @@ pub(crate) struct StateManager {
     next_changeid: AtomicU64,
     next_synth_fileid: AtomicU64,
     next_connectionid: AtomicU64,
+    config: StateConfig,
     /// Server boot verifier (changes each restart).
     pub(crate) write_verifier: Verifier4,
     pub(crate) server_owner: ServerOwner4,
@@ -49,6 +82,10 @@ pub(crate) struct StateManager {
 
 impl StateManager {
     pub(crate) fn new() -> Self {
+        Self::with_config(StateConfig::default())
+    }
+
+    fn with_config(config: StateConfig) -> Self {
         let boot_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
@@ -78,6 +115,7 @@ impl StateManager {
             next_changeid: AtomicU64::new(2),
             next_synth_fileid: AtomicU64::new(SYNTH_FILEID_BASE),
             next_connectionid: AtomicU64::new(1),
+            config,
             write_verifier,
             server_owner,
         }

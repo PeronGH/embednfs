@@ -16,6 +16,7 @@ impl StateManager {
         access: u32,
         ignore_open_other: Option<[u8; 12]>,
     ) -> bool {
+        self.reap_expired_clients().await;
         let inner = self.inner.read().await;
         inner.open_files.iter().any(|(other, state)| {
             state.active
@@ -33,6 +34,7 @@ impl StateManager {
         share_access: u32,
         share_deny: u32,
     ) -> Result<Stateid4, NfsStat4> {
+        self.reap_expired_clients().await;
         let share_access = self.share_access_mode(share_access);
         let mut inner = self.inner.write().await;
         for state in inner.open_files.values() {
@@ -81,6 +83,7 @@ impl StateManager {
 
     /// Close an open state.
     pub(crate) async fn close_state(&self, stateid: &Stateid4) -> Result<Stateid4, NfsStat4> {
+        self.reap_expired_clients().await;
         let mut inner = self.inner.write().await;
         let (stored_seq, active) = {
             let state = inner
@@ -114,6 +117,7 @@ impl StateManager {
 
     /// Free a stateid.
     pub(crate) async fn free_stateid(&self, stateid: &Stateid4) -> Result<(), NfsStat4> {
+        self.reap_expired_clients().await;
         let mut inner = self.inner.write().await;
         if let Some((open_seq, open_active)) = inner
             .open_files
@@ -147,6 +151,7 @@ impl StateManager {
         stateids: &[Stateid4],
         _current_stateid: Option<Stateid4>,
     ) -> Vec<NfsStat4> {
+        self.reap_expired_clients().await;
         let inner = self.inner.read().await;
         stateids
             .iter()
@@ -184,6 +189,7 @@ impl StateManager {
         share_access: u32,
         share_deny: u32,
     ) -> Result<Stateid4, NfsStat4> {
+        self.reap_expired_clients().await;
         let access_mode = share_access & !OPEN4_SHARE_ACCESS_WANT_DELEG_MASK;
         if !matches!(
             access_mode,

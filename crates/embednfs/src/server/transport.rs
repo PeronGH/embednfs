@@ -9,7 +9,7 @@ use embednfs_proto::*;
 use crate::fs::FileSystem;
 use crate::session::SequenceReplay;
 
-use super::compound::sequence_error_compound;
+use super::compound::{sequence_error_compound, sequence_only_compound};
 use super::{
     CONN_BUF_SIZE, Compound4Res, MAX_FRAGMENT_SIZE, NfsServer, RPC_FRAG_LEN_MASK,
     RPC_LAST_FRAGMENT, hex_bytes, replay_fingerprint,
@@ -150,6 +150,12 @@ impl<F: FileSystem> NfsServer<F> {
                                         SequenceReplay::Replay(cached) => {
                                             encode_rpc_reply_accepted(&mut response, call.xid);
                                             response.extend_from_slice(&cached);
+                                            return Some(response.freeze());
+                                        }
+                                        SequenceReplay::StatusOnly(res) => {
+                                            let result = sequence_only_compound(&args.tag, res);
+                                            encode_rpc_reply_accepted(&mut response, call.xid);
+                                            result.encode(&mut response);
                                             return Some(response.freeze());
                                         }
                                         SequenceReplay::Error(status) => {

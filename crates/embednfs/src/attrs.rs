@@ -1,13 +1,12 @@
 use crate::fs::{FsCapabilities, FsLimits, FsStats, SetAttrs, SetTime, Timestamp};
 use crate::internal::{ServerFileAttr, ServerFileType};
+use crate::session::DEFAULT_LEASE_TIME_SECS;
 /// NFSv4.1 file attribute encoding and decoding.
 ///
 /// Handles the bitmap-driven attribute encoding used by GETATTR/SETATTR.
 use bytes::BytesMut;
 use embednfs_proto::xdr::*;
 use embednfs_proto::*;
-
-const NFS_LEASE_TIME_SECS: u32 = 90;
 const MODE_PERM_MASK: u32 = 0o7777;
 
 /// Snapshot of filesystem-wide values needed for attribute encoding.
@@ -165,7 +164,7 @@ pub(crate) fn encode_fattr4(
     // FATTR4_LEASE_TIME (10) - mandatory
     if request.is_set(FATTR4_LEASE_TIME) {
         result_bitmap.set(FATTR4_LEASE_TIME);
-        NFS_LEASE_TIME_SECS.encode(&mut vals);
+        DEFAULT_LEASE_TIME_SECS.encode(&mut vals);
     }
 
     // FATTR4_RDATTR_ERROR (11) - mandatory

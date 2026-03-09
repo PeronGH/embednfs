@@ -59,6 +59,7 @@ impl StateManager {
         current_stateid: Option<Stateid4>,
         current_mode: CurrentStateidMode,
     ) -> Result<ResolvedStateid, NfsStat4> {
+        self.reap_expired_clients().await;
         match self.normalize_stateid(requested, current_stateid, current_mode)? {
             NormalizedStateid::Anonymous => Ok(ResolvedStateid::Anonymous),
             NormalizedStateid::Bypass => Ok(ResolvedStateid::Bypass),

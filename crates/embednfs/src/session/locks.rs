@@ -123,6 +123,7 @@ impl StateManager {
         length: u64,
         ignore_stateid: Option<[u8; 12]>,
     ) -> bool {
+        self.reap_expired_clients().await;
         if length == 0 {
             return false;
         }
@@ -153,6 +154,7 @@ impl StateManager {
         length: u64,
         ignore_stateid: Option<&Stateid4>,
     ) -> Option<LockDenied4> {
+        self.reap_expired_clients().await;
         let inner = self.inner.read().await;
         for (other, state) in &inner.lock_files {
             if Some(*other) == ignore_stateid.map(|sid| sid.other) {
@@ -195,6 +197,7 @@ impl StateManager {
         offset: u64,
         length: u64,
     ) -> Result<Stateid4, NfsStat4> {
+        self.reap_expired_clients().await;
         self.validate_lock_bounds(offset, length)?;
         let mut inner = self.inner.write().await;
         let open = inner
@@ -239,6 +242,7 @@ impl StateManager {
         offset: u64,
         length: u64,
     ) -> Result<Stateid4, NfsStat4> {
+        self.reap_expired_clients().await;
         self.validate_lock_bounds(offset, length)?;
         let mut inner = self.inner.write().await;
         let state = inner
@@ -267,6 +271,7 @@ impl StateManager {
         offset: u64,
         length: u64,
     ) -> Result<Stateid4, NfsStat4> {
+        self.reap_expired_clients().await;
         self.validate_lock_bounds(offset, length)?;
         let mut inner = self.inner.write().await;
         let state = inner

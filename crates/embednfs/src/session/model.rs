@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use embednfs_proto::{
     ClientOwner4, Clientid4, NfsLockType4, SequenceRes4, Sequenceid4, Sessionid4, Slotid4,
@@ -88,6 +89,13 @@ pub(super) struct ClientState {
     pub reclaim_complete_global: bool,
     pub sequence_id: Sequenceid4,
     pub replaced_clientid: Option<Clientid4>,
+    pub lease_state: ClientLeaseState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ClientLeaseState {
+    Active { deadline: Instant },
+    Revoked { since: Instant, status_flags: u32 },
 }
 
 pub(super) struct SessionState {
@@ -118,6 +126,7 @@ pub(crate) struct SequenceCacheToken {
 pub(crate) enum SequenceReplay {
     Execute(SequenceRes4, SequenceCacheToken),
     Replay(Vec<u8>),
+    StatusOnly(SequenceRes4),
     Error(embednfs_proto::NfsStat4),
 }
 

@@ -1,13 +1,44 @@
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
 use embednfs_proto::{
     ChannelAttrs4, ClientOwner4, Clientid4, CreateSessionArgs4, EXCHGID4_FLAG_CONFIRMED_R,
     EXCHGID4_FLAG_USE_NON_PNFS, ExchangeIdArgs4, NfsLockType4, NfsStat4, OPEN4_SHARE_ACCESS_BOTH,
-    OPEN4_SHARE_ACCESS_READ, OPEN4_SHARE_DENY_NONE, Sequenceid4, StateOwner4, StateProtect4A,
-    Stateid4, Verifier4,
+    OPEN4_SHARE_ACCESS_READ, OPEN4_SHARE_ACCESS_WRITE, OPEN4_SHARE_DENY_NONE,
+    OPEN4_SHARE_DENY_WRITE, SEQ4_STATUS_EXPIRED_ALL_STATE_REVOKED, SequenceArgs4, Sequenceid4,
+    StateOwner4, StateProtect4A, Stateid4, Verifier4,
 };
 
 use crate::internal::ServerObject;
 
-use super::StateManager;
+use super::{StateConfig, StateManager};
+
+#[derive(Clone)]
+struct ManualClock {
+    now: Arc<Mutex<Instant>>,
+}
+
+impl ManualClock {
+    fn new() -> Self {
+        Self {
+            now: Arc::new(Mutex::new(Instant::now())),
+        }
+    }
+
+    fn config(&self, lease_duration: Duration) -> StateConfig {
+        let now = self.now.clone();
+        StateConfig {
+            lease_duration,
+            revoked_retention: lease_duration,
+            now: Arc::new(move || *now.lock().unwrap()),
+        }
+    }
+
+    fn advance(&self, delta: Duration) {
+        let mut now = self.now.lock().unwrap();
+        *now += delta;
+    }
+}
 
 fn exchange_id_args(ownerid: &[u8], verifier: Verifier4) -> ExchangeIdArgs4 {
     ExchangeIdArgs4 {
@@ -47,6 +78,22 @@ async fn setup_open_state(
         )
         .await
         .unwrap()
+}
+
+fn sequence_args(sessionid: [u8; 16], sequenceid: u32) -> SequenceArgs4 {
+    SequenceArgs4 {
+        sessionid,
+        sequenceid,
+        slotid: 0,
+        highest_slotid: 0,
+        cachethis: false,
+    }
+}
+
+fn state_with_lease(lease_duration: Duration) -> (StateManager, ManualClock) {
+    let clock = ManualClock::new();
+    let state = StateManager::with_config(clock.config(lease_duration));
+    (state, clock)
 }
 
 #[tokio::test]
@@ -214,6 +261,143 @@ async fn test_exchange_id_reboot_drops_old_state_after_new_create_session() {
             .test_stateids(&[open_stateid, lock_stateid], None)
             .await,
         vec![NfsStat4::BadStateid, NfsStat4::BadStateid]
+    );
+}
+
+#[tokio::test]
+async fn test_create_session_returns_stale_clientid_after_lease_expiry() {
+    let (state, clock) = state_with_lease(Duration::from_secs(1));
+    let client = state
+        .exchange_id(&exchange_id_args(b"owner", [0x11; 8]))
+        .await
+        .unwrap();
+
+    clock.advance(Duration::from_secs(2));
+
+    assert_eq!(
+        state
+            .create_session(&create_session_args(client.clientid, client.sequenceid), 1)
+            .await
+            .unwrap_err(),
+        NfsStat4::StaleClientid
+    );
+}
+
+#[tokio::test]
+async fn test_exchange_id_same_verifier_after_expiry_creates_fresh_client() {
+    let (state, clock) = state_with_lease(Duration::from_secs(1));
+    let args = exchange_id_args(b"owner", [0x11; 8]);
+    let first = state.exchange_id(&args).await.unwrap();
+    let session = state
+        .create_session(&create_session_args(first.clientid, first.sequenceid), 1)
+        .await
+        .unwrap();
+
+    clock.advance(Duration::from_secs(2));
+
+    let second = state.exchange_id(&args).await.unwrap();
+    assert_ne!(second.clientid, first.clientid);
+    let _ = state
+        .create_session(&create_session_args(second.clientid, second.sequenceid), 2)
+        .await
+        .unwrap();
+    assert_eq!(state.session_clientid(&session.sessionid).await, None);
+}
+
+#[tokio::test]
+async fn test_expired_client_conflicts_are_reaped_for_other_clients() {
+    let (state, clock) = state_with_lease(Duration::from_secs(1));
+    let client = state
+        .exchange_id(&exchange_id_args(b"owner", [0x11; 8]))
+        .await
+        .unwrap();
+    let _ = state
+        .create_session(&create_session_args(client.clientid, client.sequenceid), 1)
+        .await
+        .unwrap();
+    let object = ServerObject::Fs(1);
+    let _open_stateid = state
+        .create_open_state(
+            object.clone(),
+            client.clientid,
+            OPEN4_SHARE_ACCESS_READ,
+            OPEN4_SHARE_DENY_WRITE,
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        state
+            .has_conflicting_share_deny(&object, OPEN4_SHARE_ACCESS_WRITE, None)
+            .await
+    );
+
+    clock.advance(Duration::from_secs(2));
+
+    assert!(
+        !state
+            .has_conflicting_share_deny(&object, OPEN4_SHARE_ACCESS_WRITE, None)
+            .await
+    );
+}
+
+#[tokio::test]
+async fn test_prepare_sequence_returns_expired_all_state_revoked_for_revoked_session() {
+    let (state, clock) = state_with_lease(Duration::from_secs(1));
+    let client = state
+        .exchange_id(&exchange_id_args(b"owner", [0x11; 8]))
+        .await
+        .unwrap();
+    let session = state
+        .create_session(&create_session_args(client.clientid, client.sequenceid), 1)
+        .await
+        .unwrap();
+    let open_stateid = setup_open_state(&state, ServerObject::Fs(1), client.clientid).await;
+
+    clock.advance(Duration::from_secs(2));
+
+    let replay = state
+        .prepare_sequence(&sequence_args(session.sessionid, 1), b"expired", 1)
+        .await;
+    match replay {
+        super::model::SequenceReplay::StatusOnly(res) => {
+            assert_eq!(res.status_flags, SEQ4_STATUS_EXPIRED_ALL_STATE_REVOKED);
+        }
+        _ => panic!("expected revoked session status reply"),
+    }
+    assert_eq!(
+        state.test_stateids(&[open_stateid], None).await,
+        vec![NfsStat4::BadStateid]
+    );
+}
+
+#[tokio::test]
+async fn test_revoked_clients_are_dropped_after_retention() {
+    let (state, clock) = state_with_lease(Duration::from_secs(1));
+    let client = state
+        .exchange_id(&exchange_id_args(b"owner", [0x11; 8]))
+        .await
+        .unwrap();
+    let session = state
+        .create_session(&create_session_args(client.clientid, client.sequenceid), 1)
+        .await
+        .unwrap();
+
+    clock.advance(Duration::from_secs(2));
+    let _ = state
+        .prepare_sequence(&sequence_args(session.sessionid, 1), b"expired", 1)
+        .await;
+
+    clock.advance(Duration::from_secs(2));
+    state.reap_expired_clients().await;
+
+    assert_eq!(state.session_clientid(&session.sessionid).await, None);
+    assert_eq!(
+        state
+            .create_session(&create_session_args(client.clientid, client.sequenceid), 1)
+            .await
+            .unwrap_err(),
+        NfsStat4::StaleClientid
     );
 }
 

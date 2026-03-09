@@ -4,10 +4,11 @@ use std::sync::atomic::Ordering;
 use embednfs_proto::{
     BindConnToSessionArgs4, BindConnToSessionRes4, ChannelAttrs4, Clientid4, CreateSessionArgs4,
     CreateSessionRes4, EXCHGID4_FLAG_CONFIRMED_R, EXCHGID4_FLAG_USE_NON_PNFS, ExchangeIdArgs4,
-    ExchangeIdRes4, NfsImplId4, NfsStat4, NfsTime4, OpenClaim4, Sessionid4, StateProtect4R,
+    ExchangeIdRes4, NfsImplId4, NfsStat4, NfsTime4, OpenClaim4,
+    SEQ4_STATUS_EXPIRED_ALL_STATE_REVOKED, Sessionid4, StateProtect4R,
 };
 
-use super::model::{ClientState, SessionState, SlotState, StateInner};
+use super::model::{ClientLeaseState, ClientState, SessionState, SlotState, StateInner};
 use super::{MAX_CACHED_RESPONSE, MAX_FORE_CHAN_SLOTS, MAX_REQUEST_SIZE, StateManager};
 
 impl StateManager {
@@ -21,11 +22,14 @@ impl StateManager {
         }
 
         let mut inner = self.inner.write().await;
+        let now = self.config.now();
+        self.reap_expired_clients_locked(&mut inner, now);
 
         let (clientid, seq, confirmed) = if let Some(existing) =
             inner.clients.values().find(|client| {
                 client.owner.ownerid == args.clientowner.ownerid
                     && client.owner.verifier == args.clientowner.verifier
+                    && matches!(client.lease_state, ClientLeaseState::Active { .. })
             }) {
             (existing.clientid, existing.sequence_id, existing.confirmed)
         } else {
@@ -35,9 +39,21 @@ impl StateManager {
                 .find(|client| {
                     client.owner.ownerid == args.clientowner.ownerid
                         && client.owner.verifier != args.clientowner.verifier
-                        && client.confirmed
+                        && (client.confirmed
+                            || matches!(client.lease_state, ClientLeaseState::Revoked { .. }))
                 })
-                .map(|client| client.clientid);
+                .map(|client| client.clientid)
+                .or_else(|| {
+                    inner
+                        .clients
+                        .values()
+                        .find(|client| {
+                            client.owner.ownerid == args.clientowner.ownerid
+                                && client.owner.verifier == args.clientowner.verifier
+                                && matches!(client.lease_state, ClientLeaseState::Revoked { .. })
+                        })
+                        .map(|client| client.clientid)
+                });
 
             let stale_unconfirmed: Vec<_> = inner
                 .clients
@@ -46,6 +62,7 @@ impl StateManager {
                     client.owner.ownerid == args.clientowner.ownerid
                         && client.owner.verifier != args.clientowner.verifier
                         && !client.confirmed
+                        && matches!(client.lease_state, ClientLeaseState::Active { .. })
                 })
                 .map(|client| client.clientid)
                 .collect();
@@ -63,6 +80,9 @@ impl StateManager {
                     reclaim_complete_global: false,
                     sequence_id: 1,
                     replaced_clientid: old_clientid,
+                    lease_state: ClientLeaseState::Active {
+                        deadline: self.lease_deadline(now),
+                    },
                 },
             );
             (id, 1, false)
@@ -98,18 +118,26 @@ impl StateManager {
         connection_id: u64,
     ) -> Result<CreateSessionRes4, NfsStat4> {
         let mut inner = self.inner.write().await;
+        let now = self.config.now();
+        self.reap_expired_clients_locked(&mut inner, now);
 
         let (replaced_clientid, client_sequence_id) = {
             let client = inner
                 .clients
                 .get_mut(&args.clientid)
                 .ok_or(NfsStat4::StaleClientid)?;
+            if matches!(client.lease_state, ClientLeaseState::Revoked { .. }) {
+                return Err(NfsStat4::StaleClientid);
+            }
 
             if args.sequence != client.sequence_id {
                 return Err(NfsStat4::SeqMisordered);
             }
             client.sequence_id += 1;
             client.confirmed = true;
+            client.lease_state = ClientLeaseState::Active {
+                deadline: self.lease_deadline(now),
+            };
             (client.replaced_clientid.take(), client.sequence_id)
         };
 
@@ -179,6 +207,8 @@ impl StateManager {
         connection_id: u64,
     ) -> Result<(), NfsStat4> {
         let mut inner = self.inner.write().await;
+        let now = self.config.now();
+        self.reap_expired_clients_locked(&mut inner, now);
         let Some(session) = inner.sessions.get(sessionid) else {
             return Err(NfsStat4::BadSession);
         };
@@ -192,6 +222,8 @@ impl StateManager {
     /// Handle DESTROY_CLIENTID.
     pub(crate) async fn destroy_clientid(&self, clientid: Clientid4) -> Result<(), NfsStat4> {
         let mut inner = self.inner.write().await;
+        let now = self.config.now();
+        self.reap_expired_clients_locked(&mut inner, now);
         if Self::client_has_active_state(&inner, clientid) {
             return Err(NfsStat4::ClientidBusy);
         }
@@ -209,6 +241,8 @@ impl StateManager {
         connection_id: u64,
     ) -> Result<BindConnToSessionRes4, NfsStat4> {
         let mut inner = self.inner.write().await;
+        let now = self.config.now();
+        self.reap_expired_clients_locked(&mut inner, now);
         let Some(session) = inner.sessions.get_mut(&args.sessionid) else {
             return Err(NfsStat4::BadSession);
         };
@@ -235,6 +269,8 @@ impl StateManager {
         one_fs: bool,
     ) -> Result<(), NfsStat4> {
         let mut inner = self.inner.write().await;
+        let now = self.config.now();
+        self.reap_expired_clients_locked(&mut inner, now);
         let client = inner
             .clients
             .get_mut(&clientid)
@@ -254,27 +290,90 @@ impl StateManager {
         clientid: Clientid4,
         claim: &OpenClaim4,
     ) -> Result<(), NfsStat4> {
+        self.reap_expired_clients().await;
         let inner = self.inner.read().await;
         let client = inner
             .clients
             .get(&clientid)
             .ok_or(NfsStat4::StaleClientid)?;
+        if matches!(client.lease_state, ClientLeaseState::Revoked { .. }) {
+            return Err(NfsStat4::StaleClientid);
+        }
         match claim {
             OpenClaim4::Previous(_) if client.reclaim_complete_global => Err(NfsStat4::NoGrace),
             _ => Ok(()),
         }
     }
 
-    pub(super) fn drop_client_state(inner: &mut StateInner, clientid: Clientid4) -> bool {
-        inner
-            .sessions
-            .retain(|_, session| session.clientid != clientid);
+    pub(super) async fn reap_expired_clients(&self) {
+        let mut inner = self.inner.write().await;
+        let now = self.config.now();
+        self.reap_expired_clients_locked(&mut inner, now);
+    }
+
+    pub(super) fn lease_deadline(&self, now: std::time::Instant) -> std::time::Instant {
+        now + self.config.lease_duration
+    }
+
+    pub(super) fn reap_expired_clients_locked(
+        &self,
+        inner: &mut StateInner,
+        now: std::time::Instant,
+    ) {
+        let expired_active: Vec<_> = inner
+            .clients
+            .iter()
+            .filter_map(|(clientid, client)| match client.lease_state {
+                ClientLeaseState::Active { deadline } if now >= deadline => Some(*clientid),
+                _ => None,
+            })
+            .collect();
+
+        for clientid in expired_active {
+            Self::revoke_client_state(inner, clientid);
+            if let Some(client) = inner.clients.get_mut(&clientid) {
+                client.lease_state = ClientLeaseState::Revoked {
+                    since: now,
+                    status_flags: SEQ4_STATUS_EXPIRED_ALL_STATE_REVOKED,
+                };
+            }
+        }
+
+        let drop_revoked: Vec<_> = inner
+            .clients
+            .iter()
+            .filter_map(|(clientid, client)| match client.lease_state {
+                ClientLeaseState::Revoked { since, .. }
+                    if now.duration_since(since) >= self.config.revoked_retention
+                        || !inner
+                            .sessions
+                            .values()
+                            .any(|session| session.clientid == *clientid) =>
+                {
+                    Some(*clientid)
+                }
+                _ => None,
+            })
+            .collect();
+        for clientid in drop_revoked {
+            let _ = Self::drop_client_state(inner, clientid);
+        }
+    }
+
+    fn revoke_client_state(inner: &mut StateInner, clientid: Clientid4) {
         inner
             .open_files
             .retain(|_, state| state.clientid != clientid);
         inner
             .lock_files
             .retain(|_, state| state.owner.clientid != clientid);
+    }
+
+    pub(super) fn drop_client_state(inner: &mut StateInner, clientid: Clientid4) -> bool {
+        inner
+            .sessions
+            .retain(|_, session| session.clientid != clientid);
+        Self::revoke_client_state(inner, clientid);
         inner.clients.remove(&clientid).is_some()
     }
 

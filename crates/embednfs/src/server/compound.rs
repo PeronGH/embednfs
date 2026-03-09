@@ -466,6 +466,14 @@ pub(super) fn sequence_error_compound(tag: &str, status: NfsStat4) -> Compound4R
     }
 }
 
+pub(super) fn sequence_only_compound(tag: &str, res: SequenceRes4) -> Compound4Res {
+    Compound4Res {
+        status: NfsStat4::Ok,
+        tag: tag.to_string(),
+        resarray: vec![NfsResop4::Sequence(NfsStat4::Ok, Some(res))],
+    }
+}
+
 fn allows_compound_without_sequence(op: &NfsArgop4) -> bool {
     matches!(
         op,
