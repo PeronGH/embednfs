@@ -8,7 +8,9 @@
 
 mod common;
 
+use bytes::BytesMut;
 use embednfs_proto::*;
+use embednfs_proto::xdr::XdrEncode;
 
 use common::*;
 
@@ -447,6 +449,121 @@ async fn test_lookup_no_fh() {
 
     let (status, _, _) = parse_compound_header(&mut resp);
     assert_eq!(status, NfsStat4::Nofilehandle as u32);
+}
+
+/// LOOKUP with a zero-length name returns `NFS4ERR_INVAL`.
+/// Origin: `pynfs/nfs4.0/servertests/st_lookup.py` (CODE `LOOK3`).
+/// RFC: RFC 8881 §18.13.3.
+#[tokio::test]
+async fn test_lookup_zero_length_name() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_op = encode_lookup("");
+    let compound = encode_compound("lookup-empty", &[&seq_op, &rootfh_op, &lookup_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Inval as u32);
+    assert_eq!(num_results, 3);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_LOOKUP);
+    assert_eq!(op_status, NfsStat4::Inval as u32);
+}
+
+/// LOOKUP with a long component returns `NFS4ERR_NAMETOOLONG`.
+/// Origin: `pynfs/nfs4.0/servertests/st_lookup.py` (CODE `LOOK4`).
+/// RFC: RFC 8881 §18.13.3.
+#[tokio::test]
+async fn test_lookup_name_too_long() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+    let long_name = "x".repeat(300);
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_op = encode_lookup(&long_name);
+    let compound = encode_compound("lookup-long", &[&seq_op, &rootfh_op, &lookup_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Nametoolong as u32);
+    assert_eq!(num_results, 3);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_LOOKUP);
+    assert_eq!(op_status, NfsStat4::Nametoolong as u32);
+}
+
+/// LOOKUP of `.` and `..` returns `NFS4ERR_BADNAME`.
+/// Origin: adapted from `pynfs/nfs4.0/servertests/st_lookup.py` (CODE `LOOK8`) to our stricter RFC-targeted expectation.
+/// RFC: RFC 8881 §18.13.3.
+#[tokio::test]
+async fn test_lookup_dot_names_badname() {
+    let fs = fs_with_subdir("subdir").await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    for (xid, seq, name) in [(3, 1, "."), (4, 2, "..")] {
+        let seq_op = encode_sequence(&sessionid, seq, 0);
+        let rootfh_op = encode_putrootfh();
+        let lookup_dir = encode_lookup("subdir");
+        let lookup_dot = encode_lookup(name);
+        let compound = encode_compound(
+            "lookup-dot",
+            &[&seq_op, &rootfh_op, &lookup_dir, &lookup_dot],
+        );
+        let mut resp = send_rpc(&mut stream, xid, 1, &compound).await;
+        parse_rpc_reply(&mut resp);
+        let (status, _, num_results) = parse_compound_header(&mut resp);
+        assert_eq!(status, NfsStat4::Badname as u32);
+        assert_eq!(num_results, 4);
+        let _ = parse_op_header(&mut resp);
+        skip_sequence_res(&mut resp);
+        let _ = parse_op_header(&mut resp);
+        let _ = parse_op_header(&mut resp);
+        let (opnum, op_status) = parse_op_header(&mut resp);
+        assert_eq!(opnum, OP_LOOKUP);
+        assert_eq!(op_status, NfsStat4::Badname as u32);
+    }
+}
+
+/// LOOKUP with malformed component XDR returns `NFS4ERR_BADXDR` or an RPC decode error.
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_lookup.py` (CODE `LOOK10`) to our raw-RPC integration path.
+/// RFC: RFC 8881 §18.13.3.
+#[tokio::test]
+async fn test_lookup_badxdr_malformed_component() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+
+    let mut bad_lookup = BytesMut::new();
+    OP_LOOKUP.encode(&mut bad_lookup);
+    0xcccc_ccccu32.encode(&mut bad_lookup);
+    bad_lookup.extend_from_slice(b"buggy");
+
+    let compound = encode_compound("lookup-badxdr", &[&seq_op, &rootfh_op, &bad_lookup]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _tag, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::BadXdr as u32);
+    assert_eq!(num_results, 0);
 }
 
 // ===== LOOKUPP (pynfs LOOKP) =====

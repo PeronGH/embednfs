@@ -1348,6 +1348,64 @@ async fn test_verify_mismatching_attrs_returns_not_same() {
     assert_eq!(status, NfsStat4::NotSame as u32);
 }
 
+/// VERIFY without a current filehandle returns `NFS4ERR_NOFILEHANDLE`.
+/// Origin: `pynfs/nfs4.0/servertests/st_verify.py` (CODE `VF4`).
+/// RFC: RFC 8881 §18.31.3.
+#[tokio::test]
+async fn test_verify_no_fh() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let verify_op = encode_verify(&[FATTR4_SIZE], &17u64.to_be_bytes());
+    let compound = encode_compound("verify-nofh", &[&seq_op, &verify_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Nofilehandle as u32);
+}
+
+/// VERIFY with a write-only attribute returns `NFS4ERR_INVAL`.
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_verify.py` (CODE `VF5*` family).
+/// RFC: RFC 8881 §18.31.3.
+#[tokio::test]
+async fn test_verify_write_only_attr_invalid() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let mut vals = BytesMut::new();
+    0u32.encode(&mut vals); // SET_TO_SERVER_TIME4
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let verify_op = encode_verify(&[FATTR4_TIME_MODIFY_SET], &vals);
+    let compound = encode_compound("verify-writeonly", &[&seq_op, &rootfh_op, &verify_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Inval as u32);
+}
+
+/// VERIFY with an unsupported attribute returns `NFS4ERR_ATTRNOTSUPP`.
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_verify.py` (CODE `VF7*` family).
+/// RFC: RFC 8881 §18.31.3.
+#[tokio::test]
+async fn test_verify_unsupported_attr_attrnotsupp() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let verify_op = encode_verify(&[255], &[]);
+    let compound = encode_compound("verify-unsupported", &[&seq_op, &rootfh_op, &verify_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::AttrNotsupp as u32);
+}
+
 /// NVERIFY with matching attributes returns `NFS4ERR_SAME`.
 /// Origin: derived from `pynfs/nfs4.0/servertests/st_nverify.py` (CODE `NVF1*` family).
 /// RFC: RFC 8881 §18.15.3.
@@ -1404,6 +1462,64 @@ async fn test_nverify_mismatching_attrs_succeeds() {
 
     let (status, _, _) = parse_compound_header(&mut resp);
     assert_eq!(status, NfsStat4::Ok as u32);
+}
+
+/// NVERIFY without a current filehandle returns `NFS4ERR_NOFILEHANDLE`.
+/// Origin: `pynfs/nfs4.0/servertests/st_nverify.py` (CODE `NVF4`).
+/// RFC: RFC 8881 §18.15.3.
+#[tokio::test]
+async fn test_nverify_no_fh() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let nverify_op = encode_nverify(&[FATTR4_SIZE], &17u64.to_be_bytes());
+    let compound = encode_compound("nverify-nofh", &[&seq_op, &nverify_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Nofilehandle as u32);
+}
+
+/// NVERIFY with a write-only attribute returns `NFS4ERR_INVAL`.
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_nverify.py` (CODE `NVF5*` family).
+/// RFC: RFC 8881 §18.15.3.
+#[tokio::test]
+async fn test_nverify_write_only_attr_invalid() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let mut vals = BytesMut::new();
+    0u32.encode(&mut vals); // SET_TO_SERVER_TIME4
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let nverify_op = encode_nverify(&[FATTR4_TIME_ACCESS_SET], &vals);
+    let compound = encode_compound("nverify-writeonly", &[&seq_op, &rootfh_op, &nverify_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Inval as u32);
+}
+
+/// NVERIFY with an unsupported attribute returns `NFS4ERR_ATTRNOTSUPP`.
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_nverify.py` (CODE `NVF7*` family).
+/// RFC: RFC 8881 §18.15.3.
+#[tokio::test]
+async fn test_nverify_unsupported_attr_attrnotsupp() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let nverify_op = encode_nverify(&[255], &[]);
+    let compound = encode_compound("nverify-unsupported", &[&seq_op, &rootfh_op, &nverify_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::AttrNotsupp as u32);
 }
 
 // ===== SETATTR truncate (pynfs SATT) =====

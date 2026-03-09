@@ -17,6 +17,68 @@ pub(crate) struct AttrEncodingContext<'a> {
     pub capabilities: &'a FsCapabilities,
 }
 
+pub(crate) fn supported_attrs_bitmap(capabilities: &FsCapabilities) -> Bitmap4 {
+    let mut supported = Bitmap4::new();
+    for bit in &[
+        FATTR4_SUPPORTED_ATTRS,
+        FATTR4_TYPE,
+        FATTR4_FH_EXPIRE_TYPE,
+        FATTR4_CHANGE,
+        FATTR4_SIZE,
+        FATTR4_LINK_SUPPORT,
+        FATTR4_SYMLINK_SUPPORT,
+        FATTR4_FSID,
+        FATTR4_UNIQUE_HANDLES,
+        FATTR4_LEASE_TIME,
+        FATTR4_RDATTR_ERROR,
+        FATTR4_FILEHANDLE,
+        FATTR4_ACLSUPPORT,
+        FATTR4_ARCHIVE,
+        FATTR4_CANSETTIME,
+        FATTR4_CASE_INSENSITIVE,
+        FATTR4_CASE_PRESERVING,
+        FATTR4_CHOWN_RESTRICTED,
+        FATTR4_FILEID,
+        FATTR4_FILES_AVAIL,
+        FATTR4_FILES_FREE,
+        FATTR4_FILES_TOTAL,
+        FATTR4_HIDDEN,
+        FATTR4_HOMOGENEOUS,
+        FATTR4_MAXFILESIZE,
+        FATTR4_MAXLINK,
+        FATTR4_MAXNAME,
+        FATTR4_MAXREAD,
+        FATTR4_MAXWRITE,
+        FATTR4_MODE,
+        FATTR4_NO_TRUNC,
+        FATTR4_NUMLINKS,
+        FATTR4_OWNER,
+        FATTR4_OWNER_GROUP,
+        FATTR4_RAWDEV,
+        FATTR4_SPACE_AVAIL,
+        FATTR4_SPACE_FREE,
+        FATTR4_SPACE_TOTAL,
+        FATTR4_SPACE_USED,
+        FATTR4_SYSTEM,
+        FATTR4_TIME_ACCESS,
+        FATTR4_TIME_ACCESS_SET,
+        FATTR4_TIME_BACKUP,
+        FATTR4_TIME_CREATE,
+        FATTR4_TIME_DELTA,
+        FATTR4_TIME_METADATA,
+        FATTR4_TIME_MODIFY,
+        FATTR4_TIME_MODIFY_SET,
+        FATTR4_MOUNTED_ON_FILEID,
+        FATTR4_SUPPATTR_EXCLCREAT,
+    ] {
+        supported.set(*bit);
+    }
+    if capabilities.xattrs {
+        supported.set(FATTR4_NAMED_ATTR);
+    }
+    supported
+}
+
 /// Encode file attributes according to the requested bitmap.
 pub(crate) fn encode_fattr4(
     attr: &ServerFileAttr,
@@ -32,64 +94,7 @@ pub(crate) fn encode_fattr4(
     // FATTR4_SUPPORTED_ATTRS (0) - mandatory
     if request.is_set(FATTR4_SUPPORTED_ATTRS) {
         result_bitmap.set(FATTR4_SUPPORTED_ATTRS);
-        let mut supported = Bitmap4::new();
-        for bit in &[
-            FATTR4_SUPPORTED_ATTRS,
-            FATTR4_TYPE,
-            FATTR4_FH_EXPIRE_TYPE,
-            FATTR4_CHANGE,
-            FATTR4_SIZE,
-            FATTR4_LINK_SUPPORT,
-            FATTR4_SYMLINK_SUPPORT,
-            FATTR4_FSID,
-            FATTR4_UNIQUE_HANDLES,
-            FATTR4_LEASE_TIME,
-            FATTR4_RDATTR_ERROR,
-            FATTR4_FILEHANDLE,
-            FATTR4_ACLSUPPORT,
-            FATTR4_ARCHIVE,
-            FATTR4_CANSETTIME,
-            FATTR4_CASE_INSENSITIVE,
-            FATTR4_CASE_PRESERVING,
-            FATTR4_CHOWN_RESTRICTED,
-            FATTR4_FILEID,
-            FATTR4_FILES_AVAIL,
-            FATTR4_FILES_FREE,
-            FATTR4_FILES_TOTAL,
-            FATTR4_HIDDEN,
-            FATTR4_HOMOGENEOUS,
-            FATTR4_MAXFILESIZE,
-            FATTR4_MAXLINK,
-            FATTR4_MAXNAME,
-            FATTR4_MAXREAD,
-            FATTR4_MAXWRITE,
-            FATTR4_MODE,
-            FATTR4_NO_TRUNC,
-            FATTR4_NUMLINKS,
-            FATTR4_OWNER,
-            FATTR4_OWNER_GROUP,
-            FATTR4_RAWDEV,
-            FATTR4_SPACE_AVAIL,
-            FATTR4_SPACE_FREE,
-            FATTR4_SPACE_TOTAL,
-            FATTR4_SPACE_USED,
-            FATTR4_SYSTEM,
-            FATTR4_TIME_ACCESS,
-            FATTR4_TIME_ACCESS_SET,
-            FATTR4_TIME_BACKUP,
-            FATTR4_TIME_CREATE,
-            FATTR4_TIME_DELTA,
-            FATTR4_TIME_METADATA,
-            FATTR4_TIME_MODIFY,
-            FATTR4_TIME_MODIFY_SET,
-            FATTR4_MOUNTED_ON_FILEID,
-            FATTR4_SUPPATTR_EXCLCREAT,
-        ] {
-            supported.set(*bit);
-        }
-        if ctx.capabilities.xattrs {
-            supported.set(FATTR4_NAMED_ATTR);
-        }
+        let supported = supported_attrs_bitmap(ctx.capabilities);
         supported.encode(&mut vals);
     }
 

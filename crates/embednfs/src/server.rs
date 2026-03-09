@@ -2550,6 +2550,19 @@ impl<F: FileSystem> NfsServer<F> {
             Ok(attr) => attr,
             Err(e) => return make_res(e.to_nfsstat4()),
         };
+        if client_fattr.attrmask.is_set(FATTR4_RDATTR_ERROR)
+            || client_fattr.attrmask.is_set(FATTR4_TIME_ACCESS_SET)
+            || client_fattr.attrmask.is_set(FATTR4_TIME_MODIFY_SET)
+        {
+            return make_res(NfsStat4::Inval);
+        }
+        let supported = attrs::supported_attrs_bitmap(&self.capabilities());
+        for (word_idx, word) in client_fattr.attrmask.0.iter().enumerate() {
+            let supported_word = supported.0.get(word_idx).copied().unwrap_or(0);
+            if word & !supported_word != 0 {
+                return make_res(NfsStat4::AttrNotsupp);
+            }
+        }
 
         let server_fattr = match self
             .encode_fattr(request_ctx, &attr, &client_fattr.attrmask, &fh)
