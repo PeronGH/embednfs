@@ -42,5 +42,7 @@ mod tests {
         assert_eq!(NfsStat4::from_u32(10071), NfsStat4::OpNotInSession);
         assert_eq!(NfsStat4::from_u32(10074), NfsStat4::ClientidBusy);
         assert_eq!(NfsStat4::from_u32(10081), NfsStat4::NotOnlyOp);
+        assert_eq!(NfsStat4::from_u32(10082), NfsStat4::WrongCred);
+        assert_eq!(NfsStat4::from_u32(10083), NfsStat4::WrongType);
     }
 }
