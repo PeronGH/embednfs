@@ -434,14 +434,14 @@ pub(crate) fn encode_fattr4(
 
     Fattr4 {
         attrmask: result_bitmap,
-        attr_vals: vals.to_vec(),
+        attr_vals: vals.freeze(),
     }
 }
 
 /// Decode setattr attributes from an Fattr4.
 pub(crate) fn decode_setattr(fattr: &Fattr4) -> Result<SetAttrs, NfsStat4> {
     let mut result = SetAttrs::default();
-    let mut src = bytes::Bytes::from(fattr.attr_vals.clone());
+    let mut src = fattr.attr_vals.clone();
 
     // Attributes must be decoded in bitmap order
     if fattr.attrmask.is_set(FATTR4_SIZE) {
@@ -554,7 +554,7 @@ mod tests {
 
         let attrs = decode_setattr(&Fattr4 {
             attrmask: bitmap,
-            attr_vals: vals.to_vec(),
+            attr_vals: vals.freeze(),
         })
         .unwrap();
 
@@ -572,7 +572,7 @@ mod tests {
 
         let err = decode_setattr(&Fattr4 {
             attrmask: bitmap,
-            attr_vals: vals.to_vec(),
+            attr_vals: vals.freeze(),
         })
         .unwrap_err();
 
@@ -609,7 +609,7 @@ mod tests {
             system: false,
             has_named_attrs: false,
         };
-        let fh = NfsFh4(vec![1, 2, 3, 4]);
+        let fh = NfsFh4(vec![1, 2, 3, 4].into());
         let limits = FsLimits::default();
         let stats = FsStats::default();
         let caps = FsCapabilities::default();

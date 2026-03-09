@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64};
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use dashmap::DashMap;
 use embednfs_proto::{ServerOwner4, Verifier4};
 use std::collections::HashMap;
@@ -96,7 +97,7 @@ impl StateManager {
 
         let server_owner = ServerOwner4 {
             minor_id: 0,
-            major_id: b"embednfs".to_vec(),
+            major_id: Bytes::from_static(b"embednfs"),
         };
 
         Self {

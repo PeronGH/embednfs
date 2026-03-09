@@ -91,13 +91,13 @@ impl XdrDecode for CallbackSecParms4 {
     }
 }
 
-pub type GssHandle4 = Vec<u8>;
-pub type SecOid4 = Vec<u8>;
+pub type GssHandle4 = Bytes;
+pub type SecOid4 = Bytes;
 
 #[derive(Debug, Clone)]
 pub struct ClientOwner4 {
     pub verifier: Verifier4,
-    pub ownerid: Vec<u8>,
+    pub ownerid: Bytes,
 }
 
 impl XdrDecode for ClientOwner4 {
@@ -270,7 +270,7 @@ impl XdrEncode for StateProtect4R {
 #[derive(Debug, Clone)]
 pub struct ServerOwner4 {
     pub minor_id: u64,
-    pub major_id: Vec<u8>,
+    pub major_id: Bytes,
 }
 
 impl XdrEncode for ServerOwner4 {
@@ -287,7 +287,7 @@ pub struct ExchangeIdRes4 {
     pub flags: u32,
     pub state_protect: StateProtect4R,
     pub server_owner: ServerOwner4,
-    pub server_scope: Vec<u8>,
+    pub server_scope: Bytes,
     pub server_impl_id: Vec<NfsImplId4>,
 }
 

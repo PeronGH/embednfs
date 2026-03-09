@@ -173,7 +173,7 @@ async fn test_named_attr_lookup_and_read() {
     let eof = bool::decode(&mut resp).unwrap();
     let data = decode_opaque(&mut resp).unwrap();
     assert!(eof);
-    assert_eq!(data, b"value");
+    assert_eq!(data.as_ref(), b"value");
 }
 
 /// Looking up a missing named attribute returns `NFS4ERR_NOENT`.
@@ -535,7 +535,7 @@ async fn test_named_attr_reopen_and_replace_value() {
     let eof = bool::decode(&mut resp).unwrap();
     let data = decode_opaque(&mut resp).unwrap();
     assert!(eof);
-    assert_eq!(data, b"value2");
+    assert_eq!(data.as_ref(), b"value2");
 }
 
 /// Removing a missing named attribute returns `NFS4ERR_NOENT`.

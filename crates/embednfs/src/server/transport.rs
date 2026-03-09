@@ -39,61 +39,77 @@ impl<F: FileSystem> NfsServer<F> {
         let connection_id = self.state.alloc_connection_id();
         let (mut reader, writer) = stream.into_split();
         let mut writer = BufWriter::with_capacity(CONN_BUF_SIZE, writer);
-        let mut read_buf = vec![0u8; CONN_BUF_SIZE];
-
         loop {
-            let mut header = [0u8; 4];
-            match reader.read_exact(&mut header).await {
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
-                Err(e) => return Err(e),
-            }
-            let header_val = u32::from_be_bytes(header);
-            let last_fragment = (header_val & RPC_LAST_FRAGMENT) != 0;
-            let frag_len = (header_val & RPC_FRAG_LEN_MASK) as usize;
+            let mut record = BytesMut::with_capacity(CONN_BUF_SIZE);
 
-            // TODO: Support RFC 5531 multi-fragment record assembly if non-localhost
-            // transport support becomes a target.
-            if !last_fragment {
-                trace!("received non-terminal RPC fragment; multi-fragment assembly is deferred");
+            loop {
+                let mut header = [0u8; 4];
+                match reader.read_exact(&mut header).await {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+                    Err(e) => return Err(e),
+                }
+                let header_val = u32::from_be_bytes(header);
+                let last_fragment = (header_val & RPC_LAST_FRAGMENT) != 0;
+                let frag_len = (header_val & RPC_FRAG_LEN_MASK) as usize;
+
+                if frag_len > MAX_FRAGMENT_SIZE {
+                    warn!("Fragment too large: {frag_len}");
+                    return Ok(());
+                }
+
+                let record_len = record.len();
+                let new_len = match record_len.checked_add(frag_len) {
+                    Some(len) if len <= MAX_FRAGMENT_SIZE => len,
+                    _ => {
+                        warn!(
+                            "RPC record exceeds configured limit: current={}, incoming={}",
+                            record_len,
+                            frag_len
+                        );
+                        return Ok(());
+                    }
+                };
+                record.resize(new_len, 0);
+                let _ = reader.read_exact(&mut record[record_len..new_len]).await?;
+
+                if last_fragment {
+                    break;
+                }
             }
 
-            if frag_len > MAX_FRAGMENT_SIZE {
-                warn!("Fragment too large: {frag_len}");
-                return Ok(());
-            }
-
-            if read_buf.len() < frag_len {
-                read_buf.resize(frag_len, 0);
-            }
-            let request_buf = &mut read_buf[..frag_len];
-            let _ = reader.read_exact(request_buf).await?;
-
-            let Some(response) = self
-                .process_rpc_message(&read_buf[..frag_len], connection_id)
-                .await
-            else {
+            let Some(response) = self.process_rpc_message(record.freeze(), connection_id).await else {
                 return Ok(());
             };
 
-            let resp_len = u32::try_from(response.len())
-                .ok()
-                .filter(|len| *len <= RPC_FRAG_LEN_MASK)
-                .expect("response exceeds RPC fragment limit");
-            let resp_len = resp_len | RPC_LAST_FRAGMENT;
-            writer.write_all(&resp_len.to_be_bytes()).await?;
-            writer.write_all(&response).await?;
+            let mut response = response;
+            while !response.is_empty() {
+                let frag_len = response.len().min(MAX_FRAGMENT_SIZE);
+                let last_fragment = frag_len == response.len();
+                let fragment = response.split_to(frag_len);
+                let resp_len = u32::try_from(fragment.len())
+                    .ok()
+                    .filter(|len| *len <= RPC_FRAG_LEN_MASK)
+                    .expect("response exceeds RPC fragment limit");
+                let resp_len = if last_fragment {
+                    resp_len | RPC_LAST_FRAGMENT
+                } else {
+                    resp_len
+                };
+                writer.write_all(&resp_len.to_be_bytes()).await?;
+                writer.write_all(&fragment).await?;
+            }
             writer.flush().await?;
         }
     }
 
     pub(super) async fn process_rpc_message(
         &self,
-        data: &[u8],
+        data: Bytes,
         connection_id: u64,
     ) -> Option<Bytes> {
-        trace!("RPC request bytes={} hex={}", data.len(), hex_bytes(data));
-        let mut src = Bytes::copy_from_slice(data);
+        trace!("RPC request bytes={} hex={}", data.len(), hex_bytes(&data));
+        let mut src = data;
 
         let call = match RpcCallHeader::decode(&mut src) {
             Ok(c) => c,

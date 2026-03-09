@@ -274,7 +274,7 @@ mod tests {
             NfsResop4::SetSsv(
                 NfsStat4::Ok,
                 Some(SetSsvResOk4 {
-                    digest: b"digest".to_vec(),
+                    digest: b"digest".to_vec().into(),
                 }),
             ),
         ];

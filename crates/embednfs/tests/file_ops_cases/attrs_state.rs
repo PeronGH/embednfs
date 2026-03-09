@@ -561,7 +561,7 @@ async fn test_open_read_only_then_read() {
     assert_eq!(op_status, NfsStat4::Ok as u32);
     let _eof = bool::decode(&mut resp).unwrap();
     let data = decode_opaque(&mut resp).unwrap();
-    assert_eq!(data, b"readonly data");
+    assert_eq!(data.as_ref(), b"readonly data");
 }
 
 /// READ with a garbage stateid returns `NFS4ERR_BAD_STATEID`.
@@ -684,7 +684,7 @@ async fn test_open_write_only_then_read_is_allowed() {
     assert_eq!(op_status, NfsStat4::Ok as u32);
     let _eof = bool::decode(&mut resp).unwrap();
     let data = decode_opaque(&mut resp).unwrap();
-    assert_eq!(data, b"write-open-read");
+    assert_eq!(data.as_ref(), b"write-open-read");
 }
 
 /// Anonymous WRITE is blocked by a conflicting share deny.
@@ -811,7 +811,7 @@ async fn test_current_stateid_write_after_open_same_compound() {
     assert_eq!(op_status, NfsStat4::Ok as u32);
     let _eof = bool::decode(&mut resp).unwrap();
     let data = decode_opaque(&mut resp).unwrap();
-    assert_eq!(data, b"current");
+    assert_eq!(data.as_ref(), b"current");
 }
 
 /// SAVEFH and RESTOREFH preserve the current stateid together with the filehandle.

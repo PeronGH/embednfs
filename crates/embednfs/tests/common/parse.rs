@@ -116,7 +116,7 @@ pub fn parse_open_downgrade_res(resp: &mut Bytes) -> Stateid4 {
 }
 
 pub fn parse_getfh(resp: &mut Bytes) -> Vec<u8> {
-    decode_opaque(resp).unwrap()
+    decode_opaque(resp).unwrap().to_vec()
 }
 
 pub fn parse_test_stateid_results(resp: &mut Bytes) -> Vec<u32> {

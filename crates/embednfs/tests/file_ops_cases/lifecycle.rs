@@ -216,7 +216,7 @@ async fn test_read_file_data() {
     let eof = bool::decode(&mut resp).unwrap();
     let data = decode_opaque(&mut resp).unwrap();
     assert!(eof);
-    assert_eq!(data, b"hello world");
+    assert_eq!(data.as_ref(), b"hello world");
 }
 
 /// READ from an empty file returns EOF with empty data.
@@ -376,7 +376,7 @@ async fn test_write_and_read_back() {
     let eof = bool::decode(&mut resp).unwrap();
     let data = decode_opaque(&mut resp).unwrap();
     assert!(eof);
-    assert_eq!(data, b"test data 12345");
+    assert_eq!(data.as_ref(), b"test data 12345");
 }
 
 /// WRITE beyond EOF preserves a hole before the written bytes.
@@ -429,7 +429,7 @@ async fn test_write_at_offset() {
     let _ = parse_op_header(&mut resp);
     let _eof = bool::decode(&mut resp).unwrap();
     let data = decode_opaque(&mut resp).unwrap();
-    assert_eq!(data, b"\0\0\0\0\0write data");
+    assert_eq!(data.as_ref(), b"\0\0\0\0\0write data");
 }
 
 // ===== REMOVE (pynfs RM) =====

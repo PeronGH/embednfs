@@ -44,7 +44,7 @@ fn exchange_id_args(ownerid: &[u8], verifier: Verifier4) -> ExchangeIdArgs4 {
     ExchangeIdArgs4 {
         clientowner: ClientOwner4 {
             verifier,
-            ownerid: ownerid.to_vec(),
+            ownerid: ownerid.to_vec().into(),
         },
         flags: EXCHGID4_FLAG_USE_NON_PNFS,
         state_protect: StateProtect4A::None,
@@ -103,7 +103,7 @@ async fn test_test_stateids_recognizes_open_and_lock_stateids() {
     let open_stateid = setup_open_state(&state, object.clone(), 11).await;
     let owner = StateOwner4 {
         clientid: 11,
-        owner: b"lock-owner".to_vec(),
+        owner: b"lock-owner".to_vec().into(),
     };
     let lock_stateid = state
         .create_lock_state(&open_stateid, &owner, object, NfsLockType4::WriteLt, 0, 10)
@@ -138,7 +138,7 @@ async fn test_test_stateids_checks_nonzero_seqids() {
         .unwrap();
     let owner = StateOwner4 {
         clientid: 17,
-        owner: b"lock-owner".to_vec(),
+        owner: b"lock-owner".to_vec().into(),
     };
     let lock_stateid = state
         .create_lock_state(&downgraded, &owner, object, NfsLockType4::WriteLt, 0, 10)
@@ -221,7 +221,7 @@ async fn test_exchange_id_reboot_drops_old_state_after_new_create_session() {
     let open_stateid = setup_open_state(&state, object.clone(), original.clientid).await;
     let owner = StateOwner4 {
         clientid: original.clientid,
-        owner: b"lock-owner".to_vec(),
+        owner: b"lock-owner".to_vec().into(),
     };
     let lock_stateid = state
         .create_lock_state(&open_stateid, &owner, object, NfsLockType4::WriteLt, 0, 10)
@@ -408,7 +408,7 @@ async fn test_existing_lock_owner_tracks_multiple_ranges() {
     let open_stateid = setup_open_state(&state, object.clone(), 22).await;
     let owner = StateOwner4 {
         clientid: 22,
-        owner: b"owner".to_vec(),
+        owner: b"owner".to_vec().into(),
     };
 
     let lock_stateid = state
@@ -487,7 +487,7 @@ async fn test_unlock_splits_range_and_conflict_checks_all_ranges() {
     let open1 = setup_open_state(&state, object.clone(), 31).await;
     let owner1 = StateOwner4 {
         clientid: 31,
-        owner: b"owner1".to_vec(),
+        owner: b"owner1".to_vec().into(),
     };
     let lock_stateid = state
         .create_lock_state(
@@ -515,7 +515,7 @@ async fn test_unlock_splits_range_and_conflict_checks_all_ranges() {
 
     let owner2 = StateOwner4 {
         clientid: 32,
-        owner: b"owner2".to_vec(),
+        owner: b"owner2".to_vec().into(),
     };
     let denied_left = state
         .find_lock_conflict(&object, &owner2, NfsLockType4::WriteLt, 10, 5, None)
@@ -571,7 +571,7 @@ async fn test_close_and_unlock_validate_stateid_seqids() {
     let open_stateid = setup_open_state(&state, object.clone(), 31).await;
     let owner = StateOwner4 {
         clientid: 31,
-        owner: b"owner1".to_vec(),
+        owner: b"owner1".to_vec().into(),
     };
     let lock_stateid = state
         .create_lock_state(&open_stateid, &owner, object, NfsLockType4::WriteLt, 0, 100)

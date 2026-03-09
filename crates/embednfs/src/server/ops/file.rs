@@ -492,7 +492,7 @@ impl<F: FileSystem> NfsServer<F> {
                 NfsStat4::Ok,
                 Some(ReadRes4 {
                     eof,
-                    data: data.to_vec(),
+                    data,
                 }),
             ),
             Err(e) => NfsResop4::Read(e.to_nfsstat4(), None),
@@ -585,7 +585,7 @@ impl<F: FileSystem> NfsServer<F> {
                     request_ctx,
                     id,
                     args.offset,
-                    Bytes::copy_from_slice(&args.data),
+                    args.data.clone(),
                     requested_stability,
                 )
                 .await

@@ -14,7 +14,7 @@ fn sample_entry(name: &str, fileid: u64) -> Entry4 {
         name: name.to_string(),
         attrs: Fattr4 {
             attrmask: bitmap,
-            attr_vals: attr_vals.to_vec(),
+            attr_vals: attr_vals.to_vec().into(),
         },
     }
 }

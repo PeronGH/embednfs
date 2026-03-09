@@ -16,7 +16,7 @@ pub type Verifier4 = [u8; 8];
 
 /// NFS file handle.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct NfsFh4(pub Vec<u8>);
+pub struct NfsFh4(pub Bytes);
 
 impl XdrEncode for NfsFh4 {
     fn encode(&self, dst: &mut BytesMut) {
@@ -460,7 +460,7 @@ impl XdrEncode for Specdata4 {
 #[derive(Debug, Clone)]
 pub struct Fattr4 {
     pub attrmask: Bitmap4,
-    pub attr_vals: Vec<u8>,
+    pub attr_vals: Bytes,
 }
 
 impl XdrEncode for Fattr4 {

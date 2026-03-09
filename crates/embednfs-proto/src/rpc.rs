@@ -119,7 +119,7 @@ impl XdrEncode for AuthFlavor {
 #[derive(Debug, Clone)]
 pub struct OpaqueAuth {
     pub flavor: u32,
-    pub body: Vec<u8>,
+    pub body: Bytes,
 }
 
 impl XdrEncode for OpaqueAuth {
@@ -141,7 +141,7 @@ impl OpaqueAuth {
     pub fn null() -> Self {
         OpaqueAuth {
             flavor: 0,
-            body: vec![],
+            body: Bytes::new(),
         }
     }
 }

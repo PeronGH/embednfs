@@ -126,7 +126,7 @@ pub struct LookupArgs4 {
 #[derive(Debug, Clone)]
 pub struct StateOwner4 {
     pub clientid: Clientid4,
-    pub owner: Vec<u8>,
+    pub owner: bytes::Bytes,
 }
 
 impl XdrDecode for StateOwner4 {
@@ -232,7 +232,7 @@ pub struct WriteArgs4 {
     pub stateid: Stateid4,
     pub offset: Offset4,
     pub stable: u32,
-    pub data: Vec<u8>,
+    pub data: bytes::Bytes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -391,7 +391,7 @@ pub enum OpenNoneDelegation4 {
 #[derive(Debug)]
 pub struct DeviceAddr4 {
     pub layout_type: u32,
-    pub addr_body: Vec<u8>,
+    pub addr_body: bytes::Bytes,
 }
 
 impl XdrEncode for DeviceAddr4 {
@@ -404,7 +404,7 @@ impl XdrEncode for DeviceAddr4 {
 #[derive(Debug)]
 pub struct LayoutContent4 {
     pub layout_type: u32,
-    pub body: Vec<u8>,
+    pub body: bytes::Bytes,
 }
 
 impl XdrEncode for LayoutContent4 {
@@ -509,7 +509,7 @@ pub enum LayoutReturnStateid4 {
 
 #[derive(Debug)]
 pub struct SetSsvResOk4 {
-    pub digest: Vec<u8>,
+    pub digest: bytes::Bytes,
 }
 
 /// NfsArgop4 - a single operation in a COMPOUND request.
@@ -617,7 +617,7 @@ pub struct OpenRes4 {
 #[derive(Debug)]
 pub struct ReadRes4 {
     pub eof: bool,
-    pub data: Vec<u8>,
+    pub data: bytes::Bytes,
 }
 
 #[derive(Debug)]

@@ -148,13 +148,13 @@ pub fn encode_opaque(dst: &mut BytesMut, data: &[u8]) {
 }
 
 /// Decode a variable-length opaque.
-pub fn decode_opaque(src: &mut Bytes) -> XdrResult<Vec<u8>> {
+pub fn decode_opaque(src: &mut Bytes) -> XdrResult<Bytes> {
     let len = u32::decode(src)? as usize;
     let padded = len + xdr_pad(len);
     if src.remaining() < padded {
         return Err(XdrError::Underflow);
     }
-    let data = src.split_to(len).to_vec();
+    let data = src.split_to(len);
     let pad = xdr_pad(len);
     if pad > 0 {
         src.advance(pad);
@@ -163,7 +163,7 @@ pub fn decode_opaque(src: &mut Bytes) -> XdrResult<Vec<u8>> {
 }
 
 /// Decode a variable-length opaque with maximum length.
-pub fn decode_opaque_max(src: &mut Bytes, max: usize) -> XdrResult<Vec<u8>> {
+pub fn decode_opaque_max(src: &mut Bytes, max: usize) -> XdrResult<Bytes> {
     let data = decode_opaque(src)?;
     if data.len() > max {
         return Err(XdrError::OpaqueTooLong(data.len()));
@@ -174,7 +174,7 @@ pub fn decode_opaque_max(src: &mut Bytes, max: usize) -> XdrResult<Vec<u8>> {
 /// Decode a variable-length UTF-8 string with a maximum length.
 pub fn decode_string_max(src: &mut Bytes, max: usize) -> XdrResult<String> {
     let data = decode_opaque_max(src, max)?;
-    String::from_utf8(data).map_err(|_| XdrError::InvalidUtf8)
+    String::from_utf8(data.to_vec()).map_err(|_| XdrError::InvalidUtf8)
 }
 
 /// Encode a fixed-length opaque.
@@ -187,17 +187,29 @@ pub fn encode_fixed_opaque(dst: &mut BytesMut, data: &[u8]) {
 }
 
 /// Decode a fixed-length opaque.
-pub fn decode_fixed_opaque(src: &mut Bytes, len: usize) -> XdrResult<Vec<u8>> {
+pub fn decode_fixed_opaque(src: &mut Bytes, len: usize) -> XdrResult<Bytes> {
     let padded = len + xdr_pad(len);
     if src.remaining() < padded {
         return Err(XdrError::Underflow);
     }
-    let data = src.split_to(len).to_vec();
+    let data = src.split_to(len);
     let pad = xdr_pad(len);
     if pad > 0 {
         src.advance(pad);
     }
     Ok(data)
+}
+
+impl XdrEncode for Bytes {
+    fn encode(&self, dst: &mut BytesMut) {
+        encode_opaque(dst, self);
+    }
+}
+
+impl XdrDecode for Bytes {
+    fn decode(src: &mut Bytes) -> XdrResult<Self> {
+        decode_opaque(src)
+    }
 }
 
 impl XdrEncode for Vec<u8> {
@@ -208,7 +220,7 @@ impl XdrEncode for Vec<u8> {
 
 impl XdrDecode for Vec<u8> {
     fn decode(src: &mut Bytes) -> XdrResult<Self> {
-        decode_opaque(src)
+        decode_opaque(src).map(|data| data.to_vec())
     }
 }
 
@@ -221,7 +233,7 @@ impl XdrEncode for String {
 impl XdrDecode for String {
     fn decode(src: &mut Bytes) -> XdrResult<Self> {
         let data = decode_opaque(src)?;
-        String::from_utf8(data).map_err(|_| XdrError::InvalidUtf8)
+        String::from_utf8(data.to_vec()).map_err(|_| XdrError::InvalidUtf8)
     }
 }
 

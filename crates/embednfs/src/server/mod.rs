@@ -148,8 +148,8 @@ impl<F: FileSystem> NfsServer<F> {
         fh.0.len() == std::mem::size_of::<u64>()
     }
 
-    fn parse_auth_sys(body: &[u8]) -> Option<AuthSysParams> {
-        let mut body = Bytes::copy_from_slice(body);
+    fn parse_auth_sys(body: &Bytes) -> Option<AuthSysParams> {
+        let mut body = body.clone();
         let params = AuthSysParams::decode(&mut body).ok()?;
         if body.is_empty() { Some(params) } else { None }
     }

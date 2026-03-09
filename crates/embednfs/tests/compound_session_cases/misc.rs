@@ -343,7 +343,7 @@ async fn test_overlong_auth_sys_credential_returns_auth_badcred() {
     let authsys = encode_auth_sys_body(&"x".repeat(300), &(0..17u32).collect::<Vec<_>>());
     let cred = OpaqueAuth {
         flavor: AuthFlavor::Sys as u32,
-        body: authsys,
+        body: authsys.into(),
     };
 
     let compound = encode_compound("authsys-too-long", &[]);

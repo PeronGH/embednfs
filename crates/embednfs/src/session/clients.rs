@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 
+use bytes::Bytes;
 use embednfs_proto::{
     BindConnToSessionArgs4, BindConnToSessionRes4, ChannelAttrs4, Clientid4, CreateSessionArgs4,
     CreateSessionRes4, EXCHGID4_FLAG_CONFIRMED_R, EXCHGID4_FLAG_USE_NON_PNFS, ExchangeIdArgs4,
@@ -99,7 +100,7 @@ impl StateManager {
             flags: EXCHGID4_FLAG_USE_NON_PNFS | confirmed_flag,
             state_protect: StateProtect4R::None,
             server_owner: self.server_owner.clone(),
-            server_scope: b"embednfs".to_vec(),
+            server_scope: Bytes::from_static(b"embednfs"),
             server_impl_id: vec![NfsImplId4 {
                 domain: "embednfs.local".into(),
                 name: "embednfs".into(),
