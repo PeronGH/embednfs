@@ -739,12 +739,26 @@ impl<F: FileSystem> NfsServer<F> {
                 match (&op, prepared_sequence.take()) {
                     (NfsArgop4::Sequence(_), Some(res)) => res,
                     _ => {
-                        self.handle_op(op, &mut current_fh, &mut saved_fh, request_ctx, connection_id)
+                        self.handle_op(
+                            op,
+                            &mut current_fh,
+                            &mut saved_fh,
+                            request_ctx,
+                            connection_id,
+                            leading_sequence_clientid,
+                        )
                             .await
                     }
                 }
             } else {
-                self.handle_op(op, &mut current_fh, &mut saved_fh, request_ctx, connection_id)
+                self.handle_op(
+                    op,
+                    &mut current_fh,
+                    &mut saved_fh,
+                    request_ctx,
+                    connection_id,
+                    leading_sequence_clientid,
+                )
                     .await
             };
             let status = res_status(&res);
@@ -774,6 +788,7 @@ impl<F: FileSystem> NfsServer<F> {
         saved_fh: &mut Option<NfsFh4>,
         request_ctx: &RequestContext,
         connection_id: u64,
+        sequence_clientid: Option<Clientid4>,
     ) -> NfsResop4 {
         match op {
             NfsArgop4::Access(args) => self.op_access(request_ctx, &args, current_fh).await,
@@ -785,7 +800,14 @@ impl<F: FileSystem> NfsServer<F> {
             NfsArgop4::Link(args) => self.op_link(request_ctx, &args, current_fh, saved_fh).await,
             NfsArgop4::Lookup(args) => self.op_lookup(request_ctx, &args, current_fh).await,
             NfsArgop4::Lookupp => self.op_lookupp(request_ctx, current_fh).await,
-            NfsArgop4::Open(args) => self.op_open(request_ctx, &args, current_fh).await,
+            NfsArgop4::Open(args) => {
+                if let Some(clientid) = sequence_clientid
+                    && let Err(status) = self.state.validate_open_reclaim(clientid, &args.claim).await
+                {
+                    return NfsResop4::Open(status, None);
+                }
+                self.op_open(request_ctx, &args, current_fh).await
+            }
             NfsArgop4::Putfh(args) => {
                 if !Self::fh_has_valid_format(&args.object) {
                     return NfsResop4::Putfh(NfsStat4::Badhandle);
@@ -848,7 +870,9 @@ impl<F: FileSystem> NfsServer<F> {
                 }
             }
             NfsArgop4::Sequence(_) => NfsResop4::Sequence(NfsStat4::Serverfault, None),
-            NfsArgop4::ReclaimComplete(_) => NfsResop4::ReclaimComplete(NfsStat4::Ok),
+            NfsArgop4::ReclaimComplete(args) => {
+                self.op_reclaim_complete(&args, current_fh, sequence_clientid).await
+            }
             NfsArgop4::DestroyClientid(args) => {
                 match self.state.destroy_clientid(args.clientid).await {
                     Ok(()) => NfsResop4::DestroyClientid(NfsStat4::Ok),
@@ -861,10 +885,9 @@ impl<F: FileSystem> NfsServer<F> {
                     Err(status) => NfsResop4::BindConnToSession(status, None),
                 }
             }
-            NfsArgop4::SecInfoNoName(_) => NfsResop4::SecInfoNoName(
-                NfsStat4::Ok,
-                vec![SecinfoEntry4 { flavor: 1 }, SecinfoEntry4 { flavor: 0 }],
-            ),
+            NfsArgop4::SecInfoNoName(style) => {
+                self.op_secinfo_no_name(request_ctx, style, current_fh).await
+            }
             NfsArgop4::FreeStateid(args) => match self.state.free_stateid(&args.stateid).await {
                 Ok(()) => NfsResop4::FreeStateid(NfsStat4::Ok),
                 Err(status) => NfsResop4::FreeStateid(status),
@@ -1514,6 +1537,75 @@ impl<F: FileSystem> NfsServer<F> {
                 NfsResop4::Lookupp(NfsStat4::Ok)
             }
             Err(e) => NfsResop4::Lookupp(e.to_nfsstat4()),
+        }
+    }
+
+    async fn op_secinfo_no_name(
+        &self,
+        request_ctx: &RequestContext,
+        style: u32,
+        current_fh: &mut Option<NfsFh4>,
+    ) -> NfsResop4 {
+        let (_, object) = match self.resolve_object(current_fh).await {
+            Ok(resolved) => resolved,
+            Err(status) => return NfsResop4::SecInfoNoName(status, vec![]),
+        };
+
+        let style_status = match style {
+            // SECINFO_STYLE4_CURRENT_FH
+            0 => Ok(()),
+            // SECINFO_STYLE4_PARENT
+            1 => {
+                let root_object = self.root_object().await;
+                match object {
+                    ServerObject::Fs(id) if root_object == ServerObject::Fs(id) => {
+                        Err(NfsStat4::Noent)
+                    }
+                    ServerObject::Fs(id) => self
+                        .lookup_parent(request_ctx, id)
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| e.to_nfsstat4()),
+                    ServerObject::NamedAttrDir(_) | ServerObject::NamedAttrFile { .. } => Ok(()),
+                }
+            }
+            _ => Err(NfsStat4::Inval),
+        };
+
+        match style_status {
+            Ok(()) => {
+                *current_fh = None;
+                NfsResop4::SecInfoNoName(
+                    NfsStat4::Ok,
+                    vec![SecinfoEntry4 { flavor: 1 }, SecinfoEntry4 { flavor: 0 }],
+                )
+            }
+            Err(status) => NfsResop4::SecInfoNoName(status, vec![]),
+        }
+    }
+
+    async fn op_reclaim_complete(
+        &self,
+        args: &ReclaimCompleteArgs4,
+        current_fh: &Option<NfsFh4>,
+        sequence_clientid: Option<Clientid4>,
+    ) -> NfsResop4 {
+        let Some(clientid) = sequence_clientid else {
+            return NfsResop4::ReclaimComplete(NfsStat4::OpNotInSession);
+        };
+
+        if args.one_fs {
+            if current_fh.is_none() {
+                return NfsResop4::ReclaimComplete(NfsStat4::Nofilehandle);
+            }
+            if let Err(status) = self.resolve_object(current_fh).await {
+                return NfsResop4::ReclaimComplete(status);
+            }
+        }
+
+        match self.state.reclaim_complete(clientid, args.one_fs).await {
+            Ok(()) => NfsResop4::ReclaimComplete(NfsStat4::Ok),
+            Err(status) => NfsResop4::ReclaimComplete(status),
         }
     }
 

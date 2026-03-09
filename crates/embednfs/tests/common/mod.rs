@@ -298,6 +298,20 @@ pub fn encode_open_nocreate_with_access(name: &str, share_access: u32, share_den
     buf.to_vec()
 }
 
+pub fn encode_open_claim_previous(clientid: u64, deleg_type: u32) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    OP_OPEN.encode(&mut buf);
+    0u32.encode(&mut buf); // seqid
+    OPEN4_SHARE_ACCESS_BOTH.encode(&mut buf);
+    OPEN4_SHARE_DENY_NONE.encode(&mut buf);
+    clientid.encode(&mut buf);
+    encode_opaque(&mut buf, b"test-reclaim-owner");
+    0u32.encode(&mut buf); // OPEN4_NOCREATE
+    1u32.encode(&mut buf); // CLAIM_PREVIOUS
+    deleg_type.encode(&mut buf);
+    buf.to_vec()
+}
+
 pub fn encode_close(stateid: &Stateid4) -> Vec<u8> {
     let mut buf = BytesMut::new();
     OP_CLOSE.encode(&mut buf);
@@ -807,6 +821,14 @@ pub fn parse_access_res(resp: &mut Bytes) -> (u32, u32) {
     let supported = u32::decode(resp).unwrap();
     let access = u32::decode(resp).unwrap();
     (supported, access)
+}
+
+pub fn skip_secinfo_entries(resp: &mut Bytes) -> u32 {
+    let count = u32::decode(resp).unwrap();
+    for _ in 0..count {
+        let _ = u32::decode(resp).unwrap();
+    }
+    count
 }
 
 // ===== Session setup helper =====

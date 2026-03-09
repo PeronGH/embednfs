@@ -87,6 +87,7 @@ struct ClientState {
     clientid: Clientid4,
     owner: ClientOwner4,
     confirmed: bool,
+    reclaim_complete_global: bool,
     sequence_id: Sequenceid4,
     replaced_clientid: Option<Clientid4>,
 }
@@ -433,6 +434,7 @@ impl StateManager {
                     clientid: id,
                     owner: args.clientowner.clone(),
                     confirmed: false,
+                    reclaim_complete_global: false,
                     sequence_id: 1,
                     replaced_clientid: old_clientid,
                 },
@@ -667,6 +669,9 @@ impl StateManager {
     /// Handle DESTROY_CLIENTID.
     pub async fn destroy_clientid(&self, clientid: Clientid4) -> Result<(), NfsStat4> {
         let mut inner = self.inner.write().await;
+        if Self::client_has_active_state(&inner, clientid) {
+            return Err(NfsStat4::ClientidBusy);
+        }
         if Self::drop_client_state(&mut inner, clientid) {
             Ok(())
         } else {
@@ -855,6 +860,45 @@ impl StateManager {
             .lock_files
             .retain(|_, state| state.owner.clientid != clientid);
         inner.clients.remove(&clientid).is_some()
+    }
+
+    fn client_has_active_state(inner: &StateInner, clientid: Clientid4) -> bool {
+        inner.sessions.values().any(|session| session.clientid == clientid)
+            || inner.open_files.values().any(|state| state.clientid == clientid)
+            || inner
+                .lock_files
+                .values()
+                .any(|state| state.owner.clientid == clientid)
+    }
+
+    pub async fn reclaim_complete(
+        &self,
+        clientid: Clientid4,
+        one_fs: bool,
+    ) -> Result<(), NfsStat4> {
+        let mut inner = self.inner.write().await;
+        let client = inner.clients.get_mut(&clientid).ok_or(NfsStat4::StaleClientid)?;
+        if one_fs {
+            return Ok(());
+        }
+        if client.reclaim_complete_global {
+            return Err(NfsStat4::CompleteAlready);
+        }
+        client.reclaim_complete_global = true;
+        Ok(())
+    }
+
+    pub async fn validate_open_reclaim(
+        &self,
+        clientid: Clientid4,
+        claim: &OpenClaim4,
+    ) -> Result<(), NfsStat4> {
+        let inner = self.inner.read().await;
+        let client = inner.clients.get(&clientid).ok_or(NfsStat4::StaleClientid)?;
+        match claim {
+            OpenClaim4::Previous(_) if client.reclaim_complete_global => Err(NfsStat4::NoGrace),
+            _ => Ok(()),
+        }
     }
 
     pub(crate) async fn find_lock_conflict(

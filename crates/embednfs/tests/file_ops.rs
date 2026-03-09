@@ -1102,6 +1102,107 @@ async fn test_secinfo_no_name_on_root() {
     let (opnum, op_status) = parse_op_header(&mut resp);
     assert_eq!(opnum, OP_SECINFO_NO_NAME);
     assert_eq!(op_status, NfsStat4::Ok as u32);
+    let count = skip_secinfo_entries(&mut resp);
+    assert!(count >= 1);
+}
+
+/// SECINFO_NO_NAME consumes the current filehandle on success.
+/// Origin: `pynfs/nfs4.1/server41tests/st_secinfo_no_name.py` (CODE `SECNN2`), confirmed against Apple NFS `kext/nfs4_vnops.c`.
+/// RFC: RFC 8881 §18.45.3.
+#[tokio::test]
+async fn test_secinfo_no_name_consumes_current_fh() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let secinfo_op = encode_secinfo_no_name(0);
+    let getfh_op = encode_getfh();
+    let compound = encode_compound(
+        "secinfo-consume-fh",
+        &[&seq_op, &rootfh_op, &secinfo_op, &getfh_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Nofilehandle as u32);
+    assert_eq!(num_results, 4);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_SECINFO_NO_NAME);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let count = skip_secinfo_entries(&mut resp);
+    assert!(count >= 1);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_GETFH);
+    assert_eq!(op_status, NfsStat4::Nofilehandle as u32);
+}
+
+/// SECINFO_NO_NAME with `SECINFO_STYLE4_PARENT` on the root returns `NFS4ERR_NOENT`.
+/// Origin: `pynfs/nfs4.1/server41tests/st_secinfo_no_name.py` (CODE `SECNN3`).
+/// RFC: RFC 8881 §18.45.3.
+#[tokio::test]
+async fn test_secinfo_no_name_parent_of_root_returns_noent() {
+    let port = start_server().await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let secinfo_op = encode_secinfo_no_name(1);
+    let compound = encode_compound(
+        "secinfo-parent-root",
+        &[&seq_op, &rootfh_op, &secinfo_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Noent as u32);
+    assert_eq!(num_results, 3);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_SECINFO_NO_NAME);
+    assert_eq!(op_status, NfsStat4::Noent as u32);
+}
+
+/// SECINFO_NO_NAME with `SECINFO_STYLE4_PARENT` on a subdirectory succeeds.
+/// Origin: `pynfs/nfs4.1/server41tests/st_secinfo_no_name.py` (CODE `SECNN4`), confirmed against Apple NFS `kext/nfs4_vnops.c`.
+/// RFC: RFC 8881 §18.45.3.
+#[tokio::test]
+async fn test_secinfo_no_name_parent_of_subdir_succeeds() {
+    let fs = fs_with_subdir("subdir").await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_op = encode_lookup("subdir");
+    let secinfo_op = encode_secinfo_no_name(1);
+    let compound = encode_compound(
+        "secinfo-parent-subdir",
+        &[&seq_op, &rootfh_op, &lookup_op, &secinfo_op],
+    );
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 4);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_SECINFO_NO_NAME);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
     let count = u32::decode(&mut resp).unwrap();
     assert!(count >= 1);
 }
