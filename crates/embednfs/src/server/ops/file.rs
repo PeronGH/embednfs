@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bytes::Bytes;
 use tracing::warn;
 
@@ -305,7 +307,7 @@ impl<F: FileSystem> NfsServer<F> {
                         }
                         ServerObject::NamedAttrFile {
                             parent: *parent,
-                            name: name.clone(),
+                            name: Arc::from(name.as_str()),
                         }
                     }
                     Err(FsError::NotFound) => match &args.openhow {
@@ -318,7 +320,7 @@ impl<F: FileSystem> NfsServer<F> {
                             created_before_change = Some(before_change);
                             let object = ServerObject::NamedAttrFile {
                                 parent: *parent,
-                                name: name.clone(),
+                                name: Arc::from(name.as_str()),
                             };
                             let set_attrs = match how {
                                 Createhow4::Unchecked(fa) | Createhow4::Guarded(fa) => {

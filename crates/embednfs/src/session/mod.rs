@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64};
 
 use dashmap::DashMap;
 use embednfs_proto::{ServerOwner4, Verifier4};
-use std::collections::HashMap;
+use foldhash::{HashMap, HashMapExt as _};
 use tokio::sync::RwLock;
 
 use crate::internal::ServerObject;
@@ -34,8 +34,9 @@ pub(crate) use stateids::{CurrentStateidMode, NormalizedStateid};
 pub(crate) struct StateManager {
     inner: Arc<RwLock<StateInner>>,
     /// Lock-free file handle mappings (hot path).
-    fh_to_object: DashMap<Vec<u8>, ServerObject>,
-    object_to_fh: DashMap<ServerObject, Vec<u8>>,
+    /// Filehandles are always 8-byte big-endian u64 values.
+    fh_to_object: DashMap<[u8; 8], ServerObject>,
+    object_to_fh: DashMap<ServerObject, [u8; 8]>,
     next_fh: AtomicU64,
     next_clientid: AtomicU64,
     next_stateid: AtomicU32,

@@ -1,4 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+
+use foldhash::HashMap;
 
 use embednfs_proto::{
     ClientOwner4, Clientid4, NfsLockType4, SequenceRes4, Sequenceid4, Sessionid4, Slotid4,

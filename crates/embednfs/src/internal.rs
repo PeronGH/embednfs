@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::fs::Attrs;
 
 /// Internal identifier used to map opaque backend handles to server state.
@@ -8,7 +10,7 @@ pub(crate) type ObjectId = u64;
 pub(crate) enum ServerObject {
     Fs(ObjectId),
     NamedAttrDir(ObjectId),
-    NamedAttrFile { parent: ObjectId, name: String },
+    NamedAttrFile { parent: ObjectId, name: Arc<str> },
 }
 
 /// Internal file kinds used for NFS attribute encoding.

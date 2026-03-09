@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use tracing::{trace, warn};
 
 use embednfs_proto::*;
@@ -197,7 +199,7 @@ impl<F: FileSystem> NfsServer<F> {
                 {
                     Ok(_) => Ok(ServerObject::NamedAttrFile {
                         parent,
-                        name: args.objname.clone(),
+                        name: args.objname.clone().into(),
                     }),
                     Err(e) => Err(e),
                 }
@@ -378,7 +380,7 @@ impl<F: FileSystem> NfsServer<F> {
                         .map(|name| {
                             let object = ServerObject::NamedAttrFile {
                                 parent,
-                                name: name.clone(),
+                                name: Arc::from(name.as_str()),
                             };
                             let cookie = start as u64 + 3;
                             (name, object, cookie, None)
