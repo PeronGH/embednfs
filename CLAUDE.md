@@ -47,6 +47,13 @@ Never implement a large chunk speculatively. Every piece of protocol handling sh
 
 Integration tests exercise the full RPC path over TCP using ephemeral port binding — no root or kernel mounts required. Also test with the kernel NFS client when useful. For macOS-facing behavior, prefer real `mount_nfs` validation over inference when possible, including Finder/file-copy/xattr workflows if the change could affect them.
 
+Test comments are part of the spec:
+
+- Every integration test must have a doc comment in exactly this shape:
+  `/// Short description.`
+  `/// Origin: ... (single line)`
+  `/// RFC: ... (single line)`
+
 ## Coding Standards
 
 ### Structure
