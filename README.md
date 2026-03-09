@@ -218,7 +218,7 @@ cargo test --workspace
 
 The integration suite exercises the full RPC path over TCP and includes raw `OPENATTR`/named-attribute flows for macOS-style clients.
 
-For a genuine localhost/macOS smoke test, `scripts/smoke-macos-nfs41.sh` starts `embednfsd`, mounts it with `mount_nfs`, and exercises basic create/write/read/rename/remove/rmdir behavior through the kernel client. By default it uses `nobrowse` in the mount options so Finder is less likely to surface the temporary test mount as an interrupted server connection.
+For a genuine localhost/macOS smoke test, `scripts/smoke-macos-nfs41.sh` starts `embednfsd`, mounts it with `mount_nfs`, exercises basic create/write/read/rename/remove/rmdir behavior through the kernel client.
 
 Many of the protocol conformance tests are adapted from the maintained `pynfs` tree at `git://git.linux-nfs.org/projects/cdmackay/pynfs.git`.
 
