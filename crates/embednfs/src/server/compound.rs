@@ -20,17 +20,20 @@ impl<F: FileSystem> NfsServer<F> {
         &self,
         args: Compound4Args,
         mut prepared_sequence: Option<NfsResop4>,
+        sequence_clientid: Option<Clientid4>,
         request_ctx: &RequestContext,
         connection_id: u64,
     ) -> Compound4Res {
-        let op_names: Vec<&'static str> = args.argarray.iter().map(argop_name).collect();
-        debug!(
-            "COMPOUND: tag={:?}, minorversion={}, ops={}, sequence={:?}",
-            args.tag,
-            args.minorversion,
-            args.argarray.len(),
-            op_names
-        );
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let op_names: Vec<&'static str> = args.argarray.iter().map(argop_name).collect();
+            debug!(
+                "COMPOUND: tag={:?}, minorversion={}, ops={}, sequence={:?}",
+                args.tag,
+                args.minorversion,
+                args.argarray.len(),
+                op_names
+            );
+        }
 
         if args.minorversion != 1 {
             return Compound4Res {
@@ -47,10 +50,7 @@ impl<F: FileSystem> NfsServer<F> {
             Some(NfsArgop4::Sequence(sequence)) => Some(sequence.sessionid),
             _ => None,
         };
-        let leading_sequence_clientid = match leading_sequence_sessionid {
-            Some(sessionid) => self.state.session_clientid(&sessionid).await,
-            None => None,
-        };
+        let leading_sequence_clientid = sequence_clientid;
 
         if let Some(first_op) = first_op
             && !starts_with_sequence

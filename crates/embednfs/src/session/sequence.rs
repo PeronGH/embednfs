@@ -48,6 +48,7 @@ impl StateManager {
             slot.sequence_id = slot.sequence_id.wrapping_add(1);
             slot.in_progress = Some(fingerprint.to_vec());
             slot.cached_reply = None;
+            let clientid = session.clientid;
             let res = Self::sequence_res(session, args);
             return SequenceReplay::Execute(
                 res,
@@ -56,6 +57,7 @@ impl StateManager {
                     slotid: args.slotid,
                     fingerprint: fingerprint.to_vec(),
                 },
+                clientid,
             );
         }
 

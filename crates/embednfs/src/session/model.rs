@@ -118,7 +118,7 @@ pub(crate) struct SequenceCacheToken {
 }
 
 pub(crate) enum SequenceReplay {
-    Execute(SequenceRes4, SequenceCacheToken),
+    Execute(SequenceRes4, SequenceCacheToken, Clientid4),
     Replay(Vec<u8>),
     Error(embednfs_proto::NfsStat4),
 }

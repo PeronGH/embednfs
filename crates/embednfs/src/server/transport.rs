@@ -133,6 +133,7 @@ impl<F: FileSystem> NfsServer<F> {
                     Ok(args) => {
                         let request_ctx = Self::request_context(&call.cred);
                         let mut replay_token = None;
+                        let mut sequence_clientid = None;
                         let prepared_sequence = if args.minorversion == 1 {
                             match args.argarray.first() {
                                 Some(NfsArgop4::Sequence(seq_args)) => {
@@ -143,8 +144,9 @@ impl<F: FileSystem> NfsServer<F> {
                                         .prepare_sequence(seq_args, &fingerprint, connection_id)
                                         .await
                                     {
-                                        SequenceReplay::Execute(res, token) => {
+                                        SequenceReplay::Execute(res, token, clientid) => {
                                             replay_token = Some(token);
+                                            sequence_clientid = Some(clientid);
                                             Some(NfsResop4::Sequence(NfsStat4::Ok, Some(res)))
                                         }
                                         SequenceReplay::Replay(cached) => {
@@ -167,7 +169,13 @@ impl<F: FileSystem> NfsServer<F> {
                         };
 
                         let result = self
-                            .handle_compound(args, prepared_sequence, &request_ctx, connection_id)
+                            .handle_compound(
+                                args,
+                                prepared_sequence,
+                                sequence_clientid,
+                                &request_ctx,
+                                connection_id,
+                            )
                             .await;
                         encode_rpc_reply_accepted(&mut response, call.xid);
                         let body_start = response.len();

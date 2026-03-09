@@ -221,6 +221,7 @@ impl StateManager {
     }
 
     /// Look up the client ID associated with a session.
+    #[cfg(test)]
     pub(crate) async fn session_clientid(&self, sessionid: &Sessionid4) -> Option<Clientid4> {
         let inner = self.inner.read().await;
         inner
