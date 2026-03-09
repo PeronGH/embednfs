@@ -82,12 +82,10 @@ Doc comments on every public item. `cargo doc` should produce useful, navigable 
 
 ### Lint Suppressions
 
-Any lint suppression in non-test code must have an explicit explanation. This includes `#[allow(...)]`, `#![allow(...)]`, `#[expect(...)]`, and `#![expect(...)]`, including forms nested inside `cfg_attr`.
-
-Use the narrowest scope possible and include a `reason = "..."` that explains why the suppression is necessary and why fixing the underlying lint directly is not the better option.
+Follow the workspace lint policy. Any non-test lint suppression must use the narrowest scope possible and include an explicit `reason = "..."`.
 
 ### Panic and Unsafe Policy
 
-`panic!`, `unwrap()`, and `expect()` are allowed in non-test code when they keep the implementation clearer than propagating an error that is not usefully recoverable. Each such site must have an immediately preceding comment that explains the invariant, why the failure is considered unrecoverable, or why crashing is preferable to additional error plumbing there.
+Follow the workspace lint policy for panic-prone constructs and unsafe code. In non-test code, avoid them when practical; when they are the right choice, make the invariant or tradeoff explicit in the code.
 
-Every `unsafe` block, `unsafe fn`, and `unsafe impl` must have an immediately preceding `// SAFETY:` comment that explains the required invariants and why they hold.
+Every `unsafe` block, `unsafe fn`, and `unsafe impl` must have an immediately preceding `// SAFETY:` comment, and public unsafe APIs must document their `# Safety` requirements.

@@ -11,6 +11,9 @@ description = "NFSv4.1 protocol types and XDR encoding/decoding"
 readme = "README.md"
 exclude = ["CLAUDE.md"]
 
+[lints]
+workspace = true
+
 [dependencies]
 bytes = "1.11.1"
 num-derive = "0.4.2"

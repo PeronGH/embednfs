@@ -11,6 +11,9 @@ description = "Embeddable NFSv4.1 server library"
 readme = "../../README.md"
 exclude = ["CLAUDE.md"]
 
+[lints]
+workspace = true
+
 [dependencies]
 async-trait = "0.1.89"
 bytes = "1.11.1"
