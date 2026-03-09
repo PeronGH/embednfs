@@ -2,7 +2,7 @@
 
 ## Goal
 
-Build a production-quality, high-performance Rust NFSv4.1 server library. The user implements a small, opinionated filesystem trait; the library handles the wire protocol, state management, locking, synthetic NFS-only objects, and serves it over TCP. The primary use case is embedding as a localhost NFS server — a FUSE replacement that needs no kernel modules. Apple/macOS NFSv4.1 client compatibility is the main implementation target, and Linux compatibility should be preserved where it comes for free.
+Build a production-quality, high-performance Rust NFSv4.1 server library. The user implements a small, opinionated filesystem trait; the library handles the wire protocol, state management, locking, and synthetic NFS-only objects, all served over TCP. The primary use case is embedding as a localhost NFS server — a FUSE replacement that needs no kernel modules. Apple/macOS NFSv4.1 client compatibility is the main implementation target, and Linux compatibility should be preserved where it comes for free.
 
 This is not a toy or proof-of-concept. It should be correct, fast, and suitable for real workloads. Aim for zero-copy where possible, minimal allocations on the hot path, and a design that can saturate the I/O capabilities of the underlying filesystem implementation.
 
@@ -25,22 +25,18 @@ mount -t nfs4 -o vers=4.1,proto=tcp,port=2049 127.0.0.1:/ /mnt/embednfs
 
 ## How to Work
 
-### Research First, Code Second
+### Reference Materials
 
-Before writing any module, read the relevant RFC sections, then study how existing implementations (kernel nfsd, NFS-Ganesha, Buildbarn, etc.) handle it. When spec and implementation disagree, follow what real clients (like Apple NFS) actually do.
-
-### Feedback Loop
-
-**Set up the feedback loop before writing any library code.**
-
-You MUST prepare the following first:
+Before writing any code, you MUST first prepare the following:
 
 - RFC 8881 and RFC 5531 texts.
 - Apple NFS client source code (`https://github.com/apple-oss-distributions/NFS.git`).
 - `pynfs` source code (`git://git.linux-nfs.org/projects/cdmackay/pynfs.git`).
 - Other RFCs or implementations, if needed.
 
-If they are missing, ask the human for them.
+If they are missing, ask the user for them.
+
+During planning and implementation, you MUST reference these materials and use them as ground truth.
 
 ### Testing
 
