@@ -2,15 +2,24 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MOUNT_DIR="${MOUNT_DIR:-/tmp/embednfs-smoke}"
+if [[ -z "${MOUNT_DIR:-}" ]]; then
+  MOUNT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/embednfs-smoke.XXXXXX")"
+  CREATED_MOUNT_DIR=1
+else
+  CREATED_MOUNT_DIR=0
+fi
 LOG_FILE="${LOG_FILE:-/tmp/embednfs-smoke-server.log}"
 SERVER_CMD="${SERVER_CMD:-cargo run -p embednfsd --release}"
+MOUNT_OPTS="${MOUNT_OPTS:-vers=4.1,tcp,port=2049,nobrowse}"
 SERVER_PID=""
 
 cleanup() {
   set +e
   if mount | grep -q " on ${MOUNT_DIR} "; then
     umount "${MOUNT_DIR}" >/dev/null 2>&1 || diskutil unmount force "${MOUNT_DIR}" >/dev/null 2>&1
+  fi
+  if [[ "${CREATED_MOUNT_DIR}" == "1" ]]; then
+    rmdir "${MOUNT_DIR}" >/dev/null 2>&1 || true
   fi
   if [[ -n "${SERVER_PID}" ]]; then
     kill "${SERVER_PID}" >/dev/null 2>&1 || true
@@ -34,8 +43,6 @@ if ! command -v nc >/dev/null 2>&1; then
   echo "nc is required but was not found." >&2
   exit 1
 fi
-
-mkdir -p "${MOUNT_DIR}"
 
 if mount | grep -q " on ${MOUNT_DIR} "; then
   echo "${MOUNT_DIR} is already mounted; choose a different MOUNT_DIR." >&2
@@ -63,7 +70,7 @@ if ! nc -z 127.0.0.1 2049 >/dev/null 2>&1; then
   exit 1
 fi
 
-mount_nfs -o vers=4.1,tcp,port=2049 127.0.0.1:/ "${MOUNT_DIR}"
+mount_nfs -o "${MOUNT_OPTS}" 127.0.0.1:/ "${MOUNT_DIR}"
 
 SMOKE_FILE="${MOUNT_DIR}/hello.txt"
 SMOKE_DIR="${MOUNT_DIR}/subdir"
