@@ -37,7 +37,12 @@ pub fn start_external_server_with_fs<F: FileSystem>(fs: F) -> ExternalServerHand
     let (port_tx, port_rx) = mpsc::sync_channel(1);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let thread = thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
+        let worker_threads = std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(4)
+            .clamp(4, 8);
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(worker_threads)
             .enable_all()
             .build()
             .unwrap();

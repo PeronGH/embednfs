@@ -229,6 +229,73 @@ async fn test_readdir_reply_stays_within_maxcount_and_skips_dot_entries() {
     assert!(entries.iter().all(|(cookie, _, _)| *cookie >= 3));
 }
 
+/// READDIR keeps `eof` false when a backend page limit stops before the end of a larger directory.
+/// Origin: `nfs-rs` interoperability regression discovered by concurrent stress testing.
+/// RFC: RFC 8881 §18.23.3.
+#[tokio::test]
+async fn test_readdir_backend_page_limit_keeps_eof_false() {
+    let fs = populated_fs(&[
+        "a.txt", "b.txt", "c.txt", "d.txt", "e.txt", "f.txt", "g.txt", "h.txt",
+    ])
+    .await;
+    let port = start_server_with_fs(fs).await;
+    let mut stream = connect(port).await;
+    let sessionid = setup_session(&mut stream).await;
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let rootfh_op = encode_putrootfh();
+    let readdir_op = encode_readdir_custom(0, [0u8; 8], 1000, 1000, &[FATTR4_FILEID]);
+    let mut resp = send_rpc(
+        &mut stream,
+        3,
+        1,
+        &encode_compound("readdir-page-limit", &[&seq_op, &rootfh_op, &readdir_op]),
+    )
+    .await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_READDIR);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let (_, cookieverf, entries, eof) = parse_readdir_body(&mut resp);
+    assert_eq!(entries.len(), 7);
+    assert!(!eof);
+
+    let last_cookie = entries.last().unwrap().0;
+    let seq_op = encode_sequence(&sessionid, 2, 0);
+    let rootfh_op = encode_putrootfh();
+    let readdir_op = encode_readdir_custom(last_cookie, cookieverf, 1000, 1000, &[FATTR4_FILEID]);
+    let mut resp = send_rpc(
+        &mut stream,
+        4,
+        1,
+        &encode_compound(
+            "readdir-page-limit-continue",
+            &[&seq_op, &rootfh_op, &readdir_op],
+        ),
+    )
+    .await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_READDIR);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let (_, _, entries, eof) = parse_readdir_body(&mut resp);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].1, "h.txt");
+    assert!(eof);
+}
+
 /// READDIR returns `NFS4ERR_TOOSMALL` when an entry cannot fit within `maxcount`.
 /// Origin: `pynfs/nfs4.0/servertests/st_readdir.py` (CODE `RDDR8`).
 /// RFC: RFC 8881 §18.23.3.

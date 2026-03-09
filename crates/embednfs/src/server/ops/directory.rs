@@ -323,7 +323,7 @@ impl<F: FileSystem> NfsServer<F> {
 
         let with_attrs = args.attr_request.0.iter().any(|word| *word != 0);
         let backend_max_entries = (args.maxcount / 128).max(1);
-        let entries = match object.clone() {
+        let (entries, backend_eof) = match object.clone() {
             ServerObject::Fs(dir_id) => match self
                 .readdir(
                     request_ctx,
@@ -334,18 +334,20 @@ impl<F: FileSystem> NfsServer<F> {
                 )
                 .await
             {
-                Ok(page) => page
-                    .entries
-                    .into_iter()
-                    .map(|entry| {
-                        (
-                            entry.name,
-                            ServerObject::Fs(entry.handle),
-                            entry.cookie,
-                            entry.attrs,
-                        )
-                    })
-                    .collect::<Vec<_>>(),
+                Ok(page) => (
+                    page.entries
+                        .into_iter()
+                        .map(|entry| {
+                            (
+                                entry.name,
+                                ServerObject::Fs(entry.handle),
+                                entry.cookie,
+                                entry.attrs,
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                    page.eof,
+                ),
                 Err(e) => return NfsResop4::Readdir(e.to_nfsstat4(), None),
             },
             ServerObject::NamedAttrDir(parent) => {
@@ -366,22 +368,25 @@ impl<F: FileSystem> NfsServer<F> {
                 } else {
                     args.cookie.saturating_sub(2) as usize
                 };
-                names
-                    .into_iter()
-                    .skip(start)
-                    .map(|name| {
-                        let object = ServerObject::NamedAttrFile {
-                            parent,
-                            name: name.clone(),
-                        };
-                        let cookie = start as u64 + 3;
-                        (name, object, cookie, None)
-                    })
-                    .enumerate()
-                    .map(|(idx, (name, object, base_cookie, attrs))| {
-                        (name, object, base_cookie + idx as u64, attrs)
-                    })
-                    .collect::<Vec<_>>()
+                (
+                    names
+                        .into_iter()
+                        .skip(start)
+                        .map(|name| {
+                            let object = ServerObject::NamedAttrFile {
+                                parent,
+                                name: name.clone(),
+                            };
+                            let cookie = start as u64 + 3;
+                            (name, object, cookie, None)
+                        })
+                        .enumerate()
+                        .map(|(idx, (name, object, base_cookie, attrs))| {
+                            (name, object, base_cookie + idx as u64, attrs)
+                        })
+                        .collect::<Vec<_>>(),
+                    true,
+                )
             }
             ServerObject::NamedAttrFile { .. } => {
                 return NfsResop4::Readdir(NfsStat4::Notdir, None);
@@ -456,7 +461,7 @@ impl<F: FileSystem> NfsServer<F> {
             result_entries.push(result_entry);
         }
 
-        let eof = result_entries.len() == entries.len();
+        let eof = backend_eof && result_entries.len() == entries.len();
         NfsResop4::Readdir(
             NfsStat4::Ok,
             Some(ReaddirRes4 {
