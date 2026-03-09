@@ -10,7 +10,7 @@
 mod common;
 
 use bytes::{Bytes, BytesMut};
-use embednfs::MemFs;
+use embednfs::{CreateKind, CreateRequest, FileSystem, MemFs, RequestContext, SetAttrs};
 use embednfs_proto::xdr::*;
 use embednfs_proto::*;
 use std::sync::atomic::AtomicUsize;
@@ -20,7 +20,7 @@ use common::*;
 // ===== OPEN + CLOSE (pynfs OPEN, CLOSE) =====
 
 /// OPEN with `CLAIM_NULL` and `OPEN4_CREATE` creates a new file.
-/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_open.py` (CODE `MKFILE`).
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_open.py` (CODE `MKFILE`).
 /// RFC: RFC 8881 §18.16.3.
 #[tokio::test]
 async fn test_open_create_new_file() {
@@ -57,7 +57,7 @@ async fn test_open_create_new_file() {
 }
 
 /// OPEN with `OPEN4_NOCREATE` on an existing file succeeds.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_open.py` (CODE `OPEN5`).
+/// Origin: `pynfs/nfs4.0/servertests/st_open.py` (CODE `OPEN5`).
 /// RFC: RFC 8881 §18.16.3.
 #[tokio::test]
 async fn test_open_nocreate_existing_file() {
@@ -84,7 +84,7 @@ async fn test_open_nocreate_existing_file() {
 }
 
 /// OPEN with `OPEN4_NOCREATE` on a non-existent file returns `NFS4ERR_NOENT`.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_open.py` (CODE `OPEN6`).
+/// Origin: `pynfs/nfs4.0/servertests/st_open.py` (CODE `OPEN6`).
 /// RFC: RFC 8881 §18.16.3.
 #[tokio::test]
 async fn test_open_nocreate_nonexistent() {
@@ -104,7 +104,7 @@ async fn test_open_nocreate_nonexistent() {
 }
 
 /// CLOSE on a valid open stateid succeeds.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_close.py` (CODE `CLOSE1`).
+/// Origin: `pynfs/nfs4.0/servertests/st_close.py` (CODE `CLOSE1`).
 /// RFC: RFC 8881 §18.2.3.
 #[tokio::test]
 async fn test_close_valid_stateid() {
@@ -145,7 +145,7 @@ async fn test_close_valid_stateid() {
 }
 
 /// CLOSE with a bogus stateid returns `NFS4ERR_BAD_STATEID`.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_close.py` (CODE `CLOSE4`).
+/// Origin: `pynfs/nfs4.0/servertests/st_close.py` (CODE `CLOSE4`).
 /// RFC: RFC 8881 §18.2.3.
 #[tokio::test]
 async fn test_close_bad_stateid() {
@@ -175,7 +175,7 @@ async fn test_close_bad_stateid() {
 // ===== READ (pynfs RD) =====
 
 /// READ from a file with data returns the correct bytes.
-/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_read.py` (CODE `RD1`).
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_read.py` (CODE `RD1`).
 /// RFC: RFC 8881 §18.22.3.
 #[tokio::test]
 async fn test_read_file_data() {
@@ -241,7 +241,7 @@ async fn test_read_empty_file() {
 }
 
 /// READ with an offset beyond EOF returns EOF with empty data.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_read.py` (CODE `RD5`).
+/// Origin: `pynfs/nfs4.0/servertests/st_read.py` (CODE `RD5`).
 /// RFC: RFC 8881 §18.22.3.
 #[tokio::test]
 async fn test_read_beyond_eof() {
@@ -274,7 +274,7 @@ async fn test_read_beyond_eof() {
 }
 
 /// READ on a directory returns `NFS4ERR_ISDIR`.
-/// Origin: adapted from `pynfs/nfs4.0/lib/nfs4/servertests/st_read.py` (CODE `RD7d`).
+/// Origin: adapted from `pynfs/nfs4.0/servertests/st_read.py` (CODE `RD7d`).
 /// RFC: RFC 8881 §18.22.3.
 #[tokio::test]
 async fn test_read_directory_returns_error() {
@@ -302,7 +302,7 @@ async fn test_read_directory_returns_error() {
 // ===== WRITE (pynfs WRT) =====
 
 /// WRITE to a file with an open stateid succeeds and the data can be read back.
-/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_write.py` (CODE `WRT3`).
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_write.py` (CODE `WRT3`).
 /// RFC: RFC 8881 §18.32.3.
 #[tokio::test]
 async fn test_write_and_read_back() {
@@ -367,8 +367,8 @@ async fn test_write_and_read_back() {
     assert_eq!(data, b"test data 12345");
 }
 
-/// WRITE at a non-zero offset updates the expected byte range.
-/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_write.py` (CODE `WRT1b`).
+/// WRITE beyond EOF preserves a hole before the written bytes.
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_write.py` (CODE `WRT1b`).
 /// RFC: RFC 8881 §18.32.3.
 #[tokio::test]
 async fn test_write_at_offset() {
@@ -394,30 +394,20 @@ async fn test_write_at_offset() {
     let _ = parse_op_header(&mut resp);
     let file_fh = parse_getfh(&mut resp);
 
-    // Write "AAAA" at offset 0
+    // Write beyond EOF.
     let seq_op = encode_sequence(&sessionid, 2, 0);
     let putfh_op = encode_putfh(&file_fh);
-    let write_op = encode_write(&stateid, 0, b"AAAA");
-    let compound = encode_compound("w1", &[&seq_op, &putfh_op, &write_op]);
+    let write_op = encode_write(&stateid, 30, b"write data");
+    let compound = encode_compound("write-hole", &[&seq_op, &putfh_op, &write_op]);
     let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, _) = parse_compound_header(&mut resp);
     assert_eq!(status, NfsStat4::Ok as u32);
 
-    // Write "BB" at offset 2
     let seq_op = encode_sequence(&sessionid, 3, 0);
-    let write_op = encode_write(&stateid, 2, b"BB");
-    let compound = encode_compound("w2", &[&seq_op, &putfh_op, &write_op]);
+    let read_op = encode_read(25, 20);
+    let compound = encode_compound("read-hole", &[&seq_op, &putfh_op, &read_op]);
     let mut resp = send_rpc(&mut stream, 5, 1, &compound).await;
-    parse_rpc_reply(&mut resp);
-    let (status, _, _) = parse_compound_header(&mut resp);
-    assert_eq!(status, NfsStat4::Ok as u32);
-
-    // Read back: should be "AABB"
-    let seq_op = encode_sequence(&sessionid, 4, 0);
-    let read_op = encode_read(0, 1024);
-    let compound = encode_compound("read", &[&seq_op, &putfh_op, &read_op]);
-    let mut resp = send_rpc(&mut stream, 6, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, _) = parse_compound_header(&mut resp);
     assert_eq!(status, NfsStat4::Ok as u32);
@@ -427,13 +417,13 @@ async fn test_write_at_offset() {
     let _ = parse_op_header(&mut resp);
     let _eof = bool::decode(&mut resp).unwrap();
     let data = decode_opaque(&mut resp).unwrap();
-    assert_eq!(data, b"AABB");
+    assert_eq!(data, b"\0\0\0\0\0write data");
 }
 
 // ===== REMOVE (pynfs RM) =====
 
 /// REMOVE of an existing file succeeds.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_remove.py` (CODE `RM1r`).
+/// Origin: `pynfs/nfs4.0/servertests/st_remove.py` (CODE `RM1r`).
 /// RFC: RFC 8881 §18.25.3.
 #[tokio::test]
 async fn test_remove_existing_file() {
@@ -470,7 +460,7 @@ async fn test_remove_existing_file() {
 }
 
 /// REMOVE of a non-existent name returns `NFS4ERR_NOENT`.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_remove.py` (CODE `RM6`).
+/// Origin: `pynfs/nfs4.0/servertests/st_remove.py` (CODE `RM6`).
 /// RFC: RFC 8881 §18.25.3.
 #[tokio::test]
 async fn test_remove_nonexistent() {
@@ -531,21 +521,65 @@ async fn test_remove_retry_replays_cached_reply() {
 
 // ===== RENAME (pynfs RNM) =====
 
-/// RENAME of an existing file to a new name succeeds.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_rename.py` (CODE `RNM1r`).
+/// RENAME of an existing file across directories succeeds.
+/// Origin: `pynfs/nfs4.0/servertests/st_rename.py` (CODE `RNM1r`).
 /// RFC: RFC 8881 §18.26.3.
 #[tokio::test]
 async fn test_rename_file() {
-    let fs = populated_fs(&["old-name.txt"]).await;
+    let fs = MemFs::new();
+    let ctx = RequestContext::anonymous();
+    let dir1 = fs
+        .create(
+            &ctx,
+            &1,
+            "dir1",
+            CreateRequest {
+                kind: CreateKind::Directory,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap()
+        .handle;
+    let _dir2 = fs
+        .create(
+            &ctx,
+            &1,
+            "dir2",
+            CreateRequest {
+                kind: CreateKind::Directory,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap()
+        .handle;
+    fs.create(
+        &ctx,
+        &dir1,
+        "old-name.txt",
+        CreateRequest {
+            kind: CreateKind::File,
+            attrs: SetAttrs::default(),
+        },
+    )
+    .await
+    .unwrap();
     let port = start_server_with_fs(fs).await;
     let mut stream = connect(port).await;
     let sessionid = setup_session(&mut stream).await;
 
     let seq_op = encode_sequence(&sessionid, 1, 0);
     let rootfh_op = encode_putrootfh();
+    let lookup_dir1 = encode_lookup("dir1");
     let savefh_op = encode_savefh();
+    let rootfh_op2 = encode_putrootfh();
+    let lookup_dir2 = encode_lookup("dir2");
     let rename_op = encode_rename("old-name.txt", "new-name.txt");
-    let compound = encode_compound("rename", &[&seq_op, &rootfh_op, &savefh_op, &rename_op]);
+    let compound = encode_compound(
+        "rename",
+        &[&seq_op, &rootfh_op, &lookup_dir1, &savefh_op, &rootfh_op2, &lookup_dir2, &rename_op],
+    );
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
 
@@ -554,23 +588,28 @@ async fn test_rename_file() {
     let _ = parse_op_header(&mut resp);
     skip_sequence_res(&mut resp);
     let _ = parse_op_header(&mut resp); // PUTROOTFH
+    let _ = parse_op_header(&mut resp); // LOOKUP dir1
     let _ = parse_op_header(&mut resp); // SAVEFH
+    let _ = parse_op_header(&mut resp); // PUTROOTFH
+    let _ = parse_op_header(&mut resp); // LOOKUP dir2
     let (opnum, op_status) = parse_op_header(&mut resp);
     assert_eq!(opnum, OP_RENAME);
     assert_eq!(op_status, NfsStat4::Ok as u32);
 
     // Verify old name is gone, new name exists
     let seq_op = encode_sequence(&sessionid, 2, 0);
+    let lookup_dir1 = encode_lookup("dir1");
     let lookup_old = encode_lookup("old-name.txt");
-    let compound = encode_compound("check-old", &[&seq_op, &rootfh_op, &lookup_old]);
+    let compound = encode_compound("check-old", &[&seq_op, &rootfh_op, &lookup_dir1, &lookup_old]);
     let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, _) = parse_compound_header(&mut resp);
     assert_eq!(status, NfsStat4::Noent as u32);
 
     let seq_op = encode_sequence(&sessionid, 3, 0);
+    let lookup_dir2 = encode_lookup("dir2");
     let lookup_new = encode_lookup("new-name.txt");
-    let compound = encode_compound("check-new", &[&seq_op, &rootfh_op, &lookup_new]);
+    let compound = encode_compound("check-new", &[&seq_op, &rootfh_op, &lookup_dir2, &lookup_new]);
     let mut resp = send_rpc(&mut stream, 5, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, _) = parse_compound_header(&mut resp);
@@ -578,7 +617,7 @@ async fn test_rename_file() {
 }
 
 /// RENAME of a non-existent source returns `NFS4ERR_NOENT`.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_rename.py` (CODE `RNM5`).
+/// Origin: `pynfs/nfs4.0/servertests/st_rename.py` (CODE `RNM5`).
 /// RFC: RFC 8881 §18.26.3.
 #[tokio::test]
 async fn test_rename_nonexistent_source() {
@@ -604,7 +643,7 @@ async fn test_rename_nonexistent_source() {
 // ===== OPEN_DOWNGRADE (pynfs OPDG) =====
 
 /// OPEN_DOWNGRADE from read-write access to read-only succeeds.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_opendowngrade.py` (CODE `OPDG1`).
+/// Origin: `pynfs/nfs4.0/servertests/st_opendowngrade.py` (CODE `OPDG1`).
 /// RFC: RFC 8881 §18.18.3.
 #[tokio::test]
 async fn test_open_downgrade_updates_open_stateid() {
@@ -614,9 +653,26 @@ async fn test_open_downgrade_updates_open_stateid() {
 
     let seq_op = encode_sequence(&sessionid, 1, 0);
     let rootfh_op = encode_putrootfh();
-    let open_op = encode_open_create("downgrade.txt");
-    let compound = encode_compound("open-for-downgrade", &[&seq_op, &rootfh_op, &open_op]);
+    let open_op = encode_open_create_with_access(
+        "downgrade.txt",
+        OPEN4_SHARE_ACCESS_READ,
+        OPEN4_SHARE_DENY_NONE,
+    );
+    let compound = encode_compound("create-read-only", &[&seq_op, &rootfh_op, &open_op]);
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+
+    let seq_op = encode_sequence(&sessionid, 2, 0);
+    let rootfh_op = encode_putrootfh();
+    let open_op = encode_open_nocreate_with_access(
+        "downgrade.txt",
+        OPEN4_SHARE_ACCESS_BOTH,
+        OPEN4_SHARE_DENY_NONE,
+    );
+    let compound = encode_compound("open-read-write", &[&seq_op, &rootfh_op, &open_op]);
+    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, _) = parse_compound_header(&mut resp);
     assert_eq!(status, NfsStat4::Ok as u32);
@@ -626,14 +682,14 @@ async fn test_open_downgrade_updates_open_stateid() {
     let _ = parse_op_header(&mut resp);
     let open_stateid = skip_open_res(&mut resp);
 
-    let seq_op = encode_sequence(&sessionid, 2, 0);
+    let seq_op = encode_sequence(&sessionid, 3, 0);
     let downgrade_op = encode_open_downgrade(
         &open_stateid,
         OPEN4_SHARE_ACCESS_READ,
         OPEN4_SHARE_DENY_NONE,
     );
     let compound = encode_compound("open-downgrade", &[&seq_op, &downgrade_op]);
-    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    let mut resp = send_rpc(&mut stream, 5, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, num_results) = parse_compound_header(&mut resp);
     assert_eq!(status, NfsStat4::Ok as u32);
@@ -758,7 +814,7 @@ async fn test_getattr_root_is_directory() {
 }
 
 /// GETATTR for `supported_attrs` returns a valid bitmap.
-/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_getattr.py` (supported-attrs family).
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_getattr.py` (supported-attrs family).
 /// RFC: RFC 8881 §18.7.3.
 #[tokio::test]
 async fn test_getattr_supported_attrs() {
@@ -830,7 +886,7 @@ async fn test_getattr_file_size() {
 // ===== ACCESS (pynfs ACC) =====
 
 /// ACCESS on the root directory returns meaningful directory access bits.
-/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_access.py` (CODE `ACC1d`, `ACC2d`).
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_access.py` (CODE `ACC1d`, `ACC2d`).
 /// RFC: RFC 8881 §18.1.3.
 #[tokio::test]
 async fn test_access_on_root() {
@@ -864,7 +920,7 @@ async fn test_access_on_root() {
 }
 
 /// ACCESS on a regular file returns meaningful file access bits.
-/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_access.py` (CODE `ACC1r`, `ACC2r`).
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_access.py` (CODE `ACC1r`, `ACC2r`).
 /// RFC: RFC 8881 §18.1.3.
 #[tokio::test]
 async fn test_access_on_file() {
@@ -1053,7 +1109,7 @@ async fn test_secinfo_no_name_on_root() {
 // ===== VERIFY / NVERIFY (pynfs VF, NVF) =====
 
 /// VERIFY with matching attributes succeeds.
-/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_verify.py` (CODE `VF1*` family).
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_verify.py` (CODE `VF1*` family).
 /// RFC: RFC 8881 §18.31.3.
 #[tokio::test]
 async fn test_verify_matching_attrs_succeeds() {
@@ -1088,7 +1144,7 @@ async fn test_verify_matching_attrs_succeeds() {
 }
 
 /// VERIFY with mismatching attributes returns `NFS4ERR_NOT_SAME`.
-/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_verify.py` (CODE `VF3*` family).
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_verify.py` (CODE `VF3*` family).
 /// RFC: RFC 8881 §18.31.3.
 #[tokio::test]
 async fn test_verify_mismatching_attrs_returns_not_same() {
@@ -1111,7 +1167,7 @@ async fn test_verify_mismatching_attrs_returns_not_same() {
 }
 
 /// NVERIFY with matching attributes returns `NFS4ERR_SAME`.
-/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_nverify.py` (CODE `NVF1*` family).
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_nverify.py` (CODE `NVF1*` family).
 /// RFC: RFC 8881 §18.15.3.
 #[tokio::test]
 async fn test_nverify_matching_attrs_returns_same() {
@@ -1146,7 +1202,7 @@ async fn test_nverify_matching_attrs_returns_same() {
 }
 
 /// NVERIFY with mismatching attributes succeeds.
-/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_nverify.py` (CODE `NVF2*` family).
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_nverify.py` (CODE `NVF2*` family).
 /// RFC: RFC 8881 §18.15.3.
 #[tokio::test]
 async fn test_nverify_mismatching_attrs_succeeds() {
@@ -1254,7 +1310,7 @@ async fn test_setattr_truncate_to_zero_then_read() {
 // ===== OPEN share modes (pynfs OPEN) =====
 
 /// OPEN with read-only share access allows subsequent READ.
-/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_open.py` (read-only open behavior family).
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_open.py` (read-only open behavior family).
 /// RFC: RFC 8881 §18.16.3.
 #[tokio::test]
 async fn test_open_read_only_then_read() {
@@ -1387,7 +1443,7 @@ async fn test_getattr_multiple_attrs() {
 }
 
 /// GETATTR without a current filehandle returns `NFS4ERR_NOFILEHANDLE`.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_getattr.py` (CODE `GATT2`).
+/// Origin: `pynfs/nfs4.0/servertests/st_getattr.py` (CODE `GATT2`).
 /// RFC: RFC 8881 §18.7.3.
 #[tokio::test]
 async fn test_getattr_no_fh() {
@@ -1440,7 +1496,7 @@ async fn test_getattr_fs_level_attrs() {
 // ===== WRITE edge cases =====
 
 /// WRITE to a new file is reflected in subsequent GETATTR size results.
-/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_write.py` (CODE `WRT1`, `WRT1b`) plus GETATTR verification.
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_write.py` (CODE `WRT1`, `WRT1b`) plus GETATTR verification.
 /// RFC: RFC 8881 §18.32.3, §18.7.3.
 #[tokio::test]
 async fn test_write_then_getattr_confirms_size() {
@@ -1493,7 +1549,7 @@ async fn test_write_then_getattr_confirms_size() {
 }
 
 /// ACCESS without a current filehandle returns `NFS4ERR_NOFILEHANDLE`.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_access.py` (CODE `ACC3`).
+/// Origin: `pynfs/nfs4.0/servertests/st_access.py` (CODE `ACC3`).
 /// RFC: RFC 8881 §18.1.3.
 #[tokio::test]
 async fn test_access_no_fh() {
@@ -1511,7 +1567,7 @@ async fn test_access_no_fh() {
 }
 
 /// RENAME within the same directory succeeds.
-/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_rename.py` (CODE `RNM1r`).
+/// Origin: RFC 8881 §18.26.3 same-directory rename behavior.
 /// RFC: RFC 8881 §18.26.3.
 #[tokio::test]
 async fn test_rename_same_directory() {

@@ -20,7 +20,7 @@ use common::*;
 // ===== READDIR (pynfs RDDR) =====
 
 /// READDIR on an empty directory returns EOF with no entries.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_readdir.py` (CODE `RDDR1`).
+/// Origin: `pynfs/nfs4.0/servertests/st_readdir.py` (CODE `RDDR1`).
 /// RFC: RFC 8881 §18.23.3.
 #[tokio::test]
 async fn test_readdir_empty_directory() {
@@ -49,7 +49,7 @@ async fn test_readdir_empty_directory() {
 }
 
 /// READDIR on a populated directory lists all entries.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_readdir.py` (CODE `RDDR2`).
+/// Origin: `pynfs/nfs4.0/servertests/st_readdir.py` (CODE `RDDR2`).
 /// RFC: RFC 8881 §18.23.3.
 #[tokio::test]
 async fn test_readdir_lists_all_entries() {
@@ -83,7 +83,7 @@ async fn test_readdir_lists_all_entries() {
 }
 
 /// READDIR must not include `.` or `..` entries.
-/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_readdir.py` (`RDDR1`, `RDDR2`) plus Linux kernel nfsd expectations.
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_readdir.py` (`RDDR1`, `RDDR2`) plus Linux kernel nfsd expectations.
 /// RFC: RFC 8881 §18.23.3.
 #[tokio::test]
 async fn test_readdir_excludes_dot_entries() {
@@ -195,7 +195,7 @@ async fn test_readdir_reply_stays_within_maxcount_and_skips_dot_entries() {
 }
 
 /// READDIR returns `NFS4ERR_TOOSMALL` when an entry cannot fit within `maxcount`.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_readdir.py` (CODE `RDDR8`).
+/// Origin: `pynfs/nfs4.0/servertests/st_readdir.py` (CODE `RDDR8`).
 /// RFC: RFC 8881 §18.23.3.
 #[tokio::test]
 async fn test_readdir_returns_toosmall_when_entry_cannot_fit() {
@@ -711,7 +711,7 @@ async fn test_getattr_named_attr_dir_summary_is_cached() {
 }
 
 /// READDIR on a subdirectory works the same as READDIR on the root directory.
-/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_readdir.py` (CODE `RDDR2`).
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_readdir.py` (CODE `RDDR2`).
 /// RFC: RFC 8881 §18.23.3.
 #[tokio::test]
 async fn test_readdir_subdirectory() {
@@ -818,7 +818,7 @@ async fn test_remove_nonempty_directory() {
 }
 
 /// REMOVE of an empty directory succeeds.
-/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_remove.py` (CODE `RM1d`).
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_remove.py` (CODE `RM1d`).
 /// RFC: RFC 8881 §18.25.3.
 #[tokio::test]
 async fn test_remove_empty_directory() {

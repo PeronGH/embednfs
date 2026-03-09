@@ -217,6 +217,8 @@ cargo test --workspace
 
 The integration suite exercises the full RPC path over TCP and includes raw `OPENATTR`/named-attribute flows for macOS-style clients.
 
+Many of the protocol conformance tests are adapted from the maintained `pynfs` tree at `git://git.linux-nfs.org/projects/cdmackay/pynfs.git`.
+
 ## License
 
 MIT

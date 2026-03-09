@@ -15,7 +15,7 @@ use common::*;
 // ===== PUTROOTFH (pynfs ROOT) =====
 
 /// PUTROOTFH sets the current FH to the root.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_putrootfh.py` (CODE `ROOT1`).
+/// Origin: `pynfs/nfs4.0/servertests/st_putrootfh.py` (CODE `ROOT1`).
 /// RFC: RFC 8881 §18.21.
 #[tokio::test]
 async fn test_putrootfh_sets_current_fh() {
@@ -75,7 +75,7 @@ async fn test_putrootfh_consistent() {
 // ===== PUTPUBFH =====
 
 /// PUTPUBFH sets a valid filehandle.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_putpubfh.py` (CODE `PUB1`).
+/// Origin: `pynfs/nfs4.0/servertests/st_putpubfh.py` (CODE `PUB1`).
 /// RFC: RFC 8881 §18.20.
 #[tokio::test]
 async fn test_putpubfh_sets_current_fh() {
@@ -181,7 +181,7 @@ async fn test_putfh_bad_handle() {
 // ===== GETFH (pynfs GFH) =====
 
 /// GETFH without a current filehandle returns `NFS4ERR_NOFILEHANDLE`.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_getfh.py` (CODE `GF9`).
+/// Origin: `pynfs/nfs4.0/servertests/st_getfh.py` (CODE `GF9`).
 /// RFC: RFC 8881 §18.8.3.
 #[tokio::test]
 async fn test_getfh_no_current_fh() {
@@ -210,63 +210,62 @@ async fn test_getfh_no_current_fh() {
 // ===== SAVEFH / RESTOREFH (pynfs SVFH, RSFH) =====
 
 /// SAVEFH + RESTOREFH round-trip preserves the filehandle.
-/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_restorefh.py` (CODE `SVFH2*` family).
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_restorefh.py` (CODE `SVFH2*` family).
 /// RFC: RFC 8881 §18.27.3, §18.28.3.
 #[tokio::test]
 async fn test_savefh_restorefh_roundtrip() {
-    let port = start_server().await;
+    let fs = populated_fs(&["restore-test.txt"]).await;
+    let port = start_server_with_fs(fs).await;
     let mut stream = connect(port).await;
     let sessionid = setup_session(&mut stream).await;
 
     let seq_op = encode_sequence(&sessionid, 1, 0);
     let rootfh_op = encode_putrootfh();
-    let savefh_op = encode_savefh();
-    let getfh1 = encode_getfh(); // get current FH (root)
-    let compound = encode_compound("save-root", &[&seq_op, &rootfh_op, &savefh_op, &getfh1]);
-    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
-    parse_rpc_reply(&mut resp);
-    let (status, _, _) = parse_compound_header(&mut resp);
-    assert_eq!(status, NfsStat4::Ok as u32);
-    let _ = parse_op_header(&mut resp);
-    skip_sequence_res(&mut resp);
-    let _ = parse_op_header(&mut resp);
-    let (_, op_status) = parse_op_header(&mut resp);
-    assert_eq!(op_status, NfsStat4::Ok as u32); // SAVEFH OK
-    let _ = parse_op_header(&mut resp);
-    let _saved_fh = parse_getfh(&mut resp);
-
-    // Now PUTROOTFH a child, then RESTOREFH to go back
-    let fs = populated_fs(&["restore-test.txt"]).await;
-    let port2 = start_server_with_fs(fs).await;
-    let mut stream2 = connect(port2).await;
-    let sessionid2 = setup_session(&mut stream2).await;
-
-    let seq_op = encode_sequence(&sessionid2, 1, 0);
-    let rootfh_op = encode_putrootfh();
+    let getfh_root = encode_getfh();
     let savefh_op = encode_savefh();
     let lookup_op = encode_lookup("restore-test.txt");
+    let getfh_file = encode_getfh();
     let restorefh_op = encode_restorefh();
-    let getfh_op = encode_getfh();
+    let getfh_restored = encode_getfh();
     let compound = encode_compound(
         "restore-fh",
         &[
             &seq_op,
             &rootfh_op,
+            &getfh_root,
             &savefh_op,
             &lookup_op,
+            &getfh_file,
             &restorefh_op,
-            &getfh_op,
+            &getfh_restored,
         ],
     );
-    let mut resp = send_rpc(&mut stream2, 3, 1, &compound).await;
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, _) = parse_compound_header(&mut resp);
     assert_eq!(status, NfsStat4::Ok as u32);
-    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_SEQUENCE);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
     skip_sequence_res(&mut resp);
-    let _ = parse_op_header(&mut resp); // PUTROOTFH
-    let _ = parse_op_header(&mut resp); // SAVEFH
-    let _ = parse_op_header(&mut resp); // LOOKUP
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_PUTROOTFH);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_GETFH);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let root_fh = parse_getfh(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_SAVEFH);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_LOOKUP);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_GETFH);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let file_fh = parse_getfh(&mut resp);
+    assert_ne!(root_fh, file_fh);
     let (opnum, op_status) = parse_op_header(&mut resp);
     assert_eq!(opnum, OP_RESTOREFH);
     assert_eq!(op_status, NfsStat4::Ok as u32);
@@ -274,14 +273,11 @@ async fn test_savefh_restorefh_roundtrip() {
     assert_eq!(opnum, OP_GETFH);
     assert_eq!(op_status, NfsStat4::Ok as u32);
     let restored_fh = parse_getfh(&mut resp);
-    // Restored FH should be the root, not the file
-    // We can verify by checking it matches what PUTROOTFH+GETFH returns
-    // (just verify it's non-empty; the structure should be the root FH)
-    assert!(!restored_fh.is_empty());
+    assert_eq!(restored_fh, root_fh);
 }
 
 /// RESTOREFH without a prior SAVEFH returns `NFS4ERR_NOFILEHANDLE`.
-/// Origin: adapted from `pynfs/nfs4.0/lib/nfs4/servertests/st_restorefh.py` (CODE `RSFH2`) to RFC 8881 §18.27.3 semantics.
+/// Origin: adapted from `pynfs/nfs4.0/servertests/st_restorefh.py` (CODE `RSFH2`) to RFC 8881 §18.27.3 semantics.
 /// RFC: RFC 8881 §18.27.3.
 #[tokio::test]
 async fn test_restorefh_without_save_fails() {
@@ -308,7 +304,7 @@ async fn test_restorefh_without_save_fails() {
 }
 
 /// SAVEFH without a current FH returns `NFS4ERR_NOFILEHANDLE`.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_savefh.py` (CODE `SVFH1`).
+/// Origin: `pynfs/nfs4.0/servertests/st_savefh.py` (CODE `SVFH1`).
 /// RFC: RFC 8881 §18.28.3.
 #[tokio::test]
 async fn test_savefh_no_current_fh() {
@@ -337,7 +333,7 @@ async fn test_savefh_no_current_fh() {
 // ===== LOOKUP (pynfs LOOK) =====
 
 /// LOOKUP of an existing file succeeds and changes current FH.
-/// Origin: derived from `pynfs/nfs4.1/server41tests/st_lookup.py` (CODE `LOOKFILE` family).
+/// Origin: derived from maintained `pynfs/nfs4.1/server41tests/st_lookup.py` disabled `if 0:` block (CODE `LOOKFILE` family).
 /// RFC: RFC 8881 §18.13.3.
 #[tokio::test]
 async fn test_lookup_existing_file() {
@@ -403,7 +399,7 @@ async fn test_lookup_nonexistent() {
 }
 
 /// LOOKUP on a non-directory current filehandle returns `NFS4ERR_NOTDIR`.
-/// Origin: `pynfs/nfs4.1/server41tests/st_lookup.py` (CODE `LOOK5r`).
+/// Origin: maintained `pynfs/nfs4.1/server41tests/st_lookup.py` disabled `if 0:` block (CODE `LOOK5r`).
 /// RFC: RFC 8881 §18.13.3.
 #[tokio::test]
 async fn test_lookup_on_file_returns_notdir() {

@@ -16,7 +16,7 @@ use common::*;
 // ===== CREATE directory (pynfs MKDIR) =====
 
 /// CREATE with type `NF4DIR` creates a directory.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_create.py` (CODE `MKDIR`).
+/// Origin: `pynfs/nfs4.0/servertests/st_create.py` (CODE `MKDIR`).
 /// RFC: RFC 8881 §18.4.3.
 #[tokio::test]
 async fn test_create_directory() {
@@ -54,7 +54,7 @@ async fn test_create_directory() {
 }
 
 /// A newly created directory appears in READDIR results.
-/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_create.py` (CODE `MKDIR`) plus `st_readdir.py` (CODE `RDDR2`).
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_create.py` (CODE `MKDIR`) plus `st_readdir.py` (CODE `RDDR2`).
 /// RFC: RFC 8881 §18.4.3, §18.23.3.
 #[tokio::test]
 async fn test_create_directory_visible_in_readdir() {
@@ -90,7 +90,7 @@ async fn test_create_directory_visible_in_readdir() {
 }
 
 /// CREATE directory with an existing name returns `NFS4ERR_EXIST`.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_create.py` (CODE `MKDIR`, second-create EXIST behavior).
+/// Origin: `pynfs/nfs4.0/servertests/st_create.py` (CODE `MKDIR`, second-create EXIST behavior).
 /// RFC: RFC 8881 §18.4.3.
 #[tokio::test]
 async fn test_create_directory_existing_name() {
@@ -110,7 +110,7 @@ async fn test_create_directory_existing_name() {
 }
 
 /// CREATE directory without a current filehandle returns `NFS4ERR_NOFILEHANDLE`.
-/// Origin: RFC 8881 §18.4.3; no direct one-to-one pynfs case.
+/// Origin: `pynfs/nfs4.0/servertests/st_create.py` (CODE `CR8`).
 /// RFC: RFC 8881 §18.4.3.
 #[tokio::test]
 async fn test_create_directory_no_fh() {
@@ -128,7 +128,7 @@ async fn test_create_directory_no_fh() {
 }
 
 /// A created directory reports type `NF4DIR`.
-/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_create.py` (CODE `MKDIR`) plus GETATTR verification.
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_create.py` (CODE `MKDIR`) plus GETATTR verification.
 /// RFC: RFC 8881 §18.4.3.
 #[tokio::test]
 async fn test_create_directory_type_is_dir() {
@@ -167,7 +167,7 @@ async fn test_create_directory_type_is_dir() {
 // ===== CREATE symlink (pynfs SLINK) =====
 
 /// CREATE with type `NF4LNK` creates a symlink.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_create.py` (CODE `MKLINK`).
+/// Origin: `pynfs/nfs4.0/servertests/st_create.py` (CODE `MKLINK`).
 /// RFC: RFC 8881 §18.4.3.
 #[tokio::test]
 async fn test_create_symlink() {
@@ -195,7 +195,7 @@ async fn test_create_symlink() {
 }
 
 /// CREATE symlink with an existing name returns `NFS4ERR_EXIST`.
-/// Origin: derived from `pynfs/nfs4.0/lib/nfs4/servertests/st_create.py` (CODE `MKLINK`, second-create EXIST behavior).
+/// Origin: derived from `pynfs/nfs4.0/servertests/st_create.py` (CODE `MKLINK`, second-create EXIST behavior).
 /// RFC: RFC 8881 §18.4.3.
 #[tokio::test]
 async fn test_create_symlink_existing_name() {
@@ -217,7 +217,7 @@ async fn test_create_symlink_existing_name() {
 // ===== READLINK (pynfs RDLNK) =====
 
 /// READLINK returns the symlink target.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_readlink.py` (CODE `RDLK1`).
+/// Origin: `pynfs/nfs4.0/servertests/st_readlink.py` (CODE `RDLK1`).
 /// RFC: RFC 8881 §18.24.3.
 #[tokio::test]
 async fn test_readlink_returns_target() {
@@ -258,7 +258,7 @@ async fn test_readlink_returns_target() {
 }
 
 /// READLINK on a non-symlink returns `NFS4ERR_INVAL`.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_readlink.py` (CODE `RDLK2r`).
+/// Origin: `pynfs/nfs4.0/servertests/st_readlink.py` (CODE `RDLK2r`).
 /// RFC: RFC 8881 §18.24.3.
 #[tokio::test]
 async fn test_readlink_on_regular_file() {
@@ -278,12 +278,11 @@ async fn test_readlink_on_regular_file() {
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, _) = parse_compound_header(&mut resp);
-    // READLINK on a regular file should fail
-    assert_ne!(status, NfsStat4::Ok as u32);
+    assert_eq!(status, NfsStat4::Inval as u32);
 }
 
 /// READLINK without a current filehandle returns `NFS4ERR_NOFILEHANDLE`.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_readlink.py` (CODE `RDLK3`).
+/// Origin: `pynfs/nfs4.0/servertests/st_readlink.py` (CODE `RDLK3`).
 /// RFC: RFC 8881 §18.24.3.
 #[tokio::test]
 async fn test_readlink_no_fh() {
@@ -303,7 +302,7 @@ async fn test_readlink_no_fh() {
 // ===== LINK (hard links, pynfs LNK) =====
 
 /// LINK creates a hard link in the target directory.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_link.py` (CODE `LINK1r`).
+/// Origin: `pynfs/nfs4.0/servertests/st_link.py` (CODE `LINK1r`).
 /// RFC: RFC 8881 §18.9.3.
 #[tokio::test]
 async fn test_link_creates_hard_link() {
@@ -346,10 +345,54 @@ async fn test_link_creates_hard_link() {
     let (opnum, op_status) = parse_op_header(&mut resp);
     assert_eq!(opnum, OP_LINK);
     assert_eq!(op_status, NfsStat4::Ok as u32);
+
+    let seq_op = encode_sequence(&sessionid, 2, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_op = encode_lookup("source.txt");
+    let getattr_op = encode_getattr(&[FATTR4_FILEID]);
+    let compound = encode_compound(
+        "link-source-fileid",
+        &[&seq_op, &rootfh_op, &lookup_op, &getattr_op],
+    );
+    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let fattr = Fattr4::decode(&mut resp).unwrap();
+    let mut vals = Bytes::from(fattr.attr_vals);
+    let source_fileid = u64::decode(&mut vals).unwrap();
+
+    let seq_op = encode_sequence(&sessionid, 3, 0);
+    let rootfh_op = encode_putrootfh();
+    let lookup_op = encode_lookup("hardlink.txt");
+    let getattr_op = encode_getattr(&[FATTR4_FILEID]);
+    let compound = encode_compound(
+        "link-target-fileid",
+        &[&seq_op, &rootfh_op, &lookup_op, &getattr_op],
+    );
+    let mut resp = send_rpc(&mut stream, 5, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let fattr = Fattr4::decode(&mut resp).unwrap();
+    let mut vals = Bytes::from(fattr.attr_vals);
+    let target_fileid = u64::decode(&mut vals).unwrap();
+
+    assert_eq!(source_fileid, target_fileid);
 }
 
 /// LINK with an existing target name returns `NFS4ERR_EXIST`.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_link.py` (CODE `LINK5`).
+/// Origin: `pynfs/nfs4.0/servertests/st_link.py` (CODE `LINK5`).
 /// RFC: RFC 8881 §18.9.3.
 #[tokio::test]
 async fn test_link_existing_name() {
@@ -382,7 +425,7 @@ async fn test_link_existing_name() {
 }
 
 /// LINK without a saved filehandle returns `NFS4ERR_NOFILEHANDLE`.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_link.py` (CODE `LINK2`).
+/// Origin: `pynfs/nfs4.0/servertests/st_link.py` (CODE `LINK2`).
 /// RFC: RFC 8881 §18.9.3.
 #[tokio::test]
 async fn test_link_no_saved_fh() {
@@ -404,41 +447,71 @@ async fn test_link_no_saved_fh() {
 
 // ===== COMMIT (pynfs CMT) =====
 
-/// COMMIT on a file succeeds.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_commit.py` (CODE `CMT1a`).
+/// COMMIT after an `UNSTABLE4` write succeeds.
+/// Origin: `pynfs/nfs4.0/servertests/st_commit.py` (CODE `CMT1a`).
 /// RFC: RFC 8881 §18.3.3.
 #[tokio::test]
 async fn test_commit_on_file() {
-    let fs = populated_fs(&["commit.txt"]).await;
-    let port = start_server_with_fs(fs).await;
+    let port = start_server().await;
     let mut stream = connect(port).await;
     let sessionid = setup_session(&mut stream).await;
 
     let seq_op = encode_sequence(&sessionid, 1, 0);
     let rootfh_op = encode_putrootfh();
-    let lookup_op = encode_lookup("commit.txt");
-    let commit_op = encode_commit(0, 0); // offset=0, count=0 means entire file
-    let compound = encode_compound("commit", &[&seq_op, &rootfh_op, &lookup_op, &commit_op]);
+    let open_op = encode_open_create("commit.txt");
+    let getfh_op = encode_getfh();
+    let compound = encode_compound("open-for-commit", &[&seq_op, &rootfh_op, &open_op, &getfh_op]);
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
-    let (status, _, num_results) = parse_compound_header(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
     assert_eq!(status, NfsStat4::Ok as u32);
-    assert_eq!(num_results, 4);
-
     let _ = parse_op_header(&mut resp);
     skip_sequence_res(&mut resp);
     let _ = parse_op_header(&mut resp);
     let _ = parse_op_header(&mut resp);
+    let stateid = skip_open_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let file_fh = parse_getfh(&mut resp);
+
+    let seq_op = encode_sequence(&sessionid, 2, 0);
+    let putfh_op = encode_putfh(&file_fh);
+    let write_op = encode_write_with_stability(&stateid, 0, UNSTABLE4, b"unstable-data");
+    let compound = encode_compound("write-unstable", &[&seq_op, &putfh_op, &write_op]);
+    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_WRITE);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    let (count, _) = parse_write_res(&mut resp);
+    assert_eq!(count, 13);
+
+    let seq_op = encode_sequence(&sessionid, 3, 0);
+    let putfh_op = encode_putfh(&file_fh);
+    let commit_op = encode_commit(0, 0);
+    let compound = encode_compound("commit", &[&seq_op, &putfh_op, &commit_op]);
+    let mut resp = send_rpc(&mut stream, 5, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 3);
+
+    let _ = parse_op_header(&mut resp);
+    skip_sequence_res(&mut resp);
+    let _ = parse_op_header(&mut resp);
     let (opnum, op_status) = parse_op_header(&mut resp);
     assert_eq!(opnum, OP_COMMIT);
     assert_eq!(op_status, NfsStat4::Ok as u32);
-    // COMMIT response has a write verifier (8 bytes)
     let verf = decode_fixed_opaque(&mut resp, 8).unwrap();
     assert_eq!(verf.len(), 8);
 }
 
 /// COMMIT without a current filehandle returns `NFS4ERR_NOFILEHANDLE`.
-/// Origin: `pynfs/nfs4.0/lib/nfs4/servertests/st_commit.py` (CODE `CMT3`).
+/// Origin: `pynfs/nfs4.0/servertests/st_commit.py` (CODE `CMT3`).
 /// RFC: RFC 8881 §18.3.3.
 #[tokio::test]
 async fn test_commit_no_fh() {
@@ -455,8 +528,8 @@ async fn test_commit_no_fh() {
     assert_eq!(status, NfsStat4::Nofilehandle as u32);
 }
 
-/// COMMIT on a directory returns an error.
-/// Origin: adapted from `pynfs/nfs4.0/lib/nfs4/servertests/st_commit.py` (CODE `CMT2d`) to our RFC 8881-targeted expectation.
+/// COMMIT on a directory returns `NFS4ERR_ISDIR`.
+/// Origin: `pynfs/nfs4.0/servertests/st_commit.py` (CODE `CMT2d`).
 /// RFC: RFC 8881 §18.3.3.
 #[tokio::test]
 async fn test_commit_on_directory() {
@@ -471,5 +544,5 @@ async fn test_commit_on_directory() {
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, _) = parse_compound_header(&mut resp);
-    assert_eq!(status, NfsStat4::Inval as u32);
+    assert_eq!(status, NfsStat4::Isdir as u32);
 }

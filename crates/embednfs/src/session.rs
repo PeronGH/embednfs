@@ -3,7 +3,7 @@ use crate::internal::{ServerFileType, ServerObject};
 use dashmap::DashMap;
 /// NFSv4.1 session, object, and server-side state management.
 use embednfs_proto::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use tokio::sync::RwLock;
@@ -65,6 +65,7 @@ pub struct StateManager {
     next_stateid: AtomicU32,
     next_changeid: AtomicU64,
     next_synth_fileid: AtomicU64,
+    next_connectionid: AtomicU64,
     /// Server boot verifier (changes each restart).
     pub write_verifier: Verifier4,
     pub server_owner: ServerOwner4,
@@ -93,6 +94,7 @@ struct ClientState {
 struct SessionState {
     clientid: Clientid4,
     slots: Vec<SlotState>,
+    connections: HashSet<u64>,
 }
 
 #[derive(Clone)]
@@ -159,9 +161,14 @@ impl StateManager {
             next_stateid: AtomicU32::new(1),
             next_changeid: AtomicU64::new(2),
             next_synth_fileid: AtomicU64::new(SYNTH_FILEID_BASE),
+            next_connectionid: AtomicU64::new(1),
             write_verifier,
             server_owner,
         }
+    }
+
+    pub(crate) fn alloc_connection_id(&self) -> u64 {
+        self.next_connectionid.fetch_add(1, Ordering::Relaxed)
     }
 
     /// Get or create a file handle for a server object.
@@ -461,6 +468,7 @@ impl StateManager {
     pub async fn create_session(
         &self,
         args: &CreateSessionArgs4,
+        connection_id: u64,
     ) -> Result<CreateSessionRes4, NfsStat4> {
         let mut inner = self.inner.write().await;
 
@@ -524,6 +532,7 @@ impl StateManager {
             SessionState {
                 clientid: args.clientid,
                 slots,
+                connections: HashSet::from([connection_id]),
             },
         );
 
@@ -554,6 +563,7 @@ impl StateManager {
         &self,
         args: &SequenceArgs4,
         fingerprint: &[u8],
+        connection_id: u64,
     ) -> SequenceReplay {
         let mut inner = self.inner.write().await;
 
@@ -565,6 +575,7 @@ impl StateManager {
             Ok(session) => session,
             Err(status) => return SequenceReplay::Error(status),
         };
+        session.connections.insert(connection_id);
 
         let slot_idx = args.slotid as usize;
         if slot_idx >= session.slots.len() {
@@ -637,12 +648,19 @@ impl StateManager {
     }
 
     /// Handle DESTROY_SESSION.
-    pub async fn destroy_session(&self, sessionid: &Sessionid4) -> Result<(), NfsStat4> {
+    pub async fn destroy_session(
+        &self,
+        sessionid: &Sessionid4,
+        connection_id: u64,
+    ) -> Result<(), NfsStat4> {
         let mut inner = self.inner.write().await;
-        inner
-            .sessions
-            .remove(sessionid)
-            .ok_or(NfsStat4::BadSession)?;
+        let Some(session) = inner.sessions.get(sessionid) else {
+            return Err(NfsStat4::BadSession);
+        };
+        if !session.connections.contains(&connection_id) {
+            return Err(NfsStat4::ConnNotBoundToSession);
+        }
+        inner.sessions.remove(sessionid);
         Ok(())
     }
 
@@ -660,11 +678,13 @@ impl StateManager {
     pub async fn bind_conn_to_session(
         &self,
         args: &BindConnToSessionArgs4,
+        connection_id: u64,
     ) -> Result<BindConnToSessionRes4, NfsStat4> {
-        let inner = self.inner.read().await;
-        if !inner.sessions.contains_key(&args.sessionid) {
+        let mut inner = self.inner.write().await;
+        let Some(session) = inner.sessions.get_mut(&args.sessionid) else {
             return Err(NfsStat4::BadSession);
-        }
+        };
+        session.connections.insert(connection_id);
         Ok(BindConnToSessionRes4 {
             sessionid: args.sessionid,
             dir: args.dir,
@@ -1192,7 +1212,7 @@ mod tests {
 
         let first = state.exchange_id(&args).await;
         state
-            .create_session(&create_session_args(first.clientid, first.sequenceid))
+            .create_session(&create_session_args(first.clientid, first.sequenceid), 1)
             .await
             .unwrap();
 
@@ -1212,7 +1232,7 @@ mod tests {
             .exchange_id(&exchange_id_args(b"owner", [0x11; 8]))
             .await;
         let original_session = state
-            .create_session(&create_session_args(original.clientid, original.sequenceid))
+            .create_session(&create_session_args(original.clientid, original.sequenceid), 1)
             .await
             .unwrap();
 
@@ -1241,7 +1261,7 @@ mod tests {
         );
 
         state
-            .create_session(&create_session_args(rebooted.clientid, rebooted.sequenceid))
+            .create_session(&create_session_args(rebooted.clientid, rebooted.sequenceid), 2)
             .await
             .unwrap();
 

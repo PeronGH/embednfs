@@ -42,9 +42,10 @@ async fn test_minor_version_mismatch_rejects_non_v41() {
     let port = start_server().await;
     let mut stream = connect(port).await;
     let rootfh_op = encode_putrootfh();
+    let illegal_op = encode_illegal();
 
-    for (xid, minorversion) in [(1, 0u32), (2, 2u32)] {
-        let compound = encode_compound_minor("bad-minor", minorversion, &[&rootfh_op]);
+    for (xid, minorversion, op) in [(1, 0u32, &rootfh_op[..]), (2, 2u32, &illegal_op[..])] {
+        let compound = encode_compound_minor("bad-minor", minorversion, &[op]);
         let mut resp = send_rpc(&mut stream, xid, 1, &compound).await;
         let (_, accept_stat) = parse_rpc_reply(&mut resp);
         assert_eq!(accept_stat, 0);
@@ -82,7 +83,8 @@ async fn test_compound_tag_echo() {
     let port = start_server().await;
     let mut stream = connect(port).await;
 
-    let compound = encode_compound("my-unique-tag-123", &[]);
+    let exchange_id_op = encode_exchange_id();
+    let compound = encode_compound("my-unique-tag-123", &[&exchange_id_op]);
     let mut resp = send_rpc(&mut stream, 1, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (_status, tag, _) = parse_compound_header(&mut resp);
@@ -113,8 +115,7 @@ async fn test_exchange_id_basic() {
     let (clientid, sequenceid, flags) = parse_exchange_id_res(&mut resp);
     assert_ne!(clientid, 0);
     assert!(sequenceid > 0);
-    // Server must echo USE_NON_PNFS or a subset
-    assert_ne!(flags & EXCHGID4_FLAG_USE_NON_PNFS, 0);
+    assert_ne!(flags & EXCHGID4_FLAG_MASK_PNFS, 0);
 }
 
 /// EXCHANGE_ID must be the only op in a non-SEQUENCE COMPOUND.
@@ -255,10 +256,17 @@ async fn test_create_session_wrong_sequenceid() {
     let (_, _) = parse_op_header(&mut resp);
     let (clientid, sequenceid) = skip_exchange_id_res(&mut resp);
 
-    // Use wrong sequence (sequenceid + 5 instead of sequenceid)
-    let create_session_op = encode_create_session(clientid, sequenceid + 5);
-    let compound = encode_compound("bad-seq", &[&create_session_op]);
+    let create_session_op = encode_create_session(clientid, sequenceid);
+    let compound = encode_compound("csess-good", &[&create_session_op]);
     let mut resp = send_rpc(&mut stream, 2, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+
+    // Use a too-large sequenceid after the successful CREATE_SESSION.
+    let create_session_op = encode_create_session(clientid, sequenceid + 2);
+    let compound = encode_compound("bad-seq", &[&create_session_op]);
+    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, _) = parse_compound_header(&mut resp);
     let (opnum, op_status) = parse_op_header(&mut resp);
@@ -359,11 +367,27 @@ async fn test_sequence_misordered() {
     let mut stream = connect(port).await;
     let sessionid = setup_session(&mut stream).await;
 
-    // Skip seqid 1, go directly to 5
-    let seq_op = encode_sequence(&sessionid, 5, 0);
-    let rootfh_op = encode_putrootfh();
-    let compound = encode_compound("misordered", &[&seq_op, &rootfh_op]);
+    let seq_ok = encode_sequence(&sessionid, 1, 2);
+    let compound = encode_compound("sequence-ok", &[&seq_ok]);
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+
+    let seq_too_large = encode_sequence(&sessionid, 3, 2);
+    let compound = encode_compound("misordered-high", &[&seq_too_large]);
+    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+
+    let (status, _, _) = parse_compound_header(&mut resp);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_SEQUENCE);
+    assert_eq!(status, op_status);
+    assert_eq!(op_status, NfsStat4::SeqMisordered as u32);
+
+    let seq_too_small = encode_sequence(&sessionid, 0, 2);
+    let compound = encode_compound("misordered-low", &[&seq_too_small]);
+    let mut resp = send_rpc(&mut stream, 5, 1, &compound).await;
     parse_rpc_reply(&mut resp);
 
     let (status, _, _) = parse_compound_header(&mut resp);
@@ -518,20 +542,42 @@ async fn test_sequence_bad_slot() {
 
 // ===== DESTROY_SESSION (pynfs DSESS) =====
 
-/// DESTROY_SESSION on a valid session succeeds.
-/// Origin: derived from `pynfs/nfs4.1/server41tests/st_destroy_session.py` (CODE `DSESS9001`).
+/// DESTROY_SESSION over an unbound connection fails until SEQUENCE binds the connection.
+/// Origin: `pynfs/nfs4.1/server41tests/st_destroy_session.py` (CODE `DSESS9001`).
 /// RFC: RFC 8881 §18.37.3.
 #[tokio::test]
 async fn test_destroy_session_basic() {
     let port = start_server().await;
-    let mut stream = connect(port).await;
-    let sessionid = setup_session(&mut stream).await;
+    let mut stream1 = connect(port).await;
+    let sessionid = setup_session(&mut stream1).await;
+    let mut stream2 = connect(port).await;
 
     let destroy_op = encode_destroy_session(&sessionid);
     let compound = encode_compound("destroy-session", &[&destroy_op]);
-    let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    let mut resp = send_rpc(&mut stream2, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
 
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::ConnNotBoundToSession as u32);
+    assert_eq!(num_results, 1);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_DESTROY_SESSION);
+    assert_eq!(op_status, NfsStat4::ConnNotBoundToSession as u32);
+
+    let seq_op = encode_sequence(&sessionid, 1, 0);
+    let seq_compound = encode_compound("bind-by-sequence", &[&seq_op]);
+    let mut resp = send_rpc(&mut stream2, 4, 1, &seq_compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 1);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_SEQUENCE);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    skip_sequence_res(&mut resp);
+
+    let mut resp = send_rpc(&mut stream2, 5, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
     let (status, _, num_results) = parse_compound_header(&mut resp);
     assert_eq!(status, NfsStat4::Ok as u32);
     assert_eq!(num_results, 1);
@@ -562,7 +608,7 @@ async fn test_destroy_session_bad_session() {
 }
 
 /// After DESTROY_SESSION, subsequent SEQUENCE on that session must fail with `NFS4ERR_BADSESSION`.
-/// Origin: RFC 8881 §18.37.3; no direct pynfs one-to-one case.
+/// Origin: derived from `pynfs/nfs4.1/server41tests/st_destroy_session.py` (CODE `DSESS1`).
 /// RFC: RFC 8881 §18.37.3.
 #[tokio::test]
 async fn test_destroyed_session_cannot_be_used() {
@@ -594,7 +640,7 @@ async fn test_destroyed_session_cannot_be_used() {
 // ===== DESTROY_CLIENTID (pynfs DCID) =====
 
 /// DESTROY_CLIENTID with a non-existent client returns `NFS4ERR_STALE_CLIENTID`.
-/// Origin: RFC 8881 §18.50.3; no direct pynfs server41tests case.
+/// Origin: `pynfs/nfs4.1/server41tests/st_destroy_clientid.py` (CODE `DESCID3`).
 /// RFC: RFC 8881 §18.50.3.
 #[tokio::test]
 async fn test_destroy_clientid_stale() {
@@ -615,8 +661,8 @@ async fn test_destroy_clientid_stale() {
 
 // ===== RECLAIM_COMPLETE (pynfs RECC) =====
 
-/// RECLAIM_COMPLETE with `one_fs=false` succeeds.
-/// Origin: derived from `pynfs/nfs4.1/server41tests/st_reboot.py` (`reclaim_complete()` helper).
+/// RECLAIM_COMPLETE accepts both the file-system-specific and global forms.
+/// Origin: `pynfs/nfs4.1/server41tests/st_reclaim_complete.py` (CODE `RECC1`).
 /// RFC: RFC 8881 §18.51.3.
 #[tokio::test]
 async fn test_reclaim_complete() {
@@ -625,10 +671,20 @@ async fn test_reclaim_complete() {
     let sessionid = setup_session(&mut stream).await;
 
     let seq_op = encode_sequence(&sessionid, 1, 0);
-    let rc_op = encode_reclaim_complete(false);
+    let rootfh_op = encode_putrootfh();
+    let rc_one_fs_op = encode_reclaim_complete(true);
 
-    let compound = encode_compound("reclaim", &[&seq_op, &rc_op]);
+    let compound = encode_compound("reclaim-one-fs", &[&seq_op, &rootfh_op, &rc_one_fs_op]);
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, num_results) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    assert_eq!(num_results, 3);
+
+    let seq_op = encode_sequence(&sessionid, 2, 0);
+    let rc_global_op = encode_reclaim_complete(false);
+    let compound = encode_compound("reclaim-global", &[&seq_op, &rc_global_op]);
+    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, num_results) = parse_compound_header(&mut resp);
     assert_eq!(status, NfsStat4::Ok as u32);
@@ -669,7 +725,7 @@ async fn test_v40_only_op_is_not_supported_in_v41() {
 // ===== RPC-level malformed input =====
 
 /// Malformed RPC framing with a zero-length body closes the connection.
-/// Origin: RFC 5531 §9; no direct pynfs case.
+/// Origin: RFC 5531 §11 record marking; no direct pynfs case.
 /// RFC: RFC 5531 §11.
 #[tokio::test]
 async fn test_malformed_rpc_header_closes_connection() {
@@ -691,7 +747,7 @@ async fn test_malformed_rpc_header_closes_connection() {
 }
 
 /// ILLEGAL operation returns `NFS4ERR_OP_ILLEGAL`.
-/// Origin: `pynfs/nfs4.1/server41tests/st_compound.py` (CODE `COMP5`).
+/// Origin: derived from `pynfs/nfs4.1/server41tests/st_compound.py` (CODE `COMP5`).
 /// RFC: RFC 8881 §15.1.3.4.
 #[tokio::test]
 async fn test_illegal_op() {
@@ -780,30 +836,66 @@ async fn test_multiple_sessions_same_client() {
     let (_, _) = parse_op_header(&mut resp);
     let sid1 = parse_create_session_res(&mut resp);
 
-    // Second session
+    // Second session for the same client, created over the first session.
+    let seq_op = encode_sequence(&sid1, 1, 0);
     let csess2 = encode_create_session(clientid, sequenceid + 1);
-    let compound = encode_compound("csess2", &[&csess2]);
+    let compound = encode_compound("csess2", &[&seq_op, &csess2]);
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, _) = parse_compound_header(&mut resp);
     assert_eq!(status, NfsStat4::Ok as u32);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_SEQUENCE);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    skip_sequence_res(&mut resp);
     let (_, _) = parse_op_header(&mut resp);
     let sid2 = parse_create_session_res(&mut resp);
 
-    // Both sessions should work
-    assert_ne!(sid1, sid2);
+    // A different confirmed client can also CREATE_SESSION over sid1 (CSESS2b).
+    let exchange_id_op = encode_exchange_id_with_name(b"second-client");
+    let compound = encode_compound("exid2", &[&exchange_id_op]);
+    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let (_, _) = parse_op_header(&mut resp);
+    let (clientid2, sequenceid2) = skip_exchange_id_res(&mut resp);
 
-    let seq_op = encode_sequence(&sid1, 1, 0);
+    let seq_op = encode_sequence(&sid1, 2, 0);
+    let csess3 = encode_create_session(clientid2, sequenceid2);
+    let compound = encode_compound("csess3", &[&seq_op, &csess3]);
+    let mut resp = send_rpc(&mut stream, 5, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+    let (opnum, op_status) = parse_op_header(&mut resp);
+    assert_eq!(opnum, OP_SEQUENCE);
+    assert_eq!(op_status, NfsStat4::Ok as u32);
+    skip_sequence_res(&mut resp);
+    let (_, _) = parse_op_header(&mut resp);
+    let sid3 = parse_create_session_res(&mut resp);
+
+    assert_ne!(sid1, sid2);
+    assert_ne!(sid2, sid3);
+
+    let seq_op = encode_sequence(&sid1, 3, 0);
     let rootfh_op = encode_putrootfh();
     let compound = encode_compound("use-sid1", &[&seq_op, &rootfh_op]);
-    let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
+    let mut resp = send_rpc(&mut stream, 6, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, _) = parse_compound_header(&mut resp);
     assert_eq!(status, NfsStat4::Ok as u32);
 
     let seq_op = encode_sequence(&sid2, 1, 0);
     let compound = encode_compound("use-sid2", &[&seq_op, &rootfh_op]);
-    let mut resp = send_rpc(&mut stream, 5, 1, &compound).await;
+    let mut resp = send_rpc(&mut stream, 7, 1, &compound).await;
+    parse_rpc_reply(&mut resp);
+    let (status, _, _) = parse_compound_header(&mut resp);
+    assert_eq!(status, NfsStat4::Ok as u32);
+
+    let seq_op = encode_sequence(&sid3, 1, 0);
+    let compound = encode_compound("use-sid3", &[&seq_op, &rootfh_op]);
+    let mut resp = send_rpc(&mut stream, 8, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, _) = parse_compound_header(&mut resp);
     assert_eq!(status, NfsStat4::Ok as u32);

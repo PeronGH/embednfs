@@ -281,11 +281,15 @@ pub fn encode_open_create_with_access(name: &str, share_access: u32, share_deny:
 }
 
 pub fn encode_open_nocreate(name: &str) -> Vec<u8> {
+    encode_open_nocreate_with_access(name, OPEN4_SHARE_ACCESS_READ, OPEN4_SHARE_DENY_NONE)
+}
+
+pub fn encode_open_nocreate_with_access(name: &str, share_access: u32, share_deny: u32) -> Vec<u8> {
     let mut buf = BytesMut::new();
     OP_OPEN.encode(&mut buf);
     0u32.encode(&mut buf); // seqid
-    OPEN4_SHARE_ACCESS_READ.encode(&mut buf);
-    OPEN4_SHARE_DENY_NONE.encode(&mut buf);
+    share_access.encode(&mut buf);
+    share_deny.encode(&mut buf);
     1u64.encode(&mut buf); // clientid
     encode_opaque(&mut buf, b"test-open-owner");
     0u32.encode(&mut buf); // OPEN4_NOCREATE
@@ -326,11 +330,20 @@ pub fn encode_read_stateid(stateid: &Stateid4, offset: u64, count: u32) -> Vec<u
 }
 
 pub fn encode_write(stateid: &Stateid4, offset: u64, data: &[u8]) -> Vec<u8> {
+    encode_write_with_stability(stateid, offset, FILE_SYNC4, data)
+}
+
+pub fn encode_write_with_stability(
+    stateid: &Stateid4,
+    offset: u64,
+    stable_how: u32,
+    data: &[u8],
+) -> Vec<u8> {
     let mut buf = BytesMut::new();
     OP_WRITE.encode(&mut buf);
     stateid.encode(&mut buf);
     offset.encode(&mut buf);
-    FILE_SYNC4.encode(&mut buf);
+    stable_how.encode(&mut buf);
     encode_opaque(&mut buf, data);
     buf.to_vec()
 }

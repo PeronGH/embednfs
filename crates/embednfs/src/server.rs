@@ -462,6 +462,7 @@ impl<F: FileSystem> NfsServer<F> {
     }
 
     async fn handle_connection(self: &Arc<Self>, stream: TcpStream) -> std::io::Result<()> {
+        let connection_id = self.state.alloc_connection_id();
         let (mut reader, writer) = stream.into_split();
         let mut writer = BufWriter::with_capacity(CONN_BUF_SIZE, writer);
         let mut read_buf = vec![0u8; CONN_BUF_SIZE];
@@ -493,7 +494,10 @@ impl<F: FileSystem> NfsServer<F> {
             }
             reader.read_exact(&mut read_buf[..frag_len]).await?;
 
-            let Some(response) = self.process_rpc_message(&read_buf[..frag_len]).await else {
+            let Some(response) = self
+                .process_rpc_message(&read_buf[..frag_len], connection_id)
+                .await
+            else {
                 return Ok(());
             };
 
@@ -511,7 +515,7 @@ impl<F: FileSystem> NfsServer<F> {
         }
     }
 
-    async fn process_rpc_message(&self, data: &[u8]) -> Option<Bytes> {
+    async fn process_rpc_message(&self, data: &[u8], connection_id: u64) -> Option<Bytes> {
         trace!("RPC request bytes={} hex={}", data.len(), hex_bytes(data));
         let mut src = Bytes::copy_from_slice(data);
 
@@ -553,7 +557,10 @@ impl<F: FileSystem> NfsServer<F> {
                                 Some(NfsArgop4::Sequence(seq_args)) => {
                                     let fingerprint =
                                         replay_fingerprint(&call.cred, &compound_payload);
-                                    match self.state.prepare_sequence(seq_args, &fingerprint).await
+                                    match self
+                                        .state
+                                        .prepare_sequence(seq_args, &fingerprint, connection_id)
+                                        .await
                                     {
                                         SequenceReplay::Execute(res, token) => {
                                             replay_token = Some(token);
@@ -579,7 +586,7 @@ impl<F: FileSystem> NfsServer<F> {
                         };
 
                         let result = self
-                            .handle_compound(args, prepared_sequence, &request_ctx)
+                            .handle_compound(args, prepared_sequence, &request_ctx, connection_id)
                             .await;
                         encode_rpc_reply_accepted(&mut response, call.xid);
                         let body_start = response.len();
@@ -621,6 +628,7 @@ impl<F: FileSystem> NfsServer<F> {
         args: Compound4Args,
         mut prepared_sequence: Option<NfsResop4>,
         request_ctx: &RequestContext,
+        connection_id: u64,
     ) -> Compound4Res {
         let op_names: Vec<&'static str> = args.argarray.iter().map(argop_name).collect();
         debug!(
@@ -731,12 +739,12 @@ impl<F: FileSystem> NfsServer<F> {
                 match (&op, prepared_sequence.take()) {
                     (NfsArgop4::Sequence(_), Some(res)) => res,
                     _ => {
-                        self.handle_op(op, &mut current_fh, &mut saved_fh, request_ctx)
+                        self.handle_op(op, &mut current_fh, &mut saved_fh, request_ctx, connection_id)
                             .await
                     }
                 }
             } else {
-                self.handle_op(op, &mut current_fh, &mut saved_fh, request_ctx)
+                self.handle_op(op, &mut current_fh, &mut saved_fh, request_ctx, connection_id)
                     .await
             };
             let status = res_status(&res);
@@ -765,6 +773,7 @@ impl<F: FileSystem> NfsServer<F> {
         current_fh: &mut Option<NfsFh4>,
         saved_fh: &mut Option<NfsFh4>,
         request_ctx: &RequestContext,
+        connection_id: u64,
     ) -> NfsResop4 {
         match op {
             NfsArgop4::Access(args) => self.op_access(request_ctx, &args, current_fh).await,
@@ -828,12 +837,12 @@ impl<F: FileSystem> NfsServer<F> {
                 let res = self.state.exchange_id(&args).await;
                 NfsResop4::ExchangeId(NfsStat4::Ok, Some(res))
             }
-            NfsArgop4::CreateSession(args) => match self.state.create_session(&args).await {
+            NfsArgop4::CreateSession(args) => match self.state.create_session(&args, connection_id).await {
                 Ok(res) => NfsResop4::CreateSession(NfsStat4::Ok, Some(res)),
                 Err(status) => NfsResop4::CreateSession(status, None),
             },
             NfsArgop4::DestroySession(args) => {
-                match self.state.destroy_session(&args.sessionid).await {
+                match self.state.destroy_session(&args.sessionid, connection_id).await {
                     Ok(()) => NfsResop4::DestroySession(NfsStat4::Ok),
                     Err(status) => NfsResop4::DestroySession(status),
                 }
@@ -847,7 +856,7 @@ impl<F: FileSystem> NfsServer<F> {
                 }
             }
             NfsArgop4::BindConnToSession(args) => {
-                match self.state.bind_conn_to_session(&args).await {
+                match self.state.bind_conn_to_session(&args, connection_id).await {
                     Ok(res) => NfsResop4::BindConnToSession(NfsStat4::Ok, Some(res)),
                     Err(status) => NfsResop4::BindConnToSession(status, None),
                 }
@@ -1227,10 +1236,10 @@ impl<F: FileSystem> NfsServer<F> {
 
         let status = match object {
             ServerObject::Fs(id) => {
-                // RFC 8881 §18.3.3: COMMIT on a non-regular-file is invalid.
+                // RFC 8881's COMMIT error table allows NFS4ERR_ISDIR for directories.
                 match self.getattr(request_ctx, id).await {
                     Ok(attrs) if attrs.object_type == ObjectType::Directory => {
-                        return NfsResop4::Commit(NfsStat4::Inval, [0u8; 8]);
+                        return NfsResop4::Commit(NfsStat4::Isdir, [0u8; 8]);
                     }
                     Err(e) => return NfsResop4::Commit(e.to_nfsstat4(), [0u8; 8]),
                     _ => {}
@@ -1249,7 +1258,7 @@ impl<F: FileSystem> NfsServer<F> {
                 }
             }
             ServerObject::NamedAttrFile { .. } => Ok(()),
-            ServerObject::NamedAttrDir(_) => Err(NfsStat4::Inval),
+            ServerObject::NamedAttrDir(_) => Err(NfsStat4::Isdir),
         };
 
         match status {
