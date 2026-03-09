@@ -32,10 +32,7 @@ async fn test_open_create_new_file() {
     let rootfh_op = encode_putrootfh();
     let open_op = encode_open_create("new-file.txt");
     let getfh_op = encode_getfh();
-    let compound = encode_compound(
-        "open-create",
-        &[&seq_op, &rootfh_op, &open_op, &getfh_op],
-    );
+    let compound = encode_compound("open-create", &[&seq_op, &rootfh_op, &open_op, &getfh_op]);
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
 
@@ -191,10 +188,7 @@ async fn test_read_file_data() {
     let rootfh_op = encode_putrootfh();
     let lookup_op = encode_lookup("data.txt");
     let read_op = encode_read(0, 1024);
-    let compound = encode_compound(
-        "read-data",
-        &[&seq_op, &rootfh_op, &lookup_op, &read_op],
-    );
+    let compound = encode_compound("read-data", &[&seq_op, &rootfh_op, &lookup_op, &read_op]);
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
 
@@ -227,10 +221,7 @@ async fn test_read_empty_file() {
     let rootfh_op = encode_putrootfh();
     let lookup_op = encode_lookup("empty.txt");
     let read_op = encode_read(0, 1024);
-    let compound = encode_compound(
-        "read-empty",
-        &[&seq_op, &rootfh_op, &lookup_op, &read_op],
-    );
+    let compound = encode_compound("read-empty", &[&seq_op, &rootfh_op, &lookup_op, &read_op]);
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
 
@@ -263,10 +254,7 @@ async fn test_read_beyond_eof() {
     let rootfh_op = encode_putrootfh();
     let lookup_op = encode_lookup("small.txt");
     let read_op = encode_read(1000, 1024);
-    let compound = encode_compound(
-        "read-beyond",
-        &[&seq_op, &rootfh_op, &lookup_op, &read_op],
-    );
+    let compound = encode_compound("read-beyond", &[&seq_op, &rootfh_op, &lookup_op, &read_op]);
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
 
@@ -327,10 +315,7 @@ async fn test_write_and_read_back() {
     let rootfh_op = encode_putrootfh();
     let open_op = encode_open_create("write-test.txt");
     let getfh_op = encode_getfh();
-    let compound = encode_compound(
-        "open-write",
-        &[&seq_op, &rootfh_op, &open_op, &getfh_op],
-    );
+    let compound = encode_compound("open-write", &[&seq_op, &rootfh_op, &open_op, &getfh_op]);
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, _) = parse_compound_header(&mut resp);
@@ -560,10 +545,7 @@ async fn test_rename_file() {
     let rootfh_op = encode_putrootfh();
     let savefh_op = encode_savefh();
     let rename_op = encode_rename("old-name.txt", "new-name.txt");
-    let compound = encode_compound(
-        "rename",
-        &[&seq_op, &rootfh_op, &savefh_op, &rename_op],
-    );
+    let compound = encode_compound("rename", &[&seq_op, &rootfh_op, &savefh_op, &rename_op]);
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
 

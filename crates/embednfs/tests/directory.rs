@@ -9,11 +9,11 @@
 mod common;
 
 use bytes::Bytes;
-use embednfs::{MemFs, NfsFileSystem};
+use embednfs::{CreateKind, CreateRequest, FileSystem, MemFs, RequestContext, SetAttrs};
 use embednfs_proto::xdr::*;
 use embednfs_proto::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::*;
 
@@ -186,9 +186,11 @@ async fn test_readdir_reply_stays_within_maxcount_and_skips_dot_entries() {
         "readdir body exceeded maxcount: {body_len}"
     );
     assert!(!entries.is_empty());
-    assert!(entries
-        .iter()
-        .all(|(_, name, _)| name != "." && name != ".."));
+    assert!(
+        entries
+            .iter()
+            .all(|(_, name, _)| name != "." && name != "..")
+    );
     assert!(entries.iter().all(|(cookie, _, _)| *cookie >= 3));
 }
 
@@ -303,10 +305,7 @@ async fn test_readdir_cookieverf_rejects_stale_continuation_after_mutation() {
         &mut stream,
         3,
         1,
-        &encode_compound(
-            "readdir-before-mutate",
-            &[&seq_op, &rootfh_op, &readdir_op],
-        ),
+        &encode_compound("readdir-before-mutate", &[&seq_op, &rootfh_op, &readdir_op]),
     )
     .await;
     parse_rpc_reply(&mut resp);
@@ -339,10 +338,7 @@ async fn test_readdir_cookieverf_rejects_stale_continuation_after_mutation() {
         &mut stream,
         5,
         1,
-        &encode_compound(
-            "readdir-stale-verf",
-            &[&seq_op, &rootfh_op, &readdir_op],
-        ),
+        &encode_compound("readdir-stale-verf", &[&seq_op, &rootfh_op, &readdir_op]),
     )
     .await;
     parse_rpc_reply(&mut resp);
@@ -383,13 +379,7 @@ async fn test_openattr_on_file_returns_attrdir() {
     let getattr_op = encode_getattr(&[FATTR4_TYPE]);
     let compound = encode_compound(
         "openattr",
-        &[
-            &seq_op,
-            &rootfh_op,
-            &lookup_op,
-            &openattr_op,
-            &getattr_op,
-        ],
+        &[&seq_op, &rootfh_op, &lookup_op, &openattr_op, &getattr_op],
     );
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
@@ -430,17 +420,10 @@ async fn test_openattr_readdir_lists_named_attrs() {
     let rootfh_op = encode_putrootfh();
     let lookup_op = encode_lookup("notes.txt");
     let openattr_op = encode_openattr(false);
-    let readdir_op =
-        encode_readdir_custom(0, [0u8; 8], 4096, 8192, &[FATTR4_FILEID, FATTR4_TYPE]);
+    let readdir_op = encode_readdir_custom(0, [0u8; 8], 4096, 8192, &[FATTR4_FILEID, FATTR4_TYPE]);
     let compound = encode_compound(
         "openattr-readdir",
-        &[
-            &seq_op,
-            &rootfh_op,
-            &lookup_op,
-            &openattr_op,
-            &readdir_op,
-        ],
+        &[&seq_op, &rootfh_op, &lookup_op, &openattr_op, &readdir_op],
     );
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
@@ -520,7 +503,19 @@ async fn test_named_attr_lookup_and_read() {
 #[tokio::test]
 async fn test_named_attr_open_create_write_close_and_remove() {
     let fs = MemFs::new();
-    let _file_id = fs.create_file(1, "notes.txt").await.unwrap();
+    let ctx = RequestContext::anonymous();
+    let _file_id = fs
+        .create(
+            &ctx,
+            &1,
+            "notes.txt",
+            CreateRequest {
+                kind: CreateKind::File,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap();
     let port = start_server_with_fs(fs).await;
     let mut stream = connect(port).await;
     let sessionid = setup_session(&mut stream).await;
@@ -598,8 +593,7 @@ async fn test_named_attr_open_create_write_close_and_remove() {
     let rootfh_op = encode_putrootfh();
     let lookup_file_op = encode_lookup("notes.txt");
     let openattr_op = encode_openattr(false);
-    let readdir_op =
-        encode_readdir_custom(0, [0u8; 8], 4096, 8192, &[FATTR4_FILEID, FATTR4_TYPE]);
+    let readdir_op = encode_readdir_custom(0, [0u8; 8], 4096, 8192, &[FATTR4_FILEID, FATTR4_TYPE]);
     let compound = encode_compound(
         "named-attr-readdir-after-write",
         &[
@@ -679,7 +673,7 @@ async fn test_getattr_file_named_attr_summary_is_cached() {
         assert_eq!(status, NfsStat4::Ok as u32);
     }
 
-    assert_eq!(list_count.load(Ordering::Relaxed), 1);
+    assert_eq!(list_count.load(Ordering::Relaxed), 0);
 }
 
 /// GETATTR on a named-attribute directory caches its summary metadata.
@@ -705,13 +699,7 @@ async fn test_getattr_named_attr_dir_summary_is_cached() {
         let getattr_op = encode_getattr(&[FATTR4_TYPE, FATTR4_SIZE]);
         let compound = encode_compound(
             "getattr-attrdir-cache",
-            &[
-                &seq_op,
-                &rootfh_op,
-                &lookup_op,
-                &openattr_op,
-                &getattr_op,
-            ],
+            &[&seq_op, &rootfh_op, &lookup_op, &openattr_op, &getattr_op],
         );
         let mut resp = send_rpc(&mut stream, xid, 1, &compound).await;
         parse_rpc_reply(&mut resp);
@@ -728,8 +716,31 @@ async fn test_getattr_named_attr_dir_summary_is_cached() {
 #[tokio::test]
 async fn test_readdir_subdirectory() {
     let fs = MemFs::new();
-    let subdir_id = fs.create_dir(1, "sub").await.unwrap();
-    fs.create_file(subdir_id, "inner.txt").await.unwrap();
+    let ctx = RequestContext::anonymous();
+    let subdir_id = fs
+        .create(
+            &ctx,
+            &1,
+            "sub",
+            CreateRequest {
+                kind: CreateKind::Directory,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap()
+        .handle;
+    fs.create(
+        &ctx,
+        &subdir_id,
+        "inner.txt",
+        CreateRequest {
+            kind: CreateKind::File,
+            attrs: SetAttrs::default(),
+        },
+    )
+    .await
+    .unwrap();
     let port = start_server_with_fs(fs).await;
     let mut stream = connect(port).await;
     let sessionid = setup_session(&mut stream).await;
@@ -766,8 +777,31 @@ async fn test_readdir_subdirectory() {
 #[tokio::test]
 async fn test_remove_nonempty_directory() {
     let fs = MemFs::new();
-    let subdir_id = fs.create_dir(1, "nonempty").await.unwrap();
-    fs.create_file(subdir_id, "child.txt").await.unwrap();
+    let ctx = RequestContext::anonymous();
+    let subdir_id = fs
+        .create(
+            &ctx,
+            &1,
+            "nonempty",
+            CreateRequest {
+                kind: CreateKind::Directory,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap()
+        .handle;
+    fs.create(
+        &ctx,
+        &subdir_id,
+        "child.txt",
+        CreateRequest {
+            kind: CreateKind::File,
+            attrs: SetAttrs::default(),
+        },
+    )
+    .await
+    .unwrap();
     let port = start_server_with_fs(fs).await;
     let mut stream = connect(port).await;
     let sessionid = setup_session(&mut stream).await;

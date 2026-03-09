@@ -50,56 +50,112 @@ Non-macOS clients are not a supported compatibility target, even if they happen 
 
 ## Filesystem API
 
-The public API is split into a small required core trait plus opt-in extension traits.
+The filesystem API is handle-based and models the exported filesystem rather than the raw backing store. Weak backends such as exFAT- or S3-style adapters are expected to provide stable handles, exported attrs, and any overlay metadata they need behind the trait.
 
 ### Core Trait
 
 ```rust
 use async_trait::async_trait;
-use embednfs::{DirEntry, FileId, FsInfo, NfsFileSystem, NodeInfo, NfsResult};
+use bytes::Bytes;
+use embednfs::{
+    AccessMask, Attrs, CreateRequest, CreateResult, DirPage, FileSystem, FsCapabilities,
+    FsLimits, FsResult, FsStats, ReadResult, RequestContext, SetAttrs, WriteResult,
+};
 
 #[async_trait]
-pub trait NfsFileSystem: Send + Sync + 'static {
-    fn root(&self) -> FileId { 1 }
+pub trait FileSystem: Send + Sync + 'static {
+    type Handle: Clone + Eq + std::hash::Hash + Send + Sync + 'static;
 
-    async fn stat(&self, id: FileId) -> NfsResult<NodeInfo>;
-    async fn lookup(&self, dir_id: FileId, name: &str) -> NfsResult<FileId>;
-    async fn lookup_parent(&self, id: FileId) -> NfsResult<FileId>;
-    async fn readdir(&self, dir_id: FileId) -> NfsResult<Vec<DirEntry>>;
-    async fn read(&self, id: FileId, offset: u64, count: u32) -> NfsResult<(Vec<u8>, bool)>;
-    async fn write(&self, id: FileId, offset: u64, data: &[u8]) -> NfsResult<u32>;
-    async fn truncate(&self, id: FileId, size: u64) -> NfsResult<()>;
-    async fn create_file(&self, dir_id: FileId, name: &str) -> NfsResult<FileId>;
-    async fn create_dir(&self, dir_id: FileId, name: &str) -> NfsResult<FileId>;
-    async fn remove(&self, dir_id: FileId, name: &str) -> NfsResult<()>;
+    fn root(&self) -> Self::Handle;
+    fn capabilities(&self) -> FsCapabilities;
+    fn limits(&self) -> FsLimits;
+
+    async fn statfs(&self, ctx: &RequestContext) -> FsResult<FsStats>;
+    async fn getattr(&self, ctx: &RequestContext, handle: &Self::Handle) -> FsResult<Attrs>;
+    async fn access(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        requested: AccessMask,
+    ) -> FsResult<AccessMask>;
+    async fn lookup(
+        &self,
+        ctx: &RequestContext,
+        parent: &Self::Handle,
+        name: &str,
+    ) -> FsResult<Self::Handle>;
+    async fn parent(
+        &self,
+        ctx: &RequestContext,
+        dir: &Self::Handle,
+    ) -> FsResult<Option<Self::Handle>>;
+    async fn readdir(
+        &self,
+        ctx: &RequestContext,
+        dir: &Self::Handle,
+        cookie: u64,
+        max_entries: u32,
+        with_attrs: bool,
+    ) -> FsResult<DirPage<Self::Handle>>;
+    async fn read(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        offset: u64,
+        count: u32,
+    ) -> FsResult<ReadResult>;
+    async fn write(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        offset: u64,
+        data: Bytes,
+    ) -> FsResult<WriteResult>;
+    async fn create(
+        &self,
+        ctx: &RequestContext,
+        parent: &Self::Handle,
+        name: &str,
+        req: CreateRequest,
+    ) -> FsResult<CreateResult<Self::Handle>>;
+    async fn remove(
+        &self,
+        ctx: &RequestContext,
+        parent: &Self::Handle,
+        name: &str,
+    ) -> FsResult<()>;
     async fn rename(
         &self,
-        from_dir: FileId,
+        ctx: &RequestContext,
+        from_dir: &Self::Handle,
         from_name: &str,
-        to_dir: FileId,
+        to_dir: &Self::Handle,
         to_name: &str,
-    ) -> NfsResult<()>;
-
-    fn fs_info(&self) -> FsInfo {
-        FsInfo::default()
-    }
+    ) -> FsResult<()>;
+    async fn setattr(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        attrs: &SetAttrs,
+    ) -> FsResult<Attrs>;
 }
 ```
 
-Core types:
+Key points:
 
-- `NodeInfo { kind, size }` is the only required per-node metadata
-- `DirEntry { fileid, name }` is the only required directory-entry payload
-- `FileId` identifies real filesystem objects only; the server synthesizes attrdirs, named-attr files, and other protocol-only objects internally
+- `Handle` is opaque backend identity. It is not the NFS wire handle and not the exported `fileid`.
+- `Attrs` carries the exported metadata view, including `fileid`, `change`, times, flags, and ownership.
+- `RequestContext` is passed to every op so adapters can make explicit policy decisions.
+- `readdir()` is paged and cookie-driven, with optional inline attrs for `READDIR` hot paths.
 
 ### Extension Traits
 
 The server will use these when present:
 
-- `NfsNamedAttrs` for macOS named attributes / xattrs / named streams
-- `NfsSymlinks` for `CREATE symlink` and `READLINK`
-- `NfsHardLinks` for `LINK`
-- `NfsSync` for explicit `COMMIT`
+- `Xattrs` for macOS named attributes / xattrs / named streams
+- `Symlinks` for `CREATE symlink` and `READLINK`
+- `HardLinks` for `LINK`
+- `CommitSupport` for explicit `COMMIT`
 
 If an extension trait is absent, the server returns the appropriate NFS unsupported/type errors and does not advertise the feature where that matters.
 

@@ -1,4 +1,5 @@
-use crate::internal::{ServerFileType, ServerObject, SetAttrRequest, SetTime};
+use crate::fs::{SetAttrs, SetTime};
+use crate::internal::{ServerFileType, ServerObject};
 use dashmap::DashMap;
 /// NFSv4.1 session, object, and server-side state management.
 use embednfs_proto::*;
@@ -133,7 +134,8 @@ impl StateManager {
         let boot_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
-        let verifier_value = boot_time.as_secs().rotate_left(32) ^ u64::from(boot_time.subsec_nanos());
+        let verifier_value =
+            boot_time.as_secs().rotate_left(32) ^ u64::from(boot_time.subsec_nanos());
         let mut write_verifier = [0u8; 8];
         write_verifier.copy_from_slice(&verifier_value.to_be_bytes());
 
@@ -312,7 +314,7 @@ impl StateManager {
         &self,
         object: &ServerObject,
         file_type: ServerFileType,
-        attrs: &SetAttrRequest,
+        attrs: &SetAttrs,
     ) -> SynthMeta {
         let mut inner = self.inner.write().await;
         let mut meta = self.ensure_meta_locked(&mut inner, object, file_type);
@@ -338,37 +340,37 @@ impl StateManager {
         }
         if let Some(atime) = attrs.atime {
             match atime {
-                SetTime::ServerTime => {
+                SetTime::ServerNow => {
                     meta.atime_sec = now_s;
                     meta.atime_nsec = now_ns;
                 }
-                SetTime::ClientTime(s, ns) => {
-                    meta.atime_sec = s;
-                    meta.atime_nsec = ns;
+                SetTime::Client(ts) => {
+                    meta.atime_sec = ts.seconds;
+                    meta.atime_nsec = ts.nanos;
                 }
             }
         }
         if let Some(mtime) = attrs.mtime {
             match mtime {
-                SetTime::ServerTime => {
+                SetTime::ServerNow => {
                     meta.mtime_sec = now_s;
                     meta.mtime_nsec = now_ns;
                 }
-                SetTime::ClientTime(s, ns) => {
-                    meta.mtime_sec = s;
-                    meta.mtime_nsec = ns;
+                SetTime::Client(ts) => {
+                    meta.mtime_sec = ts.seconds;
+                    meta.mtime_nsec = ts.nanos;
                 }
             }
         }
-        if let Some(crtime) = attrs.crtime {
-            match crtime {
-                SetTime::ServerTime => {
+        if let Some(birthtime) = attrs.birthtime {
+            match birthtime {
+                SetTime::ServerNow => {
                     meta.crtime_sec = now_s;
                     meta.crtime_nsec = now_ns;
                 }
-                SetTime::ClientTime(s, ns) => {
-                    meta.crtime_sec = s;
-                    meta.crtime_nsec = ns;
+                SetTime::Client(ts) => {
+                    meta.crtime_sec = ts.seconds;
+                    meta.crtime_nsec = ts.nanos;
                 }
             }
         }
@@ -386,10 +388,8 @@ impl StateManager {
     pub async fn exchange_id(&self, args: &ExchangeIdArgs4) -> ExchangeIdRes4 {
         let mut inner = self.inner.write().await;
 
-        let (clientid, seq, confirmed) = if let Some(existing) = inner
-            .clients
-            .values()
-            .find(|client| {
+        let (clientid, seq, confirmed) = if let Some(existing) =
+            inner.clients.values().find(|client| {
                 client.owner.ownerid == args.clientowner.ownerid
                     && client.owner.verifier == args.clientowner.verifier
             }) {
@@ -683,7 +683,8 @@ impl StateManager {
         let mut inner = self.inner.write().await;
         for state in inner.open_files.values() {
             if state.object == object
-                && ((state.share_deny & share_access) != 0 || (share_deny & state.share_access) != 0)
+                && ((state.share_deny & share_access) != 0
+                    || (share_deny & state.share_access) != 0)
             {
                 return Err(NfsStat4::ShareDenied);
             }
@@ -779,7 +780,10 @@ impl StateManager {
     /// Look up the client ID associated with a session.
     pub async fn session_clientid(&self, sessionid: &Sessionid4) -> Option<Clientid4> {
         let inner = self.inner.read().await;
-        inner.sessions.get(sessionid).map(|session| session.clientid)
+        inner
+            .sessions
+            .get(sessionid)
+            .map(|session| session.clientid)
     }
 
     fn lock_end(offset: u64, length: u64) -> u128 {
@@ -821,9 +825,15 @@ impl StateManager {
     }
 
     fn drop_client_state(inner: &mut StateInner, clientid: Clientid4) -> bool {
-        inner.sessions.retain(|_, session| session.clientid != clientid);
-        inner.open_files.retain(|_, state| state.clientid != clientid);
-        inner.lock_files.retain(|_, state| state.owner.clientid != clientid);
+        inner
+            .sessions
+            .retain(|_, session| session.clientid != clientid);
+        inner
+            .open_files
+            .retain(|_, state| state.clientid != clientid);
+        inner
+            .lock_files
+            .retain(|_, state| state.owner.clientid != clientid);
         inner.clients.remove(&clientid).is_some()
     }
 
@@ -1020,7 +1030,9 @@ impl StateManager {
             }
 
             let range_end = Self::lock_end(range.offset, range.length);
-            if let Some(left) = Self::range_from_bounds(range.locktype, range.offset, offset as u128) {
+            if let Some(left) =
+                Self::range_from_bounds(range.locktype, range.offset, offset as u128)
+            {
                 next_ranges.push(left);
             }
             if unlock_end != u128::MAX
@@ -1080,7 +1092,12 @@ mod tests {
         clientid: Clientid4,
     ) -> Stateid4 {
         state
-            .create_open_state(object, clientid, OPEN4_SHARE_ACCESS_BOTH, OPEN4_SHARE_DENY_NONE)
+            .create_open_state(
+                object,
+                clientid,
+                OPEN4_SHARE_ACCESS_BOTH,
+                OPEN4_SHARE_DENY_NONE,
+            )
             .await
             .unwrap()
     }
@@ -1095,14 +1112,7 @@ mod tests {
             owner: b"lock-owner".to_vec(),
         };
         let lock_stateid = state
-            .create_lock_state(
-                &open_stateid,
-                &owner,
-                object,
-                NfsLockType4::WriteLt,
-                0,
-                10,
-            )
+            .create_lock_state(&open_stateid, &owner, object, NfsLockType4::WriteLt, 0, 10)
             .await
             .unwrap();
 
@@ -1113,7 +1123,10 @@ mod tests {
         let results = state
             .test_stateids(&[open_stateid, lock_stateid, unknown])
             .await;
-        assert_eq!(results, vec![NfsStat4::Ok, NfsStat4::Ok, NfsStat4::BadStateid]);
+        assert_eq!(
+            results,
+            vec![NfsStat4::Ok, NfsStat4::Ok, NfsStat4::BadStateid]
+        );
     }
 
     #[tokio::test]
@@ -1134,14 +1147,7 @@ mod tests {
             owner: b"lock-owner".to_vec(),
         };
         let lock_stateid = state
-            .create_lock_state(
-                &downgraded,
-                &owner,
-                object,
-                NfsLockType4::WriteLt,
-                0,
-                10,
-            )
+            .create_lock_state(&downgraded, &owner, object, NfsLockType4::WriteLt, 0, 10)
             .await
             .unwrap();
         let updated_lock = state
@@ -1193,13 +1199,18 @@ mod tests {
         let second = state.exchange_id(&args).await;
 
         assert_eq!(second.clientid, first.clientid);
-        assert_eq!(second.flags & EXCHGID4_FLAG_CONFIRMED_R, EXCHGID4_FLAG_CONFIRMED_R);
+        assert_eq!(
+            second.flags & EXCHGID4_FLAG_CONFIRMED_R,
+            EXCHGID4_FLAG_CONFIRMED_R
+        );
     }
 
     #[tokio::test]
     async fn test_exchange_id_reboot_drops_old_state_after_new_create_session() {
         let state = StateManager::new();
-        let original = state.exchange_id(&exchange_id_args(b"owner", [0x11; 8])).await;
+        let original = state
+            .exchange_id(&exchange_id_args(b"owner", [0x11; 8]))
+            .await;
         let original_session = state
             .create_session(&create_session_args(original.clientid, original.sequenceid))
             .await
@@ -1212,18 +1223,13 @@ mod tests {
             owner: b"lock-owner".to_vec(),
         };
         let lock_stateid = state
-            .create_lock_state(
-                &open_stateid,
-                &owner,
-                object,
-                NfsLockType4::WriteLt,
-                0,
-                10,
-            )
+            .create_lock_state(&open_stateid, &owner, object, NfsLockType4::WriteLt, 0, 10)
             .await
             .unwrap();
 
-        let rebooted = state.exchange_id(&exchange_id_args(b"owner", [0x22; 8])).await;
+        let rebooted = state
+            .exchange_id(&exchange_id_args(b"owner", [0x22; 8]))
+            .await;
         assert_ne!(rebooted.clientid, original.clientid);
         assert_eq!(
             state.session_clientid(&original_session.sessionid).await,
@@ -1239,7 +1245,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(state.session_clientid(&original_session.sessionid).await, None);
+        assert_eq!(
+            state.session_clientid(&original_session.sessionid).await,
+            None
+        );
         assert_eq!(
             state.test_stateids(&[open_stateid, lock_stateid]).await,
             vec![NfsStat4::BadStateid, NfsStat4::BadStateid]
@@ -1311,11 +1320,7 @@ mod tests {
         );
         assert_eq!(
             state
-                .open_downgrade(
-                    &downgraded,
-                    OPEN4_SHARE_ACCESS_BOTH,
-                    OPEN4_SHARE_DENY_NONE,
-                )
+                .open_downgrade(&downgraded, OPEN4_SHARE_ACCESS_BOTH, OPEN4_SHARE_DENY_NONE,)
                 .await
                 .unwrap_err(),
             NfsStat4::Inval
@@ -1423,14 +1428,7 @@ mod tests {
             owner: b"owner1".to_vec(),
         };
         let lock_stateid = state
-            .create_lock_state(
-                &open_stateid,
-                &owner,
-                object,
-                NfsLockType4::WriteLt,
-                0,
-                100,
-            )
+            .create_lock_state(&open_stateid, &owner, object, NfsLockType4::WriteLt, 0, 100)
             .await
             .unwrap();
         let updated_lock = state

@@ -33,10 +33,7 @@ async fn test_lock_write_new_file() {
     let rootfh_op = encode_putrootfh();
     let open_op = encode_open_create("locktest.txt");
     let getfh_op = encode_getfh();
-    let compound = encode_compound(
-        "open-for-lock",
-        &[&seq_op, &rootfh_op, &open_op, &getfh_op],
-    );
+    let compound = encode_compound("open-for-lock", &[&seq_op, &rootfh_op, &open_op, &getfh_op]);
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, _) = parse_compound_header(&mut resp);
@@ -107,7 +104,13 @@ async fn test_lock_read_new_file() {
     let seq_op = encode_sequence(&sessionid, 2, 0);
     let putfh_op = encode_putfh(&file_fh);
     let lock_op = encode_lock_new(
-        READ_LT, false, 0, 1024, &open_stateid, b"read-lock-owner", clientid,
+        READ_LT,
+        false,
+        0,
+        1024,
+        &open_stateid,
+        b"read-lock-owner",
+        clientid,
     );
     let compound = encode_compound("lock-read", &[&seq_op, &putfh_op, &lock_op]);
     let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;

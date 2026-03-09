@@ -222,10 +222,7 @@ async fn test_savefh_restorefh_roundtrip() {
     let rootfh_op = encode_putrootfh();
     let savefh_op = encode_savefh();
     let getfh1 = encode_getfh(); // get current FH (root)
-    let compound = encode_compound(
-        "save-root",
-        &[&seq_op, &rootfh_op, &savefh_op, &getfh1],
-    );
+    let compound = encode_compound("save-root", &[&seq_op, &rootfh_op, &savefh_op, &getfh1]);
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, _) = parse_compound_header(&mut resp);
@@ -510,7 +507,14 @@ async fn test_lookupp_from_subdir() {
     let getfh2 = encode_getfh();
     let compound = encode_compound(
         "lookupp-subdir",
-        &[&seq_op, &rootfh_op, &getfh1, &lookup_op, &lookupp_op, &getfh2],
+        &[
+            &seq_op,
+            &rootfh_op,
+            &getfh1,
+            &lookup_op,
+            &lookupp_op,
+            &getfh2,
+        ],
     );
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);

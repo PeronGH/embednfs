@@ -1,7 +1,7 @@
 //! Embeddable NFSv4.1 server library.
 //!
 //! Provides a complete NFSv4.1 server implementation. Users implement the
-//! [`NfsFileSystem`] trait; the library handles the wire protocol, session
+//! [`FileSystem`] trait; the library handles the wire protocol, session
 //! management, and serves it over TCP.
 
 pub(crate) mod attrs;
@@ -12,8 +12,10 @@ pub(crate) mod server;
 pub(crate) mod session;
 
 pub use fs::{
-    DirEntry, FileId, FsInfo, NfsError, NfsFileSystem, NfsHardLinks, NfsNamedAttrs, NfsResult,
-    NfsSync, NfsSymlinks, NodeInfo, NodeKind, XattrSetMode,
+    AccessMask, Attrs, AuthContext, CommitSupport, CreateKind, CreateRequest, CreateResult,
+    DirEntry, DirPage, FileSystem, FsCapabilities, FsError, FsLimits, FsResult, FsStats, HardLinks,
+    ObjectType, ReadResult, RequestContext, SetAttrs, SetTime, Symlinks, Timestamp, WriteResult,
+    WriteStability, XattrSetMode, Xattrs,
 };
 pub use memfs::MemFs;
-pub use server::NfsServer;
+pub use server::{IdMapper, NfsServer, NfsServerBuilder, NumericIdMapper};

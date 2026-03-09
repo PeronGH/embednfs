@@ -239,10 +239,7 @@ async fn test_readlink_returns_target() {
     let seq_op = encode_sequence(&sessionid, 2, 0);
     let lookup_op = encode_lookup("rdlink");
     let readlink_op = encode_readlink();
-    let compound = encode_compound(
-        "readlink",
-        &[&seq_op, &rootfh_op, &lookup_op, &readlink_op],
-    );
+    let compound = encode_compound("readlink", &[&seq_op, &rootfh_op, &lookup_op, &readlink_op]);
     let mut resp = send_rpc(&mut stream, 4, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, num_results) = parse_compound_header(&mut resp);
@@ -421,10 +418,7 @@ async fn test_commit_on_file() {
     let rootfh_op = encode_putrootfh();
     let lookup_op = encode_lookup("commit.txt");
     let commit_op = encode_commit(0, 0); // offset=0, count=0 means entire file
-    let compound = encode_compound(
-        "commit",
-        &[&seq_op, &rootfh_op, &lookup_op, &commit_op],
-    );
+    let compound = encode_compound("commit", &[&seq_op, &rootfh_op, &lookup_op, &commit_op]);
     let mut resp = send_rpc(&mut stream, 3, 1, &compound).await;
     parse_rpc_reply(&mut resp);
     let (status, _, num_results) = parse_compound_header(&mut resp);

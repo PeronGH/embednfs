@@ -1,5 +1,5 @@
-use crate::fs::FsInfo;
-use crate::internal::{ServerFileAttr, ServerFileType, SetAttrRequest, SetTime};
+use crate::fs::{FsCapabilities, FsLimits, FsStats, SetAttrs, SetTime, Timestamp};
+use crate::internal::{ServerFileAttr, ServerFileType};
 /// NFSv4.1 file attribute encoding and decoding.
 ///
 /// Handles the bitmap-driven attribute encoding used by GETATTR/SETATTR.
@@ -10,13 +10,19 @@ use embednfs_proto::*;
 const NFS_LEASE_TIME_SECS: u32 = 90;
 const MODE_PERM_MASK: u32 = 0o7777;
 
+/// Snapshot of filesystem-wide values needed for attribute encoding.
+pub(crate) struct AttrEncodingContext<'a> {
+    pub limits: &'a FsLimits,
+    pub stats: &'a FsStats,
+    pub capabilities: &'a FsCapabilities,
+}
+
 /// Encode file attributes according to the requested bitmap.
 pub(crate) fn encode_fattr4(
     attr: &ServerFileAttr,
     request: &Bitmap4,
     fh: &NfsFh4,
-    fs_info: &FsInfo,
-    supports_named_attrs: bool,
+    ctx: &AttrEncodingContext<'_>,
 ) -> Fattr4 {
     let mut result_bitmap = Bitmap4::new();
     let mut vals = BytesMut::with_capacity(256);
@@ -81,7 +87,7 @@ pub(crate) fn encode_fattr4(
         ] {
             supported.set(*bit);
         }
-        if supports_named_attrs {
+        if ctx.capabilities.xattrs {
             supported.set(FATTR4_NAMED_ATTR);
         }
         supported.encode(&mut vals);
@@ -122,13 +128,13 @@ pub(crate) fn encode_fattr4(
     // FATTR4_LINK_SUPPORT (5)
     if request.is_set(FATTR4_LINK_SUPPORT) {
         result_bitmap.set(FATTR4_LINK_SUPPORT);
-        true.encode(&mut vals);
+        ctx.capabilities.hard_links.encode(&mut vals);
     }
 
     // FATTR4_SYMLINK_SUPPORT (6)
     if request.is_set(FATTR4_SYMLINK_SUPPORT) {
         result_bitmap.set(FATTR4_SYMLINK_SUPPORT);
-        true.encode(&mut vals);
+        ctx.capabilities.symlinks.encode(&mut vals);
     }
 
     // FATTR4_NAMED_ATTR (7)
@@ -185,13 +191,13 @@ pub(crate) fn encode_fattr4(
     // FATTR4_CASE_INSENSITIVE (16)
     if request.is_set(FATTR4_CASE_INSENSITIVE) {
         result_bitmap.set(FATTR4_CASE_INSENSITIVE);
-        false.encode(&mut vals);
+        (!ctx.capabilities.case_sensitive).encode(&mut vals);
     }
 
     // FATTR4_CASE_PRESERVING (17)
     if request.is_set(FATTR4_CASE_PRESERVING) {
         result_bitmap.set(FATTR4_CASE_PRESERVING);
-        true.encode(&mut vals);
+        ctx.capabilities.case_preserving.encode(&mut vals);
     }
 
     // FATTR4_CHOWN_RESTRICTED (18)
@@ -215,19 +221,19 @@ pub(crate) fn encode_fattr4(
     // FATTR4_FILES_AVAIL (21)
     if request.is_set(FATTR4_FILES_AVAIL) {
         result_bitmap.set(FATTR4_FILES_AVAIL);
-        fs_info.avail_files.encode(&mut vals);
+        ctx.stats.avail_files.encode(&mut vals);
     }
 
     // FATTR4_FILES_FREE (22)
     if request.is_set(FATTR4_FILES_FREE) {
         result_bitmap.set(FATTR4_FILES_FREE);
-        fs_info.free_files.encode(&mut vals);
+        ctx.stats.free_files.encode(&mut vals);
     }
 
     // FATTR4_FILES_TOTAL (23)
     if request.is_set(FATTR4_FILES_TOTAL) {
         result_bitmap.set(FATTR4_FILES_TOTAL);
-        fs_info.total_files.encode(&mut vals);
+        ctx.stats.total_files.encode(&mut vals);
     }
 
     // FATTR4_HIDDEN (25) - macOS UF_HIDDEN flag
@@ -245,7 +251,7 @@ pub(crate) fn encode_fattr4(
     // FATTR4_MAXFILESIZE (27)
     if request.is_set(FATTR4_MAXFILESIZE) {
         result_bitmap.set(FATTR4_MAXFILESIZE);
-        fs_info.max_file_size.encode(&mut vals);
+        ctx.limits.max_file_size.encode(&mut vals);
     }
 
     // FATTR4_MAXLINK (28)
@@ -257,19 +263,19 @@ pub(crate) fn encode_fattr4(
     // FATTR4_MAXNAME (29)
     if request.is_set(FATTR4_MAXNAME) {
         result_bitmap.set(FATTR4_MAXNAME);
-        fs_info.max_name.encode(&mut vals);
+        ctx.limits.max_name_bytes.encode(&mut vals);
     }
 
     // FATTR4_MAXREAD (30)
     if request.is_set(FATTR4_MAXREAD) {
         result_bitmap.set(FATTR4_MAXREAD);
-        (fs_info.max_read as u64).encode(&mut vals);
+        (ctx.limits.max_read as u64).encode(&mut vals);
     }
 
     // FATTR4_MAXWRITE (31)
     if request.is_set(FATTR4_MAXWRITE) {
         result_bitmap.set(FATTR4_MAXWRITE);
-        (fs_info.max_write as u64).encode(&mut vals);
+        (ctx.limits.max_write as u64).encode(&mut vals);
     }
 
     // Word 1 attributes (bits 32-63)
@@ -317,19 +323,19 @@ pub(crate) fn encode_fattr4(
     // FATTR4_SPACE_AVAIL (42)
     if request.is_set(FATTR4_SPACE_AVAIL) {
         result_bitmap.set(FATTR4_SPACE_AVAIL);
-        fs_info.avail_bytes.encode(&mut vals);
+        ctx.stats.avail_bytes.encode(&mut vals);
     }
 
     // FATTR4_SPACE_FREE (43)
     if request.is_set(FATTR4_SPACE_FREE) {
         result_bitmap.set(FATTR4_SPACE_FREE);
-        fs_info.free_bytes.encode(&mut vals);
+        ctx.stats.free_bytes.encode(&mut vals);
     }
 
     // FATTR4_SPACE_TOTAL (44)
     if request.is_set(FATTR4_SPACE_TOTAL) {
         result_bitmap.set(FATTR4_SPACE_TOTAL);
-        fs_info.total_bytes.encode(&mut vals);
+        ctx.stats.total_bytes.encode(&mut vals);
     }
 
     // FATTR4_SPACE_USED (45)
@@ -429,8 +435,8 @@ pub(crate) fn encode_fattr4(
 }
 
 /// Decode setattr attributes from an Fattr4.
-pub(crate) fn decode_setattr(fattr: &Fattr4) -> Result<SetAttrRequest, NfsStat4> {
-    let mut result = SetAttrRequest::default();
+pub(crate) fn decode_setattr(fattr: &Fattr4) -> Result<SetAttrs, NfsStat4> {
+    let mut result = SetAttrs::default();
     let mut src = bytes::Bytes::from(fattr.attr_vals.clone());
 
     // Attributes must be decoded in bitmap order
@@ -482,10 +488,13 @@ pub(crate) fn decode_setattr(fattr: &Fattr4) -> Result<SetAttrRequest, NfsStat4>
     if fattr.attrmask.is_set(FATTR4_TIME_ACCESS_SET) {
         let how = u32::decode(&mut src).map_err(|_| NfsStat4::BadXdr)?;
         match how {
-            0 => result.atime = Some(SetTime::ServerTime),
+            0 => result.atime = Some(SetTime::ServerNow),
             1 => {
                 let t = NfsTime4::decode(&mut src).map_err(|_| NfsStat4::BadXdr)?;
-                result.atime = Some(SetTime::ClientTime(t.seconds, t.nseconds));
+                result.atime = Some(SetTime::Client(Timestamp {
+                    seconds: t.seconds,
+                    nanos: t.nseconds,
+                }));
             }
             _ => {}
         }
@@ -494,22 +503,31 @@ pub(crate) fn decode_setattr(fattr: &Fattr4) -> Result<SetAttrRequest, NfsStat4>
     // TIME_BACKUP (49) - macOS sends this (same format as time_create)
     if fattr.attrmask.is_set(FATTR4_TIME_BACKUP) {
         let t = NfsTime4::decode(&mut src).map_err(|_| NfsStat4::BadXdr)?;
-        result.crtime = Some(SetTime::ClientTime(t.seconds, t.nseconds));
+        result.birthtime = Some(SetTime::Client(Timestamp {
+            seconds: t.seconds,
+            nanos: t.nseconds,
+        }));
     }
 
     // TIME_CREATE (50) - macOS sends this as birth/creation time
     if fattr.attrmask.is_set(FATTR4_TIME_CREATE) {
         let t = NfsTime4::decode(&mut src).map_err(|_| NfsStat4::BadXdr)?;
-        result.crtime = Some(SetTime::ClientTime(t.seconds, t.nseconds));
+        result.birthtime = Some(SetTime::Client(Timestamp {
+            seconds: t.seconds,
+            nanos: t.nseconds,
+        }));
     }
 
     if fattr.attrmask.is_set(FATTR4_TIME_MODIFY_SET) {
         let how = u32::decode(&mut src).map_err(|_| NfsStat4::BadXdr)?;
         match how {
-            0 => result.mtime = Some(SetTime::ServerTime),
+            0 => result.mtime = Some(SetTime::ServerNow),
             1 => {
                 let t = NfsTime4::decode(&mut src).map_err(|_| NfsStat4::BadXdr)?;
-                result.mtime = Some(SetTime::ClientTime(t.seconds, t.nseconds));
+                result.mtime = Some(SetTime::Client(Timestamp {
+                    seconds: t.seconds,
+                    nanos: t.nseconds,
+                }));
             }
             _ => {}
         }
@@ -569,8 +587,6 @@ mod tests {
             used: 0,
             mode: 0o100644,
             nlink: 1,
-            uid: 0,
-            gid: 0,
             owner: "root".into(),
             owner_group: "root".into(),
             atime_sec: 0,
@@ -590,7 +606,15 @@ mod tests {
             has_named_attrs: false,
         };
         let fh = NfsFh4(vec![1, 2, 3, 4]);
-        let fattr = encode_fattr4(&attr, &request, &fh, &FsInfo::default(), false);
+        let limits = FsLimits::default();
+        let stats = FsStats::default();
+        let caps = FsCapabilities::default();
+        let ctx = AttrEncodingContext {
+            limits: &limits,
+            stats: &stats,
+            capabilities: &caps,
+        };
+        let fattr = encode_fattr4(&attr, &request, &fh, &ctx);
         let mut src = bytes::Bytes::from(fattr.attr_vals);
 
         assert_eq!(u32::decode(&mut src).unwrap(), 0o644);

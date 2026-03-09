@@ -1,11 +1,14 @@
-use crate::fs::FileId;
+use crate::fs::Attrs;
+
+/// Internal identifier used to map opaque backend handles to server state.
+pub(crate) type ObjectId = u64;
 
 /// Internal object identity used by the server for filehandles and state.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) enum ServerObject {
-    Fs(FileId),
-    NamedAttrDir(FileId),
-    NamedAttrFile { parent: FileId, name: String },
+    Fs(ObjectId),
+    NamedAttrDir(ObjectId),
+    NamedAttrFile { parent: ObjectId, name: String },
 }
 
 /// Internal file kinds used for NFS attribute encoding.
@@ -18,7 +21,7 @@ pub(crate) enum ServerFileType {
     NamedAttr,
 }
 
-/// Internal synthesized attribute record used by the protocol layer.
+/// Internal attribute record used by the protocol layer.
 #[derive(Debug, Clone)]
 pub(crate) struct ServerFileAttr {
     pub fileid: u64,
@@ -27,10 +30,6 @@ pub(crate) struct ServerFileAttr {
     pub used: u64,
     pub mode: u32,
     pub nlink: u32,
-    #[allow(dead_code)]
-    pub uid: u32,
-    #[allow(dead_code)]
-    pub gid: u32,
     pub owner: String,
     pub owner_group: String,
     pub atime_sec: i64,
@@ -50,38 +49,12 @@ pub(crate) struct ServerFileAttr {
     pub has_named_attrs: bool,
 }
 
-/// SETATTR time specification used internally by the server.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum SetTime {
-    ServerTime,
-    ClientTime(i64, u32),
-}
-
-/// Parsed SETATTR/create attribute request used internally by the server.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct SetAttrRequest {
-    pub size: Option<u64>,
-    pub archive: Option<bool>,
-    pub hidden: Option<bool>,
-    pub mode: Option<u32>,
-    pub uid: Option<u32>,
-    pub gid: Option<u32>,
-    pub system: Option<bool>,
-    pub atime: Option<SetTime>,
-    pub mtime: Option<SetTime>,
-    pub crtime: Option<SetTime>,
-}
-
-impl SetAttrRequest {
-    pub(crate) fn is_empty(&self) -> bool {
-        self.archive.is_none()
-            && self.hidden.is_none()
-            && self.mode.is_none()
-            && self.uid.is_none()
-            && self.gid.is_none()
-            && self.system.is_none()
-            && self.atime.is_none()
-            && self.mtime.is_none()
-            && self.crtime.is_none()
+impl ServerFileType {
+    pub(crate) fn from_attrs(attrs: &Attrs) -> Self {
+        match attrs.object_type {
+            crate::fs::ObjectType::File => Self::Regular,
+            crate::fs::ObjectType::Directory => Self::Directory,
+            crate::fs::ObjectType::Symlink => Self::Symlink,
+        }
     }
 }

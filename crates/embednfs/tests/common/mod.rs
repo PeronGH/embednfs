@@ -4,8 +4,8 @@
 //! so that individual test modules stay focused on test logic.
 #![allow(dead_code)]
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use bytes::{BufMut, Bytes, BytesMut};
@@ -14,8 +14,9 @@ use tokio::net::TcpStream;
 use tokio::sync::Notify;
 
 use embednfs::{
-    DirEntry, FileId, MemFs, NfsFileSystem, NfsNamedAttrs, NfsResult, NfsServer, NodeInfo,
-    XattrSetMode,
+    AccessMask, Attrs, CommitSupport, CreateKind, CreateRequest, CreateResult, DirPage, FileSystem,
+    FsError, FsResult, FsStats, HardLinks, MemFs, NfsServer, ReadResult, RequestContext, SetAttrs,
+    Symlinks, WriteResult, XattrSetMode, Xattrs,
 };
 use embednfs_proto::xdr::*;
 use embednfs_proto::*;
@@ -26,7 +27,7 @@ pub async fn start_server() -> u16 {
     start_server_with_fs(MemFs::new()).await
 }
 
-pub async fn start_server_with_fs<F: NfsFileSystem>(fs: F) -> u16 {
+pub async fn start_server_with_fs<F: FileSystem>(fs: F) -> u16 {
     let server = NfsServer::new(fs);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -262,11 +263,7 @@ pub fn encode_open_create(name: &str) -> Vec<u8> {
     encode_open_create_with_access(name, OPEN4_SHARE_ACCESS_BOTH, OPEN4_SHARE_DENY_NONE)
 }
 
-pub fn encode_open_create_with_access(
-    name: &str,
-    share_access: u32,
-    share_deny: u32,
-) -> Vec<u8> {
+pub fn encode_open_create_with_access(name: &str, share_access: u32, share_deny: u32) -> Vec<u8> {
     let mut buf = BytesMut::new();
     OP_OPEN.encode(&mut buf);
     0u32.encode(&mut buf); // seqid
@@ -602,7 +599,13 @@ pub fn encode_lock_existing(
     buf.to_vec()
 }
 
-pub fn encode_lockt(locktype: u32, offset: u64, length: u64, clientid: u64, owner: &[u8]) -> Vec<u8> {
+pub fn encode_lockt(
+    locktype: u32,
+    offset: u64,
+    length: u64,
+    clientid: u64,
+    owner: &[u8],
+) -> Vec<u8> {
     let mut buf = BytesMut::new();
     OP_LOCKT.encode(&mut buf);
     locktype.encode(&mut buf);
@@ -859,31 +862,87 @@ pub async fn setup_session_full(stream: &mut TcpStream) -> ([u8; 16], u64) {
 
 pub async fn populated_fs(names: &[&str]) -> MemFs {
     let fs = MemFs::new();
+    let ctx = RequestContext::anonymous();
     for name in names {
-        fs.create_file(1, name).await.unwrap();
+        fs.create(
+            &ctx,
+            &1,
+            name,
+            CreateRequest {
+                kind: CreateKind::File,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap();
     }
     fs
 }
 
 pub async fn fs_with_xattr(file_name: &str, xattr_name: &str, value: &[u8]) -> MemFs {
     let fs = MemFs::new();
-    let file_id = fs.create_file(1, file_name).await.unwrap();
-    fs.set_xattr(file_id, xattr_name, value, XattrSetMode::CreateOnly)
+    let ctx = RequestContext::anonymous();
+    let file_id = fs
+        .create(
+            &ctx,
+            &1,
+            file_name,
+            CreateRequest {
+                kind: CreateKind::File,
+                attrs: SetAttrs::default(),
+            },
+        )
         .await
-        .unwrap();
+        .unwrap()
+        .handle;
+    fs.set_xattr(
+        &ctx,
+        &file_id,
+        xattr_name,
+        Bytes::copy_from_slice(value),
+        XattrSetMode::CreateOnly,
+    )
+    .await
+    .unwrap();
     fs
 }
 
 pub async fn fs_with_subdir(dir_name: &str) -> MemFs {
     let fs = MemFs::new();
-    fs.create_dir(1, dir_name).await.unwrap();
+    let ctx = RequestContext::anonymous();
+    fs.create(
+        &ctx,
+        &1,
+        dir_name,
+        CreateRequest {
+            kind: CreateKind::Directory,
+            attrs: SetAttrs::default(),
+        },
+    )
+    .await
+    .unwrap();
     fs
 }
 
 pub async fn fs_with_data(file_name: &str, data: &[u8]) -> MemFs {
     let fs = MemFs::new();
-    let fid = fs.create_file(1, file_name).await.unwrap();
-    fs.write(fid, 0, data).await.unwrap();
+    let ctx = RequestContext::anonymous();
+    let fid = fs
+        .create(
+            &ctx,
+            &1,
+            file_name,
+            CreateRequest {
+                kind: CreateKind::File,
+                attrs: SetAttrs::default(),
+            },
+        )
+        .await
+        .unwrap()
+        .handle;
+    fs.write(&ctx, &fid, 0, Bytes::copy_from_slice(data))
+        .await
+        .unwrap();
     fs
 }
 
@@ -912,252 +971,572 @@ pub struct FailFirstRootStatFs {
 }
 
 #[async_trait::async_trait]
-impl NfsFileSystem for BlockingRemoveFs {
-    fn root(&self) -> FileId {
+impl FileSystem for BlockingRemoveFs {
+    type Handle = u64;
+
+    fn root(&self) -> Self::Handle {
         self.inner.root()
     }
-    async fn stat(&self, id: FileId) -> NfsResult<NodeInfo> {
-        self.inner.stat(id).await
+
+    fn capabilities(&self) -> embednfs::FsCapabilities {
+        self.inner.capabilities()
     }
-    async fn lookup(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
-        self.inner.lookup(dir_id, name).await
+
+    fn limits(&self) -> embednfs::FsLimits {
+        self.inner.limits()
     }
-    async fn lookup_parent(&self, id: FileId) -> NfsResult<FileId> {
-        self.inner.lookup_parent(id).await
+
+    async fn statfs(&self, ctx: &RequestContext) -> FsResult<FsStats> {
+        self.inner.statfs(ctx).await
     }
-    async fn readdir(&self, dir_id: FileId) -> NfsResult<Vec<DirEntry>> {
-        self.inner.readdir(dir_id).await
+
+    async fn getattr(&self, ctx: &RequestContext, handle: &Self::Handle) -> FsResult<Attrs> {
+        self.inner.getattr(ctx, handle).await
     }
-    async fn read(&self, id: FileId, offset: u64, count: u32) -> NfsResult<(Vec<u8>, bool)> {
-        self.inner.read(id, offset, count).await
+
+    async fn access(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        requested: AccessMask,
+    ) -> FsResult<AccessMask> {
+        self.inner.access(ctx, handle, requested).await
     }
-    async fn write(&self, id: FileId, offset: u64, data: &[u8]) -> NfsResult<u32> {
-        self.inner.write(id, offset, data).await
+
+    async fn lookup(
+        &self,
+        ctx: &RequestContext,
+        parent: &Self::Handle,
+        name: &str,
+    ) -> FsResult<Self::Handle> {
+        self.inner.lookup(ctx, parent, name).await
     }
-    async fn truncate(&self, id: FileId, size: u64) -> NfsResult<()> {
-        self.inner.truncate(id, size).await
+
+    async fn parent(
+        &self,
+        ctx: &RequestContext,
+        dir: &Self::Handle,
+    ) -> FsResult<Option<Self::Handle>> {
+        self.inner.parent(ctx, dir).await
     }
-    async fn create_file(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
-        self.inner.create_file(dir_id, name).await
+
+    async fn readdir(
+        &self,
+        ctx: &RequestContext,
+        dir: &Self::Handle,
+        cookie: u64,
+        max_entries: u32,
+        with_attrs: bool,
+    ) -> FsResult<DirPage<Self::Handle>> {
+        self.inner
+            .readdir(ctx, dir, cookie, max_entries, with_attrs)
+            .await
     }
-    async fn create_dir(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
-        self.inner.create_dir(dir_id, name).await
+
+    async fn read(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        offset: u64,
+        count: u32,
+    ) -> FsResult<ReadResult> {
+        self.inner.read(ctx, handle, offset, count).await
     }
-    async fn remove(&self, dir_id: FileId, name: &str) -> NfsResult<()> {
+
+    async fn write(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        offset: u64,
+        data: Bytes,
+    ) -> FsResult<WriteResult> {
+        self.inner.write(ctx, handle, offset, data).await
+    }
+
+    async fn create(
+        &self,
+        ctx: &RequestContext,
+        parent: &Self::Handle,
+        name: &str,
+        req: CreateRequest,
+    ) -> FsResult<CreateResult<Self::Handle>> {
+        self.inner.create(ctx, parent, name, req).await
+    }
+
+    async fn remove(
+        &self,
+        ctx: &RequestContext,
+        parent: &Self::Handle,
+        name: &str,
+    ) -> FsResult<()> {
         self.entered.notify_waiters();
         self.release.notified().await;
-        self.inner.remove(dir_id, name).await
+        self.inner.remove(ctx, parent, name).await
     }
+
     async fn rename(
         &self,
-        from_dir: FileId,
+        ctx: &RequestContext,
+        from_dir: &Self::Handle,
         from_name: &str,
-        to_dir: FileId,
+        to_dir: &Self::Handle,
         to_name: &str,
-    ) -> NfsResult<()> {
+    ) -> FsResult<()> {
         self.inner
-            .rename(from_dir, from_name, to_dir, to_name)
+            .rename(ctx, from_dir, from_name, to_dir, to_name)
             .await
     }
-    fn symlinks(&self) -> Option<&dyn embednfs::NfsSymlinks> {
+
+    async fn setattr(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        attrs: &SetAttrs,
+    ) -> FsResult<Attrs> {
+        self.inner.setattr(ctx, handle, attrs).await
+    }
+
+    fn symlinks(&self) -> Option<&dyn Symlinks<Self::Handle>> {
         self.inner.symlinks()
     }
-    fn hard_links(&self) -> Option<&dyn embednfs::NfsHardLinks> {
+
+    fn hard_links(&self) -> Option<&dyn HardLinks<Self::Handle>> {
         self.inner.hard_links()
     }
-    fn named_attrs(&self) -> Option<&dyn NfsNamedAttrs> {
-        self.inner.named_attrs()
+
+    fn xattrs(&self) -> Option<&dyn Xattrs<Self::Handle>> {
+        self.inner.xattrs()
     }
-    fn syncer(&self) -> Option<&dyn embednfs::NfsSync> {
-        self.inner.syncer()
+
+    fn commit_support(&self) -> Option<&dyn CommitSupport<Self::Handle>> {
+        self.inner.commit_support()
     }
 }
 
 #[async_trait::async_trait]
-impl NfsFileSystem for CountingNamedAttrFs {
-    fn root(&self) -> FileId {
+impl FileSystem for CountingNamedAttrFs {
+    type Handle = u64;
+
+    fn root(&self) -> Self::Handle {
         self.inner.root()
     }
-    async fn stat(&self, id: FileId) -> NfsResult<NodeInfo> {
-        self.inner.stat(id).await
+
+    fn capabilities(&self) -> embednfs::FsCapabilities {
+        self.inner.capabilities()
     }
-    async fn lookup(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
-        self.inner.lookup(dir_id, name).await
+
+    fn limits(&self) -> embednfs::FsLimits {
+        self.inner.limits()
     }
-    async fn lookup_parent(&self, id: FileId) -> NfsResult<FileId> {
-        self.inner.lookup_parent(id).await
+
+    async fn statfs(&self, ctx: &RequestContext) -> FsResult<FsStats> {
+        self.inner.statfs(ctx).await
     }
-    async fn readdir(&self, dir_id: FileId) -> NfsResult<Vec<DirEntry>> {
-        self.inner.readdir(dir_id).await
+
+    async fn getattr(&self, ctx: &RequestContext, handle: &Self::Handle) -> FsResult<Attrs> {
+        self.inner.getattr(ctx, handle).await
     }
-    async fn read(&self, id: FileId, offset: u64, count: u32) -> NfsResult<(Vec<u8>, bool)> {
-        self.inner.read(id, offset, count).await
-    }
-    async fn write(&self, id: FileId, offset: u64, data: &[u8]) -> NfsResult<u32> {
-        self.inner.write(id, offset, data).await
-    }
-    async fn truncate(&self, id: FileId, size: u64) -> NfsResult<()> {
-        self.inner.truncate(id, size).await
-    }
-    async fn create_file(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
-        self.inner.create_file(dir_id, name).await
-    }
-    async fn create_dir(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
-        self.inner.create_dir(dir_id, name).await
-    }
-    async fn remove(&self, dir_id: FileId, name: &str) -> NfsResult<()> {
-        self.inner.remove(dir_id, name).await
-    }
-    async fn rename(
+
+    async fn access(
         &self,
-        from_dir: FileId,
-        from_name: &str,
-        to_dir: FileId,
-        to_name: &str,
-    ) -> NfsResult<()> {
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        requested: AccessMask,
+    ) -> FsResult<AccessMask> {
+        self.inner.access(ctx, handle, requested).await
+    }
+
+    async fn lookup(
+        &self,
+        ctx: &RequestContext,
+        parent: &Self::Handle,
+        name: &str,
+    ) -> FsResult<Self::Handle> {
+        self.inner.lookup(ctx, parent, name).await
+    }
+
+    async fn parent(
+        &self,
+        ctx: &RequestContext,
+        dir: &Self::Handle,
+    ) -> FsResult<Option<Self::Handle>> {
+        self.inner.parent(ctx, dir).await
+    }
+
+    async fn readdir(
+        &self,
+        ctx: &RequestContext,
+        dir: &Self::Handle,
+        cookie: u64,
+        max_entries: u32,
+        with_attrs: bool,
+    ) -> FsResult<DirPage<Self::Handle>> {
         self.inner
-            .rename(from_dir, from_name, to_dir, to_name)
+            .readdir(ctx, dir, cookie, max_entries, with_attrs)
             .await
     }
-    fn symlinks(&self) -> Option<&dyn embednfs::NfsSymlinks> {
+
+    async fn read(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        offset: u64,
+        count: u32,
+    ) -> FsResult<ReadResult> {
+        self.inner.read(ctx, handle, offset, count).await
+    }
+
+    async fn write(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        offset: u64,
+        data: Bytes,
+    ) -> FsResult<WriteResult> {
+        self.inner.write(ctx, handle, offset, data).await
+    }
+
+    async fn create(
+        &self,
+        ctx: &RequestContext,
+        parent: &Self::Handle,
+        name: &str,
+        req: CreateRequest,
+    ) -> FsResult<CreateResult<Self::Handle>> {
+        self.inner.create(ctx, parent, name, req).await
+    }
+
+    async fn remove(
+        &self,
+        ctx: &RequestContext,
+        parent: &Self::Handle,
+        name: &str,
+    ) -> FsResult<()> {
+        self.inner.remove(ctx, parent, name).await
+    }
+
+    async fn rename(
+        &self,
+        ctx: &RequestContext,
+        from_dir: &Self::Handle,
+        from_name: &str,
+        to_dir: &Self::Handle,
+        to_name: &str,
+    ) -> FsResult<()> {
+        self.inner
+            .rename(ctx, from_dir, from_name, to_dir, to_name)
+            .await
+    }
+
+    async fn setattr(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        attrs: &SetAttrs,
+    ) -> FsResult<Attrs> {
+        self.inner.setattr(ctx, handle, attrs).await
+    }
+
+    fn symlinks(&self) -> Option<&dyn Symlinks<Self::Handle>> {
         self.inner.symlinks()
     }
-    fn hard_links(&self) -> Option<&dyn embednfs::NfsHardLinks> {
+
+    fn hard_links(&self) -> Option<&dyn HardLinks<Self::Handle>> {
         self.inner.hard_links()
     }
-    fn named_attrs(&self) -> Option<&dyn NfsNamedAttrs> {
+
+    fn xattrs(&self) -> Option<&dyn Xattrs<Self::Handle>> {
         Some(self)
     }
-    fn syncer(&self) -> Option<&dyn embednfs::NfsSync> {
-        self.inner.syncer()
+
+    fn commit_support(&self) -> Option<&dyn CommitSupport<Self::Handle>> {
+        self.inner.commit_support()
     }
 }
 
 #[async_trait::async_trait]
-impl NfsNamedAttrs for CountingNamedAttrFs {
-    async fn list_xattrs(&self, id: FileId) -> NfsResult<Vec<String>> {
+impl Xattrs<u64> for CountingNamedAttrFs {
+    async fn list_xattrs(&self, ctx: &RequestContext, id: &u64) -> FsResult<Vec<String>> {
         self.list_count.fetch_add(1, Ordering::Relaxed);
-        self.inner.list_xattrs(id).await
+        self.inner.list_xattrs(ctx, id).await
     }
-    async fn get_xattr(&self, id: FileId, name: &str) -> NfsResult<Vec<u8>> {
-        self.inner.get_xattr(id, name).await
+
+    async fn get_xattr(&self, ctx: &RequestContext, id: &u64, name: &str) -> FsResult<Bytes> {
+        self.inner.get_xattr(ctx, id, name).await
     }
+
     async fn set_xattr(
         &self,
-        id: FileId,
+        ctx: &RequestContext,
+        id: &u64,
         name: &str,
-        value: &[u8],
+        value: Bytes,
         mode: XattrSetMode,
-    ) -> NfsResult<()> {
-        self.inner.set_xattr(id, name, value, mode).await
+    ) -> FsResult<()> {
+        self.inner.set_xattr(ctx, id, name, value, mode).await
     }
-    async fn remove_xattr(&self, id: FileId, name: &str) -> NfsResult<()> {
-        self.inner.remove_xattr(id, name).await
+
+    async fn remove_xattr(&self, ctx: &RequestContext, id: &u64, name: &str) -> FsResult<()> {
+        self.inner.remove_xattr(ctx, id, name).await
     }
 }
 
 #[async_trait::async_trait]
-impl NfsFileSystem for FailPostMutationRootStatFs {
-    fn root(&self) -> FileId {
+impl FileSystem for FailPostMutationRootStatFs {
+    type Handle = u64;
+
+    fn root(&self) -> Self::Handle {
         self.inner.root()
     }
-    async fn stat(&self, id: FileId) -> NfsResult<NodeInfo> {
-        if id == self.inner.root() {
+
+    fn capabilities(&self) -> embednfs::FsCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn limits(&self) -> embednfs::FsLimits {
+        self.inner.limits()
+    }
+
+    async fn statfs(&self, ctx: &RequestContext) -> FsResult<FsStats> {
+        self.inner.statfs(ctx).await
+    }
+
+    async fn getattr(&self, ctx: &RequestContext, id: &u64) -> FsResult<Attrs> {
+        if *id == self.inner.root() {
             let call = self.root_stat_calls.fetch_add(1, Ordering::Relaxed);
             if call >= self.root_stat_limit {
-                return Err(embednfs::NfsError::Io);
+                return Err(FsError::Io);
             }
         }
-        self.inner.stat(id).await
+        self.inner.getattr(ctx, id).await
     }
-    async fn lookup(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
-        self.inner.lookup(dir_id, name).await
+
+    async fn access(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        requested: AccessMask,
+    ) -> FsResult<AccessMask> {
+        self.inner.access(ctx, handle, requested).await
     }
-    async fn lookup_parent(&self, id: FileId) -> NfsResult<FileId> {
-        self.inner.lookup_parent(id).await
+
+    async fn lookup(
+        &self,
+        ctx: &RequestContext,
+        parent: &Self::Handle,
+        name: &str,
+    ) -> FsResult<Self::Handle> {
+        self.inner.lookup(ctx, parent, name).await
     }
-    async fn readdir(&self, dir_id: FileId) -> NfsResult<Vec<DirEntry>> {
-        self.inner.readdir(dir_id).await
+
+    async fn parent(
+        &self,
+        ctx: &RequestContext,
+        dir: &Self::Handle,
+    ) -> FsResult<Option<Self::Handle>> {
+        self.inner.parent(ctx, dir).await
     }
-    async fn read(&self, id: FileId, offset: u64, count: u32) -> NfsResult<(Vec<u8>, bool)> {
-        self.inner.read(id, offset, count).await
+
+    async fn readdir(
+        &self,
+        ctx: &RequestContext,
+        dir: &Self::Handle,
+        cookie: u64,
+        max_entries: u32,
+        with_attrs: bool,
+    ) -> FsResult<DirPage<Self::Handle>> {
+        self.inner
+            .readdir(ctx, dir, cookie, max_entries, with_attrs)
+            .await
     }
-    async fn write(&self, id: FileId, offset: u64, data: &[u8]) -> NfsResult<u32> {
-        self.inner.write(id, offset, data).await
+
+    async fn read(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        offset: u64,
+        count: u32,
+    ) -> FsResult<ReadResult> {
+        self.inner.read(ctx, handle, offset, count).await
     }
-    async fn truncate(&self, id: FileId, size: u64) -> NfsResult<()> {
-        self.inner.truncate(id, size).await
+
+    async fn write(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        offset: u64,
+        data: Bytes,
+    ) -> FsResult<WriteResult> {
+        self.inner.write(ctx, handle, offset, data).await
     }
-    async fn create_file(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
-        self.inner.create_file(dir_id, name).await
+
+    async fn create(
+        &self,
+        ctx: &RequestContext,
+        parent: &Self::Handle,
+        name: &str,
+        req: CreateRequest,
+    ) -> FsResult<CreateResult<Self::Handle>> {
+        self.inner.create(ctx, parent, name, req).await
     }
-    async fn create_dir(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
-        self.inner.create_dir(dir_id, name).await
+
+    async fn remove(
+        &self,
+        ctx: &RequestContext,
+        parent: &Self::Handle,
+        name: &str,
+    ) -> FsResult<()> {
+        self.inner.remove(ctx, parent, name).await
     }
-    async fn remove(&self, dir_id: FileId, name: &str) -> NfsResult<()> {
-        self.inner.remove(dir_id, name).await
-    }
+
     async fn rename(
         &self,
-        from_dir: FileId,
+        ctx: &RequestContext,
+        from_dir: &Self::Handle,
         from_name: &str,
-        to_dir: FileId,
+        to_dir: &Self::Handle,
         to_name: &str,
-    ) -> NfsResult<()> {
+    ) -> FsResult<()> {
         self.inner
-            .rename(from_dir, from_name, to_dir, to_name)
+            .rename(ctx, from_dir, from_name, to_dir, to_name)
             .await
+    }
+
+    async fn setattr(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        attrs: &SetAttrs,
+    ) -> FsResult<Attrs> {
+        self.inner.setattr(ctx, handle, attrs).await
     }
 }
 
 #[async_trait::async_trait]
-impl NfsFileSystem for FailFirstRootStatFs {
-    fn root(&self) -> FileId {
+impl FileSystem for FailFirstRootStatFs {
+    type Handle = u64;
+
+    fn root(&self) -> Self::Handle {
         self.inner.root()
     }
-    async fn stat(&self, id: FileId) -> NfsResult<NodeInfo> {
-        if id == self.inner.root() && self.root_stat_calls.fetch_add(1, Ordering::Relaxed) == 0 {
-            return Err(embednfs::NfsError::Io);
+
+    fn capabilities(&self) -> embednfs::FsCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn limits(&self) -> embednfs::FsLimits {
+        self.inner.limits()
+    }
+
+    async fn statfs(&self, ctx: &RequestContext) -> FsResult<FsStats> {
+        self.inner.statfs(ctx).await
+    }
+
+    async fn getattr(&self, ctx: &RequestContext, id: &u64) -> FsResult<Attrs> {
+        if *id == self.inner.root() && self.root_stat_calls.fetch_add(1, Ordering::Relaxed) == 0 {
+            return Err(FsError::Io);
         }
-        self.inner.stat(id).await
+        self.inner.getattr(ctx, id).await
     }
-    async fn lookup(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
-        self.inner.lookup(dir_id, name).await
+
+    async fn access(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        requested: AccessMask,
+    ) -> FsResult<AccessMask> {
+        self.inner.access(ctx, handle, requested).await
     }
-    async fn lookup_parent(&self, id: FileId) -> NfsResult<FileId> {
-        self.inner.lookup_parent(id).await
+
+    async fn lookup(
+        &self,
+        ctx: &RequestContext,
+        parent: &Self::Handle,
+        name: &str,
+    ) -> FsResult<Self::Handle> {
+        self.inner.lookup(ctx, parent, name).await
     }
-    async fn readdir(&self, dir_id: FileId) -> NfsResult<Vec<DirEntry>> {
-        self.inner.readdir(dir_id).await
+
+    async fn parent(
+        &self,
+        ctx: &RequestContext,
+        dir: &Self::Handle,
+    ) -> FsResult<Option<Self::Handle>> {
+        self.inner.parent(ctx, dir).await
     }
-    async fn read(&self, id: FileId, offset: u64, count: u32) -> NfsResult<(Vec<u8>, bool)> {
-        self.inner.read(id, offset, count).await
+
+    async fn readdir(
+        &self,
+        ctx: &RequestContext,
+        dir: &Self::Handle,
+        cookie: u64,
+        max_entries: u32,
+        with_attrs: bool,
+    ) -> FsResult<DirPage<Self::Handle>> {
+        self.inner
+            .readdir(ctx, dir, cookie, max_entries, with_attrs)
+            .await
     }
-    async fn write(&self, id: FileId, offset: u64, data: &[u8]) -> NfsResult<u32> {
-        self.inner.write(id, offset, data).await
+
+    async fn read(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        offset: u64,
+        count: u32,
+    ) -> FsResult<ReadResult> {
+        self.inner.read(ctx, handle, offset, count).await
     }
-    async fn truncate(&self, id: FileId, size: u64) -> NfsResult<()> {
-        self.inner.truncate(id, size).await
+
+    async fn write(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        offset: u64,
+        data: Bytes,
+    ) -> FsResult<WriteResult> {
+        self.inner.write(ctx, handle, offset, data).await
     }
-    async fn create_file(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
-        self.inner.create_file(dir_id, name).await
+
+    async fn create(
+        &self,
+        ctx: &RequestContext,
+        parent: &Self::Handle,
+        name: &str,
+        req: CreateRequest,
+    ) -> FsResult<CreateResult<Self::Handle>> {
+        self.inner.create(ctx, parent, name, req).await
     }
-    async fn create_dir(&self, dir_id: FileId, name: &str) -> NfsResult<FileId> {
-        self.inner.create_dir(dir_id, name).await
+
+    async fn remove(
+        &self,
+        ctx: &RequestContext,
+        parent: &Self::Handle,
+        name: &str,
+    ) -> FsResult<()> {
+        self.inner.remove(ctx, parent, name).await
     }
-    async fn remove(&self, dir_id: FileId, name: &str) -> NfsResult<()> {
-        self.inner.remove(dir_id, name).await
-    }
+
     async fn rename(
         &self,
-        from_dir: FileId,
+        ctx: &RequestContext,
+        from_dir: &Self::Handle,
         from_name: &str,
-        to_dir: FileId,
+        to_dir: &Self::Handle,
         to_name: &str,
-    ) -> NfsResult<()> {
+    ) -> FsResult<()> {
         self.inner
-            .rename(from_dir, from_name, to_dir, to_name)
+            .rename(ctx, from_dir, from_name, to_dir, to_name)
             .await
+    }
+
+    async fn setattr(
+        &self,
+        ctx: &RequestContext,
+        handle: &Self::Handle,
+        attrs: &SetAttrs,
+    ) -> FsResult<Attrs> {
+        self.inner.setattr(ctx, handle, attrs).await
     }
 }
 
