@@ -210,7 +210,7 @@ async fn rename_over_nonempty_directory_is_atomic_on_error() {
         .rename(&ctx, &1, "source.txt", &1, "target")
         .await
         .unwrap_err();
-    assert_eq!(err, FsError::NotEmpty);
+    assert_eq!(err, FsError::IsDirectory);
     assert_eq!(
         fs.lookup(&ctx, &1, "source.txt").await.unwrap(),
         source.handle

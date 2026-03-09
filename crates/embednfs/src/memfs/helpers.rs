@@ -1,8 +1,7 @@
 use std::sync::atomic::Ordering;
 
 use crate::fs::{
-    AccessMask, Attrs, AuthContext, FsError, FsResult, ObjectType, RequestContext, SetAttrs,
-    SetTime, Timestamp,
+    Attrs, AuthContext, FsError, FsResult, ObjectType, RequestContext, SetAttrs, SetTime, Timestamp,
 };
 
 use super::MemFs;
@@ -15,6 +14,19 @@ impl MemFs {
 
     pub(super) fn next_change(&self) -> u64 {
         self.next_change.fetch_add(1, Ordering::Relaxed)
+    }
+
+    pub(super) fn checked_file_len(&self, len: u64) -> FsResult<usize> {
+        if len > super::MAX_FILE_BYTES {
+            return Err(FsError::FileTooLarge);
+        }
+        usize::try_from(len).map_err(|_| FsError::FileTooLarge)
+    }
+
+    pub(super) fn checked_write_range(&self, offset: u64, len: usize) -> FsResult<(usize, usize)> {
+        let data_len = u64::try_from(len).map_err(|_| FsError::FileTooLarge)?;
+        let end = offset.checked_add(data_len).ok_or(FsError::FileTooLarge)?;
+        Ok((self.checked_file_len(offset)?, self.checked_file_len(end)?))
     }
 
     pub(super) fn touch_change(&self, attrs: &mut Attrs) {
@@ -46,14 +58,17 @@ impl MemFs {
 
     pub(super) fn apply_setattrs(&self, inode: &mut Inode, attrs: &SetAttrs) -> FsResult<()> {
         let mut changed = false;
+        let mut data_changed = false;
+        let mut explicit_mtime = false;
 
         if let Some(size) = attrs.size {
             match &mut inode.data {
                 InodeData::File(data) => {
-                    data.resize(size as usize, 0);
+                    data.resize(self.checked_file_len(size)?, 0);
                     inode.attrs.size = size;
                     inode.attrs.space_used = size;
                     changed = true;
+                    data_changed = true;
                 }
                 _ => return Err(FsError::InvalidInput),
             }
@@ -89,6 +104,7 @@ impl MemFs {
         if let Some(mtime) = attrs.mtime {
             Self::apply_set_time(&mut inode.attrs.mtime, mtime);
             changed = true;
+            explicit_mtime = true;
         }
         if let Some(birthtime) = attrs.birthtime {
             Self::apply_set_time(&mut inode.attrs.birthtime, birthtime);
@@ -96,7 +112,12 @@ impl MemFs {
         }
 
         if changed {
-            self.touch_change(&mut inode.attrs);
+            let now = Timestamp::now();
+            inode.attrs.change = self.next_change();
+            inode.attrs.ctime = now;
+            if data_changed && !explicit_mtime {
+                inode.attrs.mtime = now;
+            }
         }
 
         Ok(())
@@ -165,66 +186,35 @@ impl MemFs {
         }
     }
 
+    pub(super) fn directory_descends_from(
+        inner: &MemFsInner,
+        descendant_id: u64,
+        ancestor_id: u64,
+    ) -> bool {
+        let mut current = Some(descendant_id);
+        let mut remaining = inner.inodes.len();
+
+        while let Some(id) = current {
+            if id == ancestor_id {
+                return true;
+            }
+            if remaining == 0 {
+                break;
+            }
+            remaining -= 1;
+            current = inner
+                .inodes
+                .get(&id)
+                .and_then(|inode| {
+                    (inode.attrs.object_type == ObjectType::Directory).then_some(inode.parent)
+                })
+                .flatten();
+        }
+
+        false
+    }
+
     pub(super) fn update_has_named_attrs(inode: &mut Inode) {
         inode.attrs.has_named_attrs = !inode.xattrs.is_empty();
-    }
-
-    pub(super) fn allowed_mode_bits(attrs: &Attrs, auth: &AuthContext) -> u32 {
-        match auth {
-            AuthContext::Sys {
-                uid,
-                gid,
-                supplemental_gids,
-            } => {
-                if *uid == 0 {
-                    return 0o7;
-                }
-                if *uid == attrs.uid {
-                    return (attrs.mode >> 6) & 0o7;
-                }
-                if *gid == attrs.gid || supplemental_gids.contains(&attrs.gid) {
-                    return (attrs.mode >> 3) & 0o7;
-                }
-                attrs.mode & 0o7
-            }
-            AuthContext::None | AuthContext::Unknown { .. } => attrs.mode & 0o7,
-        }
-    }
-
-    pub(super) fn access_mask_for(
-        attrs: &Attrs,
-        auth: &AuthContext,
-        requested: AccessMask,
-    ) -> AccessMask {
-        let perms = Self::allowed_mode_bits(attrs, auth);
-        let mut allowed = AccessMask::NONE;
-
-        if requested.intersects(AccessMask::READ) && (perms & 0o4) != 0 {
-            allowed |= AccessMask::READ;
-        }
-        if requested.intersects(AccessMask::MODIFY | AccessMask::EXTEND | AccessMask::DELETE)
-            && (perms & 0o2) != 0
-        {
-            if requested.intersects(AccessMask::MODIFY) {
-                allowed |= AccessMask::MODIFY;
-            }
-            if requested.intersects(AccessMask::EXTEND) {
-                allowed |= AccessMask::EXTEND;
-            }
-            if requested.intersects(AccessMask::DELETE) {
-                allowed |= AccessMask::DELETE;
-            }
-        }
-        if requested.intersects(AccessMask::EXECUTE) && (perms & 0o1) != 0 {
-            allowed |= AccessMask::EXECUTE;
-        }
-        if attrs.object_type == ObjectType::Directory
-            && requested.intersects(AccessMask::LOOKUP)
-            && (perms & 0o1) != 0
-        {
-            allowed |= AccessMask::LOOKUP;
-        }
-
-        allowed
     }
 }

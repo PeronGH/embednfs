@@ -5,8 +5,8 @@ use bytes::Bytes;
 
 use crate::fs::{
     AccessMask, Attrs, CommitSupport, CreateKind, CreateRequest, CreateResult, DirEntry, DirPage,
-    FileSystem, FsCapabilities, FsError, FsResult, FsStats, HardLinks, ObjectType, ReadResult,
-    RequestContext, SetAttrs, Symlinks, Timestamp, WriteResult, WriteStability, Xattrs,
+    FileSystem, FsCapabilities, FsError, FsLimits, FsResult, FsStats, HardLinks, ObjectType,
+    ReadResult, RequestContext, SetAttrs, Symlinks, Timestamp, WriteResult, WriteStability, Xattrs,
 };
 
 use super::MemFs;
@@ -28,6 +28,13 @@ impl FileSystem for MemFs {
             explicit_sync: true,
             case_sensitive: true,
             case_preserving: true,
+        }
+    }
+
+    fn limits(&self) -> FsLimits {
+        FsLimits {
+            max_file_size: super::MAX_FILE_BYTES,
+            ..FsLimits::default()
         }
     }
 
@@ -59,13 +66,13 @@ impl FileSystem for MemFs {
 
     async fn access(
         &self,
-        ctx: &RequestContext,
+        _ctx: &RequestContext,
         handle: &Self::Handle,
         requested: AccessMask,
     ) -> FsResult<AccessMask> {
         let inner = self.inner.read().await;
-        let inode = inner.inodes.get(handle).ok_or(FsError::Stale)?;
-        Ok(Self::access_mask_for(&inode.attrs, &ctx.auth, requested) & requested)
+        let _inode = inner.inodes.get(handle).ok_or(FsError::Stale)?;
+        Ok(requested)
     }
 
     async fn lookup(
@@ -190,10 +197,7 @@ impl FileSystem for MemFs {
         let inode = inner.inodes.get_mut(handle).ok_or(FsError::Stale)?;
         match &mut inode.data {
             InodeData::File(file) => {
-                let offset = usize::try_from(offset).map_err(|_| FsError::FileTooLarge)?;
-                let end = offset
-                    .checked_add(data.len())
-                    .ok_or(FsError::FileTooLarge)?;
+                let (offset, end) = self.checked_write_range(offset, data.len())?;
                 if end > file.len() {
                     file.resize(end, 0);
                 }
@@ -328,6 +332,18 @@ impl FileSystem for MemFs {
                 _ => return Err(FsError::NotDirectory),
             }
         };
+        let child_type = inner
+            .inodes
+            .get(&child_id)
+            .ok_or(FsError::Stale)?
+            .attrs
+            .object_type;
+
+        if child_type == ObjectType::Directory
+            && Self::directory_descends_from(&inner, *to_dir, child_id)
+        {
+            return Err(FsError::InvalidInput);
+        }
 
         let replaced = {
             let target_inode = inner.inodes.get(to_dir).ok_or(FsError::Stale)?;
@@ -341,12 +357,23 @@ impl FileSystem for MemFs {
             return Ok(());
         }
 
-        if let Some(replaced_id) = replaced
-            && let Some(replaced_inode) = inner.inodes.get(&replaced_id)
-            && let InodeData::Directory(entries) = &replaced_inode.data
-            && !entries.is_empty()
-        {
-            return Err(FsError::NotEmpty);
+        if let Some(replaced_id) = replaced {
+            let replaced_inode = inner.inodes.get(&replaced_id).ok_or(FsError::Stale)?;
+            match (
+                child_type,
+                replaced_inode.attrs.object_type,
+                &replaced_inode.data,
+            ) {
+                (ObjectType::Directory, ObjectType::Directory, InodeData::Directory(entries))
+                    if !entries.is_empty() =>
+                {
+                    return Err(FsError::NotEmpty);
+                }
+                (ObjectType::Directory, ObjectType::Directory, _) => {}
+                (ObjectType::Directory, _, _) => return Err(FsError::NotDirectory),
+                (_, ObjectType::Directory, _) => return Err(FsError::IsDirectory),
+                _ => {}
+            }
         }
 
         if from_dir == to_dir {

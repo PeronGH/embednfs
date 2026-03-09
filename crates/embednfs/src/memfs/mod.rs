@@ -18,6 +18,8 @@ mod xattrs;
 
 use state::{Inode, InodeData, MemFsInner};
 
+const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
+
 /// In-memory filesystem implementation used by tests and examples.
 pub struct MemFs {
     inner: RwLock<MemFsInner>,

@@ -808,7 +808,7 @@ async fn test_rename_over_nonempty_directory_is_atomic() {
     parse_rpc_reply(&mut resp);
 
     let (status, _, _) = parse_compound_header(&mut resp);
-    assert_eq!(status, NfsStat4::Notempty as u32);
+    assert_eq!(status, NfsStat4::Isdir as u32);
 
     let seq_op = encode_sequence(&sessionid, 2, 0);
     let lookup_source = encode_lookup("source.txt");
