@@ -120,9 +120,15 @@ impl MemFs {
             .collect();
 
         for dir_id in directory_ids {
-            let entries = match &inner.inodes.get(&dir_id).unwrap().data {
-                InodeData::Directory(entries) => entries.clone(),
-                _ => continue,
+            let Some(entries) = inner
+                .inodes
+                .get(&dir_id)
+                .and_then(|inode| match &inode.data {
+                    InodeData::Directory(entries) => Some(entries.clone()),
+                    _ => None,
+                })
+            else {
+                continue;
             };
             for child_id in entries.values() {
                 if let Some(child) = inner.inodes.get_mut(child_id) {
@@ -155,7 +161,7 @@ impl MemFs {
         };
 
         if should_remove {
-            inner.inodes.remove(&inode_id);
+            let _ = inner.inodes.remove(&inode_id);
         }
     }
 

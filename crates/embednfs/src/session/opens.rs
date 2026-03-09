@@ -54,7 +54,7 @@ impl StateManager {
         other[..4].copy_from_slice(&seq.to_be_bytes());
         other[4..12].copy_from_slice(&clientid.to_be_bytes());
 
-        inner.open_files.insert(
+        let _ = inner.open_files.insert(
             other,
             OpenFileState {
                 object,
@@ -80,7 +80,7 @@ impl StateManager {
     }
 
     /// Close an open state.
-    pub async fn close_state(&self, stateid: &Stateid4) -> Result<Stateid4, NfsStat4> {
+    pub(crate) async fn close_state(&self, stateid: &Stateid4) -> Result<Stateid4, NfsStat4> {
         let mut inner = self.inner.write().await;
         let (stored_seq, active) = {
             let state = inner
@@ -113,7 +113,7 @@ impl StateManager {
     }
 
     /// Free a stateid.
-    pub async fn free_stateid(&self, stateid: &Stateid4) -> Result<(), NfsStat4> {
+    pub(crate) async fn free_stateid(&self, stateid: &Stateid4) -> Result<(), NfsStat4> {
         let mut inner = self.inner.write().await;
         if let Some((open_seq, open_active)) = inner
             .open_files
@@ -128,7 +128,7 @@ impl StateManager {
             if open_active || locks_held {
                 return Err(NfsStat4::LocksHeld);
             }
-            inner.open_files.remove(&stateid.other);
+            let _ = inner.open_files.remove(&stateid.other);
             return Ok(());
         }
         if let Some(lock) = inner.lock_files.get(&stateid.other) {
@@ -136,13 +136,13 @@ impl StateManager {
             if lock.active {
                 return Err(NfsStat4::LocksHeld);
             }
-            inner.lock_files.remove(&stateid.other);
+            let _ = inner.lock_files.remove(&stateid.other);
             return Ok(());
         }
         Err(NfsStat4::BadStateid)
     }
 
-    pub async fn test_stateids(
+    pub(crate) async fn test_stateids(
         &self,
         stateids: &[Stateid4],
         _current_stateid: Option<Stateid4>,
@@ -178,7 +178,7 @@ impl StateManager {
             .collect()
     }
 
-    pub async fn open_downgrade(
+    pub(crate) async fn open_downgrade(
         &self,
         open_stateid: &Stateid4,
         share_access: u32,

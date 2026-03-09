@@ -46,6 +46,10 @@ impl StateManager {
         Ok(())
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "overlapping ranges always produce a non-empty merged interval"
+    )]
     fn normalize_lock_ranges(ranges: &mut Vec<LockRange>) {
         ranges.sort_by_key(|range| range.offset);
         let mut normalized: Vec<LockRange> = Vec::with_capacity(ranges.len());
@@ -208,7 +212,7 @@ impl StateManager {
         other[..4].copy_from_slice(&seq.to_be_bytes());
         other[4..12].copy_from_slice(&owner.clientid.to_be_bytes());
 
-        inner.lock_files.insert(
+        let _ = inner.lock_files.insert(
             other,
             LockFileState {
                 object,
@@ -228,7 +232,7 @@ impl StateManager {
     }
 
     /// Update an existing lock state (LOCK with existing lock owner).
-    pub async fn update_lock_state(
+    pub(crate) async fn update_lock_state(
         &self,
         lock_stateid: &Stateid4,
         locktype: NfsLockType4,
@@ -257,7 +261,7 @@ impl StateManager {
     }
 
     /// Unlock (LOCKU).
-    pub async fn unlock_state(
+    pub(crate) async fn unlock_state(
         &self,
         lock_stateid: &Stateid4,
         offset: u64,

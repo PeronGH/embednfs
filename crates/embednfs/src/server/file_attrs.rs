@@ -177,11 +177,11 @@ impl<F: FileSystem> NfsServer<F> {
         let parent_handle = self.resolve_backend_handle(parent).await?;
         let named = self.named_attrs().ok_or(FsError::Unsupported)?;
         let value = named.get_xattr(ctx, &parent_handle, name).await?;
-        let offset = offset as usize;
+        let offset = usize::try_from(offset).map_err(|_| FsError::FileTooLarge)?;
         if offset >= value.len() {
             return Ok((Bytes::new(), true));
         }
-        let end = (offset + count as usize).min(value.len());
+        let end = offset.saturating_add(count as usize).min(value.len());
         Ok((value.slice(offset..end), end == value.len()))
     }
 
@@ -195,7 +195,8 @@ impl<F: FileSystem> NfsServer<F> {
         let parent_handle = self.resolve_backend_handle(parent).await?;
         let named = self.named_attrs().ok_or(FsError::Unsupported)?;
         let mut value = named.get_xattr(ctx, &parent_handle, name).await?.to_vec();
-        value.resize(size as usize, 0);
+        let size = usize::try_from(size).map_err(|_| FsError::FileTooLarge)?;
+        value.resize(size, 0);
         named
             .set_xattr(
                 ctx,
@@ -207,6 +208,10 @@ impl<F: FileSystem> NfsServer<F> {
             .await
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the xattr buffer is resized locally to cover the validated write range"
+    )]
     pub(super) async fn xattr_write(
         &self,
         ctx: &RequestContext,
@@ -218,8 +223,10 @@ impl<F: FileSystem> NfsServer<F> {
         let parent_handle = self.resolve_backend_handle(parent).await?;
         let named = self.named_attrs().ok_or(FsError::Unsupported)?;
         let mut value = named.get_xattr(ctx, &parent_handle, name).await?.to_vec();
-        let offset = offset as usize;
-        let end = offset + data.len();
+        let offset = usize::try_from(offset).map_err(|_| FsError::FileTooLarge)?;
+        let end = offset
+            .checked_add(data.len())
+            .ok_or(FsError::FileTooLarge)?;
         if end > value.len() {
             value.resize(end, 0);
         }

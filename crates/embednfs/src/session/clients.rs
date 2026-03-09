@@ -12,7 +12,10 @@ use super::{MAX_CACHED_RESPONSE, MAX_FORE_CHAN_SLOTS, MAX_REQUEST_SIZE, StateMan
 
 impl StateManager {
     /// Handle EXCHANGE_ID.
-    pub async fn exchange_id(&self, args: &ExchangeIdArgs4) -> Result<ExchangeIdRes4, NfsStat4> {
+    pub(crate) async fn exchange_id(
+        &self,
+        args: &ExchangeIdArgs4,
+    ) -> Result<ExchangeIdRes4, NfsStat4> {
         if !matches!(args.state_protect, embednfs_proto::StateProtect4A::None) {
             return Err(NfsStat4::Inval);
         }
@@ -47,11 +50,11 @@ impl StateManager {
                 .map(|client| client.clientid)
                 .collect();
             for stale_clientid in stale_unconfirmed {
-                Self::drop_client_state(&mut inner, stale_clientid);
+                let _ = Self::drop_client_state(&mut inner, stale_clientid);
             }
 
             let id = self.next_clientid.fetch_add(1, Ordering::Relaxed);
-            inner.clients.insert(
+            let _ = inner.clients.insert(
                 id,
                 ClientState {
                     clientid: id,
@@ -89,7 +92,7 @@ impl StateManager {
     }
 
     /// Handle CREATE_SESSION.
-    pub async fn create_session(
+    pub(crate) async fn create_session(
         &self,
         args: &CreateSessionArgs4,
         connection_id: u64,
@@ -111,7 +114,7 @@ impl StateManager {
         };
 
         if let Some(old_clientid) = replaced_clientid {
-            Self::drop_client_state(&mut inner, old_clientid);
+            let _ = Self::drop_client_state(&mut inner, old_clientid);
         }
 
         let mut sessionid = [0u8; 16];
@@ -151,7 +154,7 @@ impl StateManager {
             rdma_ird: vec![],
         };
 
-        inner.sessions.insert(
+        let _ = inner.sessions.insert(
             sessionid,
             SessionState {
                 clientid: args.clientid,
@@ -170,7 +173,7 @@ impl StateManager {
     }
 
     /// Handle DESTROY_SESSION.
-    pub async fn destroy_session(
+    pub(crate) async fn destroy_session(
         &self,
         sessionid: &Sessionid4,
         connection_id: u64,
@@ -182,12 +185,12 @@ impl StateManager {
         if !session.connections.contains(&connection_id) {
             return Err(NfsStat4::ConnNotBoundToSession);
         }
-        inner.sessions.remove(sessionid);
+        let _ = inner.sessions.remove(sessionid);
         Ok(())
     }
 
     /// Handle DESTROY_CLIENTID.
-    pub async fn destroy_clientid(&self, clientid: Clientid4) -> Result<(), NfsStat4> {
+    pub(crate) async fn destroy_clientid(&self, clientid: Clientid4) -> Result<(), NfsStat4> {
         let mut inner = self.inner.write().await;
         if Self::client_has_active_state(&inner, clientid) {
             return Err(NfsStat4::ClientidBusy);
@@ -200,7 +203,7 @@ impl StateManager {
     }
 
     /// Handle BIND_CONN_TO_SESSION.
-    pub async fn bind_conn_to_session(
+    pub(crate) async fn bind_conn_to_session(
         &self,
         args: &BindConnToSessionArgs4,
         connection_id: u64,
@@ -209,7 +212,7 @@ impl StateManager {
         let Some(session) = inner.sessions.get_mut(&args.sessionid) else {
             return Err(NfsStat4::BadSession);
         };
-        session.connections.insert(connection_id);
+        let _ = session.connections.insert(connection_id);
         Ok(BindConnToSessionRes4 {
             sessionid: args.sessionid,
             dir: args.dir,
@@ -218,7 +221,7 @@ impl StateManager {
     }
 
     /// Look up the client ID associated with a session.
-    pub async fn session_clientid(&self, sessionid: &Sessionid4) -> Option<Clientid4> {
+    pub(crate) async fn session_clientid(&self, sessionid: &Sessionid4) -> Option<Clientid4> {
         let inner = self.inner.read().await;
         inner
             .sessions
@@ -226,7 +229,7 @@ impl StateManager {
             .map(|session| session.clientid)
     }
 
-    pub async fn reclaim_complete(
+    pub(crate) async fn reclaim_complete(
         &self,
         clientid: Clientid4,
         one_fs: bool,
@@ -246,7 +249,7 @@ impl StateManager {
         Ok(())
     }
 
-    pub async fn validate_open_reclaim(
+    pub(crate) async fn validate_open_reclaim(
         &self,
         clientid: Clientid4,
         claim: &OpenClaim4,

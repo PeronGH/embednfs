@@ -31,7 +31,7 @@ impl MemFs {
         let mut inodes = HashMap::new();
         let mut root_attrs = Attrs::new(ObjectType::Directory, 1);
         root_attrs.mode = 0o777;
-        inodes.insert(
+        let _ = inodes.insert(
             1,
             Inode {
                 attrs: root_attrs,

@@ -18,6 +18,10 @@ impl StateManager {
 
     /// Prepare forechannel SEQUENCE handling and classify the request as
     /// a new execution, a retry that should replay a cached reply, or an error.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "BadSlot is returned locally before indexing the session slot table"
+    )]
     pub(crate) async fn prepare_sequence(
         &self,
         args: &SequenceArgs4,
@@ -30,7 +34,7 @@ impl StateManager {
             Some(session) => session,
             None => return SequenceReplay::Error(NfsStat4::BadSession),
         };
-        session.connections.insert(connection_id);
+        let _ = session.connections.insert(connection_id);
 
         let slot_idx = args.slotid as usize;
         if slot_idx >= session.slots.len() {

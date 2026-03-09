@@ -43,19 +43,26 @@ impl Symlinks<u64> for MemFs {
         inode.attrs.size = target.len() as u64;
         inode.attrs.space_used = inode.attrs.size;
 
-        if let InodeData::Directory(entries) = &mut inner.inodes.get_mut(parent).unwrap().data {
-            entries.insert(name.to_string(), new_id);
-        }
-        if let Some(parent_inode) = inner.inodes.get_mut(parent) {
+        {
+            let parent_inode = inner.inodes.get_mut(parent).ok_or(FsError::Stale)?;
+            let InodeData::Directory(entries) = &mut parent_inode.data else {
+                return Err(FsError::NotDirectory);
+            };
+            let _ = entries.insert(name.to_string(), new_id);
             self.touch_change(&mut parent_inode.attrs);
             parent_inode.attrs.mtime = Timestamp::now();
         }
-        inner.inodes.insert(new_id, inode);
+        let _ = inner.inodes.insert(new_id, inode);
         Self::recompute_link_counts(&mut inner);
 
         Ok(CreateResult {
             handle: new_id,
-            attrs: inner.inodes.get(&new_id).unwrap().attrs.clone(),
+            attrs: inner
+                .inodes
+                .get(&new_id)
+                .ok_or(FsError::ServerFault)?
+                .attrs
+                .clone(),
         })
     }
 

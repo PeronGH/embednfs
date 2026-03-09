@@ -38,7 +38,7 @@ impl Xattrs<u64> for MemFs {
             XattrSetMode::ReplaceOnly if !exists => return Err(FsError::NotFound),
             XattrSetMode::CreateOnly | XattrSetMode::ReplaceOnly => {}
         }
-        inode.xattrs.insert(name.to_string(), value);
+        let _ = inode.xattrs.insert(name.to_string(), value);
         Self::update_has_named_attrs(inode);
         self.touch_data_change(&mut inode.attrs);
         Ok(())

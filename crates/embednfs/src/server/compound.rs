@@ -189,19 +189,23 @@ impl<F: FileSystem> NfsServer<F> {
                     state.current_stateid,
                     sequence_clientid,
                 )
-                    .await
+                .await
             }
             NfsArgop4::Commit(args) => self.op_commit(request_ctx, args, &state.current_fh).await,
             NfsArgop4::Create(args) => {
-                self.op_create(request_ctx, args, &mut state.current_fh).await
+                self.op_create(request_ctx, args, &mut state.current_fh)
+                    .await
             }
             NfsArgop4::Getattr(args) => self.op_getattr(request_ctx, args, &state.current_fh).await,
-            NfsArgop4::Getfh => self.op_getfh(&state.current_fh).await,
+            NfsArgop4::Getfh => self.op_getfh(&state.current_fh),
             NfsArgop4::Link(args) => {
                 self.op_link(request_ctx, args, &state.current_fh, &state.saved_fh)
                     .await
             }
-            NfsArgop4::Lookup(args) => self.op_lookup(request_ctx, args, &mut state.current_fh).await,
+            NfsArgop4::Lookup(args) => {
+                self.op_lookup(request_ctx, args, &mut state.current_fh)
+                    .await
+            }
             NfsArgop4::Lookupp => self.op_lookupp(request_ctx, &mut state.current_fh).await,
             NfsArgop4::Open(args) => {
                 if let Some(clientid) = sequence_clientid
@@ -222,12 +226,12 @@ impl<F: FileSystem> NfsServer<F> {
                 NfsResop4::Putfh(NfsStat4::Ok)
             }
             NfsArgop4::Putpubfh => {
-                let root_fh = self.state.object_to_fh(&self.root_object().await).await;
+                let root_fh = self.state.object_to_fh(&self.root_object().await);
                 state.current_fh = Some(root_fh);
                 NfsResop4::Putpubfh(NfsStat4::Ok)
             }
             NfsArgop4::Putrootfh => {
-                let root_fh = self.state.object_to_fh(&self.root_object().await).await;
+                let root_fh = self.state.object_to_fh(&self.root_object().await);
                 state.current_fh = Some(root_fh);
                 NfsResop4::Putrootfh(NfsStat4::Ok)
             }
@@ -376,14 +380,17 @@ impl<F: FileSystem> NfsServer<F> {
                 .await
             }
             NfsArgop4::OpenAttr(args) => {
-                self.op_openattr(request_ctx, args, &mut state.current_fh).await
+                self.op_openattr(request_ctx, args, &mut state.current_fh)
+                    .await
             }
             NfsArgop4::DelegPurge => NfsResop4::DelegPurge(NfsStat4::Ok),
             NfsArgop4::Verify(vattr) => {
-                self.op_verify(request_ctx, vattr, &state.current_fh, false).await
+                self.op_verify(request_ctx, vattr, &state.current_fh, false)
+                    .await
             }
             NfsArgop4::Nverify(vattr) => {
-                self.op_verify(request_ctx, vattr, &state.current_fh, true).await
+                self.op_verify(request_ctx, vattr, &state.current_fh, true)
+                    .await
             }
             NfsArgop4::OpenDowngrade(args) => {
                 self.op_open_downgrade(args, state.current_stateid, sequence_clientid)

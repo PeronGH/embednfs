@@ -141,6 +141,10 @@ impl FileSystem for MemFs {
         })
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the read range is validated locally before slicing the file buffer"
+    )]
     async fn read(
         &self,
         _ctx: &RequestContext,
@@ -152,16 +156,17 @@ impl FileSystem for MemFs {
         let inode = inner.inodes.get(handle).ok_or(FsError::Stale)?;
         match &inode.data {
             InodeData::File(data) => {
-                let offset = offset as usize;
+                let offset = usize::try_from(offset).map_err(|_| FsError::FileTooLarge)?;
                 if offset >= data.len() {
                     return Ok(ReadResult {
                         data: Bytes::new(),
                         eof: true,
                     });
                 }
-                let end = (offset + count as usize).min(data.len());
+                let end = offset.saturating_add(count as usize).min(data.len());
+                let chunk = &data[offset..end];
                 Ok(ReadResult {
-                    data: Bytes::copy_from_slice(&data[offset..end]),
+                    data: Bytes::copy_from_slice(chunk),
                     eof: end == data.len(),
                 })
             }
@@ -169,6 +174,10 @@ impl FileSystem for MemFs {
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the file is resized locally to cover the validated write range"
+    )]
     async fn write(
         &self,
         _ctx: &RequestContext,
@@ -181,8 +190,10 @@ impl FileSystem for MemFs {
         let inode = inner.inodes.get_mut(handle).ok_or(FsError::Stale)?;
         match &mut inode.data {
             InodeData::File(file) => {
-                let offset = offset as usize;
-                let end = offset + data.len();
+                let offset = usize::try_from(offset).map_err(|_| FsError::FileTooLarge)?;
+                let end = offset
+                    .checked_add(data.len())
+                    .ok_or(FsError::FileTooLarge)?;
                 if end > file.len() {
                     file.resize(end, 0);
                 }
@@ -239,17 +250,24 @@ impl FileSystem for MemFs {
         Self::apply_create_owner(&mut inode.attrs, ctx);
         self.apply_setattrs(&mut inode, &req.attrs)?;
 
-        if let InodeData::Directory(entries) = &mut inner.inodes.get_mut(parent).unwrap().data {
-            entries.insert(name.to_string(), new_id);
-        }
-        if let Some(parent_inode) = inner.inodes.get_mut(parent) {
+        {
+            let parent_inode = inner.inodes.get_mut(parent).ok_or(FsError::Stale)?;
+            let InodeData::Directory(entries) = &mut parent_inode.data else {
+                return Err(FsError::NotDirectory);
+            };
+            let _ = entries.insert(name.to_string(), new_id);
             self.touch_change(&mut parent_inode.attrs);
             parent_inode.attrs.mtime = Timestamp::now();
         }
-        inner.inodes.insert(new_id, inode);
+        let _ = inner.inodes.insert(new_id, inode);
         Self::recompute_link_counts(&mut inner);
 
-        let attrs = inner.inodes.get(&new_id).unwrap().attrs.clone();
+        let attrs = inner
+            .inodes
+            .get(&new_id)
+            .ok_or(FsError::ServerFault)?
+            .attrs
+            .clone();
         Ok(CreateResult {
             handle: new_id,
             attrs,
@@ -280,7 +298,7 @@ impl FileSystem for MemFs {
 
         if let Some(parent_inode) = inner.inodes.get_mut(parent) {
             if let InodeData::Directory(entries) = &mut parent_inode.data {
-                entries.remove(name);
+                let _ = entries.remove(name);
             }
             self.touch_change(&mut parent_inode.attrs);
             parent_inode.attrs.mtime = Timestamp::now();
@@ -329,7 +347,7 @@ impl FileSystem for MemFs {
 
         if let Some(from_inode) = inner.inodes.get_mut(from_dir) {
             if let InodeData::Directory(entries) = &mut from_inode.data {
-                entries.remove(from_name);
+                let _ = entries.remove(from_name);
             }
             self.touch_change(&mut from_inode.attrs);
             from_inode.attrs.mtime = Timestamp::now();

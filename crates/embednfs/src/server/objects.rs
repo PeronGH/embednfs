@@ -19,8 +19,9 @@ impl<F: FileSystem> NfsServer<F> {
         let id = self
             .next_object_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        handle_to_object.insert(handle.clone(), id);
-        self.object_to_handle
+        let _ = handle_to_object.insert(handle.clone(), id);
+        let _ = self
+            .object_to_handle
             .write()
             .await
             .insert(id, handle.clone());
@@ -44,12 +45,16 @@ impl<F: FileSystem> NfsServer<F> {
             .ok_or(FsError::BadHandle)
     }
 
+    #[expect(
+        clippy::unused_async,
+        reason = "kept async to match the surrounding server helper call pattern"
+    )]
     pub(super) async fn resolve_object(
         &self,
         fh: &Option<NfsFh4>,
     ) -> Result<(NfsFh4, ServerObject), NfsStat4> {
         let fh = fh.clone().ok_or(NfsStat4::Nofilehandle)?;
-        let object = self.state.fh_to_object(&fh).await.ok_or(NfsStat4::Stale)?;
+        let object = self.state.fh_to_object(&fh).ok_or(NfsStat4::Stale)?;
         Ok((fh, object))
     }
 
@@ -58,9 +63,6 @@ impl<F: FileSystem> NfsServer<F> {
         ctx: &crate::fs::RequestContext,
         parent: ObjectId,
     ) {
-        let _ = self
-            .getattr(ctx, parent)
-            .await
-            .expect("named-attribute parent disappeared before metadata refresh");
+        let _ = self.getattr(ctx, parent).await;
     }
 }

@@ -15,7 +15,23 @@ use super::{
     RPC_LAST_FRAGMENT, hex_bytes, replay_fingerprint,
 };
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "body_start is captured from the pre-encode length and response only grows afterward"
+)]
+fn replay_cache_body(response: &BytesMut, body_start: usize) -> Vec<u8> {
+    response[body_start..].to_vec()
+}
+
 impl<F: FileSystem> NfsServer<F> {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "fragment lengths and replay body offsets are validated before slicing"
+    )]
+    #[expect(
+        clippy::expect_used,
+        reason = "an oversized single-fragment reply is an internal sizing bug"
+    )]
     pub(super) async fn handle_connection(
         self: &std::sync::Arc<Self>,
         stream: TcpStream,
@@ -50,7 +66,8 @@ impl<F: FileSystem> NfsServer<F> {
             if read_buf.len() < frag_len {
                 read_buf.resize(frag_len, 0);
             }
-            reader.read_exact(&mut read_buf[..frag_len]).await?;
+            let request_buf = &mut read_buf[..frag_len];
+            let _ = reader.read_exact(request_buf).await?;
 
             let Some(response) = self
                 .process_rpc_message(&read_buf[..frag_len], connection_id)
@@ -59,9 +76,6 @@ impl<F: FileSystem> NfsServer<F> {
                 return Ok(());
             };
 
-            // The server fully materializes one RPC reply at a time, so exceeding the
-            // fragment limit here indicates an internal sizing bug rather than a
-            // recoverable client error.
             let resp_len = u32::try_from(response.len())
                 .ok()
                 .filter(|len| *len <= RPC_FRAG_LEN_MASK)
@@ -159,7 +173,7 @@ impl<F: FileSystem> NfsServer<F> {
                         let body_start = response.len();
                         result.encode(&mut response);
                         if let Some(token) = replay_token {
-                            let body = response[body_start..].to_vec();
+                            let body = replay_cache_body(&response, body_start);
                             if let Err(status) = self.state.finish_sequence(token, body).await {
                                 warn!("Failed to finalize replay cache entry: {status:?}");
                             }

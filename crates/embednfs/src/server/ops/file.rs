@@ -405,22 +405,20 @@ impl<F: FileSystem> NfsServer<F> {
             Err(status) => return NfsResop4::Open(status, None),
         };
 
-        *current_fh = Some(self.state.object_to_fh(&object).await);
+        *current_fh = Some(self.state.object_to_fh(&object));
 
         let cinfo = if created {
-            // The create path records the pre-mutation directory change id before
-            // issuing the mutation, so it must be present here.
-            let before_change =
-                created_before_change.expect("created OPEN missing pre-mutation change info");
+            let before_change = match created_before_change {
+                Some(before_change) => before_change,
+                None => return NfsResop4::Open(NfsStat4::Serverfault, None),
+            };
             self.mutation_change_info(request_ctx, &container, before_change)
                 .await
         } else {
-            // Non-creating OPENs require pre-operation directory attrs so the unchanged
-            // change_info4 can be reported without sentinel values.
-            let change = before_attr
-                .as_ref()
-                .expect("non-creating OPEN missing directory attrs")
-                .change_id;
+            let change = match &before_attr {
+                Ok(attr) => attr.change_id,
+                Err(e) => return NfsResop4::Open(e.to_nfsstat4(), None),
+            };
             ChangeInfo4 {
                 atomic: true,
                 before: change,

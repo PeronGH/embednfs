@@ -76,7 +76,7 @@ impl<F: FileSystem> NfsServer<F> {
         }
     }
 
-    pub(crate) async fn op_getfh(&self, current_fh: &Option<NfsFh4>) -> NfsResop4 {
+    pub(crate) fn op_getfh(&self, current_fh: &Option<NfsFh4>) -> NfsResop4 {
         match current_fh {
             Some(fh) => NfsResop4::Getfh(NfsStat4::Ok, Some(fh.clone())),
             None => NfsResop4::Getfh(NfsStat4::Nofilehandle, None),

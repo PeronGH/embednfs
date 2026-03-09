@@ -67,7 +67,7 @@ impl StateManager {
             system: false,
             named_attr_count: None,
         };
-        inner.metadata.insert(object.clone(), meta.clone());
+        let _ = inner.metadata.insert(object.clone(), meta.clone());
         meta
     }
 
@@ -80,11 +80,7 @@ impl StateManager {
         self.ensure_meta_locked(&mut inner, object, file_type)
     }
 
-    pub(crate) async fn touch_data(
-        &self,
-        object: &ServerObject,
-        file_type: ServerFileType,
-    ) -> SynthMeta {
+    pub(crate) async fn touch_data(&self, object: &ServerObject, file_type: ServerFileType) {
         let mut inner = self.inner.write().await;
         let mut meta = self.ensure_meta_locked(&mut inner, object, file_type);
         let (now_s, now_ns) = Self::now();
@@ -95,8 +91,7 @@ impl StateManager {
         meta.change_id = self
             .next_changeid
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        inner.metadata.insert(object.clone(), meta.clone());
-        meta
+        let _ = inner.metadata.insert(object.clone(), meta);
     }
 
     pub(crate) async fn named_attr_count(&self, object: &ServerObject) -> Option<u64> {
@@ -112,19 +107,14 @@ impl StateManager {
         object: &ServerObject,
         file_type: ServerFileType,
         count: u64,
-    ) -> SynthMeta {
+    ) {
         let mut inner = self.inner.write().await;
         let mut meta = self.ensure_meta_locked(&mut inner, object, file_type);
         meta.named_attr_count = Some(count);
-        inner.metadata.insert(object.clone(), meta.clone());
-        meta
+        let _ = inner.metadata.insert(object.clone(), meta);
     }
 
-    pub(crate) async fn touch_metadata(
-        &self,
-        object: &ServerObject,
-        file_type: ServerFileType,
-    ) -> SynthMeta {
+    pub(crate) async fn touch_metadata(&self, object: &ServerObject, file_type: ServerFileType) {
         let mut inner = self.inner.write().await;
         let mut meta = self.ensure_meta_locked(&mut inner, object, file_type);
         let (now_s, now_ns) = Self::now();
@@ -135,8 +125,7 @@ impl StateManager {
         meta.change_id = self
             .next_changeid
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        inner.metadata.insert(object.clone(), meta.clone());
-        meta
+        let _ = inner.metadata.insert(object.clone(), meta);
     }
 
     pub(crate) async fn apply_setattr(
@@ -144,7 +133,7 @@ impl StateManager {
         object: &ServerObject,
         file_type: ServerFileType,
         attrs: &SetAttrs,
-    ) -> SynthMeta {
+    ) {
         let mut inner = self.inner.write().await;
         let mut meta = self.ensure_meta_locked(&mut inner, object, file_type);
         let (now_s, now_ns) = Self::now();
@@ -211,7 +200,6 @@ impl StateManager {
                 .next_changeid
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        inner.metadata.insert(object.clone(), meta.clone());
-        meta
+        let _ = inner.metadata.insert(object.clone(), meta);
     }
 }

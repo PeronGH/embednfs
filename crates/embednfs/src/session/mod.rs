@@ -31,7 +31,7 @@ pub(crate) use model::{ResolvedStateid, SequenceReplay, SynthMeta};
 pub(crate) use stateids::{CurrentStateidMode, NormalizedStateid};
 
 /// Manages all server-side state.
-pub struct StateManager {
+pub(crate) struct StateManager {
     inner: Arc<RwLock<StateInner>>,
     /// Lock-free file handle mappings (hot path).
     fh_to_object: DashMap<Vec<u8>, ServerObject>,
@@ -43,12 +43,12 @@ pub struct StateManager {
     next_synth_fileid: AtomicU64,
     next_connectionid: AtomicU64,
     /// Server boot verifier (changes each restart).
-    pub write_verifier: Verifier4,
-    pub server_owner: ServerOwner4,
+    pub(crate) write_verifier: Verifier4,
+    pub(crate) server_owner: ServerOwner4,
 }
 
 impl StateManager {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let boot_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
@@ -62,7 +62,7 @@ impl StateManager {
             major_id: b"embednfs".to_vec(),
         };
 
-        StateManager {
+        Self {
             inner: Arc::new(RwLock::new(StateInner {
                 clients: HashMap::new(),
                 sessions: HashMap::new(),

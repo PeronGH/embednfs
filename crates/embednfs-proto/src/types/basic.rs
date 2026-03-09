@@ -376,6 +376,10 @@ impl Bitmap4 {
         self.0.get(word).is_some_and(|w| w & mask != 0)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the loop below grows the bitmap through the requested word"
+    )]
     pub fn set(&mut self, bit: u32) {
         let word = (bit / 32) as usize;
         let mask = 1u32 << (bit % 32);
@@ -394,7 +398,7 @@ impl XdrEncode for Bitmap4 {
             .rposition(|word| *word != 0)
             .map_or(0, |idx| idx + 1);
         (trimmed_len as u32).encode(dst);
-        for w in &self.0[..trimmed_len] {
+        for w in self.0.iter().take(trimmed_len) {
             w.encode(dst);
         }
     }

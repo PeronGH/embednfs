@@ -88,7 +88,7 @@ impl<F: FileSystem> NfsServer<F> {
             _ => return NfsResop4::Create(NfsStat4::Notsupp, None, Bitmap4::new()),
         };
 
-        let new_fh = self.state.object_to_fh(&new_object).await;
+        let new_fh = self.state.object_to_fh(&new_object);
         *current_fh = Some(new_fh);
 
         let cinfo = self
@@ -207,7 +207,7 @@ impl<F: FileSystem> NfsServer<F> {
 
         match child {
             Ok(child) => {
-                *current_fh = Some(self.state.object_to_fh(&child).await);
+                *current_fh = Some(self.state.object_to_fh(&child));
                 NfsResop4::Lookup(NfsStat4::Ok)
             }
             Err(e) => NfsResop4::Lookup(e.to_nfsstat4()),
@@ -237,7 +237,7 @@ impl<F: FileSystem> NfsServer<F> {
 
         match parent {
             Ok(parent) => {
-                *current_fh = Some(self.state.object_to_fh(&parent).await);
+                *current_fh = Some(self.state.object_to_fh(&parent));
                 NfsResop4::Lookupp(NfsStat4::Ok)
             }
             Err(e) => NfsResop4::Lookupp(e.to_nfsstat4()),
@@ -435,7 +435,7 @@ impl<F: FileSystem> NfsServer<F> {
                     }
                 },
             };
-            let entry_fh = self.state.object_to_fh(object).await;
+            let entry_fh = self.state.object_to_fh(object);
             let result_entry = Entry4 {
                 cookie: *cookie,
                 name: name.clone(),
@@ -613,10 +613,11 @@ impl<F: FileSystem> NfsServer<F> {
             ServerObject::Fs(id) => ServerObject::NamedAttrDir(id),
             _ => return NfsResop4::OpenAttr(NfsStat4::Inval),
         };
-        self.state
+        let _ = self
+            .state
             .ensure_meta(&attrdir, ServerFileType::NamedAttrDir)
             .await;
-        *current_fh = Some(self.state.object_to_fh(&attrdir).await);
+        *current_fh = Some(self.state.object_to_fh(&attrdir));
         NfsResop4::OpenAttr(NfsStat4::Ok)
     }
 }

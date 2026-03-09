@@ -25,7 +25,7 @@ impl HardLinks<u64> for MemFs {
                 if entries.contains_key(name) {
                     return Err(FsError::AlreadyExists);
                 }
-                entries.insert(name.to_string(), *source);
+                let _ = entries.insert(name.to_string(), *source);
             }
             _ => return Err(FsError::NotDirectory),
         }

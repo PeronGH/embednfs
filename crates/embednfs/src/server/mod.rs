@@ -120,11 +120,11 @@ impl<F: FileSystem> NfsServer<F> {
             stream.set_nodelay(true)?;
             debug!("New connection from {peer}");
             let server = server.clone();
-            tokio::spawn(async move {
+            std::mem::drop(tokio::spawn(async move {
                 if let Err(e) = server.handle_connection(stream).await {
                     debug!("Connection error from {peer}: {e}");
                 }
-            });
+            }));
         }
     }
 
