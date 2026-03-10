@@ -83,5 +83,3 @@ Follow the workspace lint policy. Any non-test lint suppression must use the nar
 ### Panic and Unsafe Policy
 
 Follow the workspace lint policy for panic-prone constructs and unsafe code. In non-test code, avoid them when practical; when they are the right choice, make the invariant or tradeoff explicit in the code.
-
-Every `unsafe` block, `unsafe fn`, and `unsafe impl` must have an immediately preceding `// SAFETY:` comment, and public unsafe APIs must document their `# Safety` requirements.
