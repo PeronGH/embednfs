@@ -213,15 +213,17 @@ Rejected in NFSv4.1 because they are v4.0-only:
 ```bash
 cargo clippy --workspace
 cargo test --workspace
-cargo test --workspace --test nfs_rs_stress -- --ignored
+bash scripts/ensure-nfs4j-client.sh
+cargo test -p embednfs --test nfs4j_smoke -- --ignored --nocapture
+cargo test -p embednfs --test nfs4j_stress -- --ignored --nocapture
 ./scripts/smoke-macos-nfs41.sh
 ```
 
 The integration suite exercises the full RPC path over TCP and includes raw `OPENATTR`/named-attribute flows for macOS-style clients.
 
-`cargo test --workspace` also runs a small foreign-client interoperability smoke lane through `nfs-rs`.
+`cargo test --workspace` also runs the small default foreign-client interoperability smoke lane through `nfs-rs`.
 
-`cargo test --workspace --test nfs_rs_stress -- --ignored` runs a longer concurrent mixed-load stress workload through the same foreign client.
+The ignored `nfs4j` smoke and stress tests use the pinned harness from `https://github.com/PeronGH/nfs4j.git` at commit `9d433b98bf56ea6d5cf791388c9d75ad32d5d0f2`. `scripts/ensure-nfs4j-client.sh` clones or reuses `/tmp/nfs4j`, checks out that exact ref, builds `basic-client`, and prints the resulting `jar-with-dependencies` path.
 
 For a genuine localhost/macOS smoke test, `scripts/smoke-macos-nfs41.sh` starts `embednfsd`, mounts it with `mount_nfs`, exercises basic create/write/read/rename/remove/rmdir behavior through the kernel client.
 
