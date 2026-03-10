@@ -18,7 +18,11 @@ pub fn ensure_nfs4j_jar() -> Result<PathBuf, String> {
     NFS4J_JAR.get_or_init(resolve_nfs4j_jar).clone()
 }
 
-pub fn run_nfs4j_harness(mode: &str, port: u16, timeout: Duration) -> Result<HarnessOutput, String> {
+pub fn run_nfs4j_harness(
+    mode: &str,
+    port: u16,
+    timeout: Duration,
+) -> Result<HarnessOutput, String> {
     let jar = ensure_nfs4j_jar()?;
     let mut child = Command::new("java")
         .arg("-cp")
@@ -73,7 +77,10 @@ fn resolve_nfs4j_jar() -> Result<PathBuf, String> {
     let root = workspace_root()?;
     let script = root.join("scripts/ensure-nfs4j-client.sh");
     if !script.is_file() {
-        return Err(format!("missing nfs4j bootstrap script at {}", script.display()));
+        return Err(format!(
+            "missing nfs4j bootstrap script at {}",
+            script.display()
+        ));
     }
 
     let output = Command::new("bash")

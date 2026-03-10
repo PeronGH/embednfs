@@ -488,13 +488,7 @@ impl<F: FileSystem> NfsServer<F> {
         };
 
         match result {
-            Ok((data, eof)) => NfsResop4::Read(
-                NfsStat4::Ok,
-                Some(ReadRes4 {
-                    eof,
-                    data,
-                }),
-            ),
+            Ok((data, eof)) => NfsResop4::Read(NfsStat4::Ok, Some(ReadRes4 { eof, data })),
             Err(e) => NfsResop4::Read(e.to_nfsstat4(), None),
         }
     }

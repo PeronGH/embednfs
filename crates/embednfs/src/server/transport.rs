@@ -64,8 +64,7 @@ impl<F: FileSystem> NfsServer<F> {
                     _ => {
                         warn!(
                             "RPC record exceeds configured limit: current={}, incoming={}",
-                            record_len,
-                            frag_len
+                            record_len, frag_len
                         );
                         return Ok(());
                     }
@@ -78,7 +77,10 @@ impl<F: FileSystem> NfsServer<F> {
                 }
             }
 
-            let Some(response) = self.process_rpc_message(record.freeze(), connection_id).await else {
+            let Some(response) = self
+                .process_rpc_message(record.freeze(), connection_id)
+                .await
+            else {
                 return Ok(());
             };
 
