@@ -30,7 +30,7 @@ impl<F: FileSystem> NfsServer<F> {
     )]
     #[expect(
         clippy::expect_used,
-        reason = "an oversized single-fragment reply is an internal sizing bug"
+        reason = "each outbound fragment must fit the RFC 5531 fragment length field"
     )]
     pub(super) async fn handle_connection(
         self: &std::sync::Arc<Self>,
@@ -82,13 +82,23 @@ impl<F: FileSystem> NfsServer<F> {
                 return Ok(());
             };
 
-            let resp_len = u32::try_from(response.len())
-                .ok()
-                .filter(|len| *len <= RPC_FRAG_LEN_MASK)
-                .expect("response exceeds RPC fragment limit");
-            let resp_len = resp_len | RPC_LAST_FRAGMENT;
-            writer.write_all(&resp_len.to_be_bytes()).await?;
-            writer.write_all(&response).await?;
+            let mut response = response;
+            while !response.is_empty() {
+                let frag_len = response.len().min(MAX_FRAGMENT_SIZE);
+                let last_fragment = frag_len == response.len();
+                let fragment = response.split_to(frag_len);
+                let resp_len = u32::try_from(fragment.len())
+                    .ok()
+                    .filter(|len| *len <= RPC_FRAG_LEN_MASK)
+                    .expect("response exceeds RPC fragment limit");
+                let resp_len = if last_fragment {
+                    resp_len | RPC_LAST_FRAGMENT
+                } else {
+                    resp_len
+                };
+                writer.write_all(&resp_len.to_be_bytes()).await?;
+                writer.write_all(&fragment).await?;
+            }
             writer.flush().await?;
         }
     }

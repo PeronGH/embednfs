@@ -171,6 +171,12 @@ pub fn parse_write_res(resp: &mut Bytes) -> (u32, u32) {
     (count, committed)
 }
 
+pub fn parse_read_res(resp: &mut Bytes) -> (bool, Bytes) {
+    let eof = bool::decode(resp).unwrap();
+    let data = decode_opaque(resp).unwrap();
+    (eof, data)
+}
+
 pub fn parse_access_res(resp: &mut Bytes) -> (u32, u32) {
     let supported = u32::decode(resp).unwrap();
     let access = u32::decode(resp).unwrap();
